@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\AddOn;
+use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Ingredient;
 use App\Models\Order;
@@ -33,11 +35,16 @@ use RuntimeException;
  */
 class CreateOrderHandler implements SyncEventHandler
 {
+    public function __construct(
+        private readonly GeofenceGuard $geofence,
+    ) {}
+
     public function handle(SyncEvent $event, Device $device): array
     {
         $order = (array) ($event->payload_json['order'] ?? null);
         $this->validate($order);
         $this->assertMoneyInvariant($order);
+        $this->enforceGeofence($order, $device);
 
         return DB::transaction(function () use ($order, $device, $event): array {
             $model = Order::create([
@@ -93,6 +100,26 @@ class CreateOrderHandler implements SyncEventHandler
 
             return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created'];
         });
+    }
+
+    /**
+     * Reject the order if the device's reported GPS (stamped at order time) is
+     * outside the branch geofence. Skipped when no GPS is supplied (the
+     * device-layer guard is primary) or the branch has no coordinates.
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function enforceGeofence(array $order, Device $device): void
+    {
+        $gps = $order['gps'] ?? null;
+        if (! is_array($gps) || ! isset($gps['lat'], $gps['lng'])) {
+            return;
+        }
+
+        $branch = Branch::find($device->branch_id);
+        if ($branch !== null) {
+            $this->geofence->assertWithin($branch, (float) $gps['lat'], (float) $gps['lng']);
+        }
     }
 
     /**

@@ -453,10 +453,23 @@ return new class extends Migration
             $table->timestamps();
             $table->softDeletes();
         });
+
+        // ---- Phase 8.7 customer vehicle plates (drive-thru lookup) ----
+
+        Schema::create('pos_customer_vehicle_plates', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('customer_id');
+            $table->unsignedBigInteger('company_id');
+            $table->string('plate_number', 32);
+            $table->timestamps();
+            $table->unique(['company_id', 'plate_number'], 'pos_cvp_company_plate_unique');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_customer_vehicle_plates');
         Schema::dropIfExists('pos_staff');
         Schema::dropIfExists('pos_shifts');
         Schema::dropIfExists('pos_loyalty_transactions');

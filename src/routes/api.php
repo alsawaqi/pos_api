@@ -5,6 +5,8 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
+use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
+use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use Illuminate\Support\Facades\Route;
@@ -49,5 +51,11 @@ Route::prefix('v1')->group(function (): void {
 
         // Offline-sync ingestion (§10.9): idempotent batch push of device events.
         Route::post('device/sync/push', SyncPushController::class)->name('device.sync.push');
+
+        // Live reads/writes the POS UI needs mid-sale (§11.4): the branch's
+        // active orders, customer lookup by phone/plate, register a customer.
+        Route::get('device/orders/active', [DeviceOrdersController::class, 'active'])->name('device.orders.active');
+        Route::get('device/customers/search', [DeviceCustomersController::class, 'search'])->name('device.customers.search');
+        Route::post('device/customers', [DeviceCustomersController::class, 'store'])->name('device.customers.store');
     });
 });

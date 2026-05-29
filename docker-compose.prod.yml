@@ -1,0 +1,107 @@
+services:
+  charity_login:
+    image: charity-login-app
+    build:
+      context: .
+      dockerfile: docker/prod/php/php.dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./src:/var/www/html
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_CHANNEL: stderr
+    networks:
+      - charity_net
+
+  nginx:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    depends_on:
+      - charity_login
+    volumes:
+      - ./src/public:/var/www/html/public
+      - storage-data:/var/www/html/storage
+      - ./docker/prod/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    expose:
+      - "80"
+    networks:
+      charity_net:
+        aliases:
+          - charity-login-web
+
+  # One-time permissions fix (run when needed)
+  init-perms:
+    image: charity-login-app
+    profiles: ["init"]
+    user: "0:0"
+    volumes:
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    entrypoint: ["sh", "-lc"]
+    command: |
+      set -e
+      mkdir -p /var/www/html/storage/framework/{cache,sessions,views} \
+               /var/www/html/storage/logs \
+               /var/www/html/bootstrap/cache
+      chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+      chmod -R ug+rwX /var/www/html/storage /var/www/html/bootstrap/cache
+    restart: "no"
+    networks:
+      - charity_net
+
+  # Install PHP deps into ./src/vendor (run when you deploy)
+  composer:
+    profiles: ["build"]
+    image: composer:2
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+    command: composer install --no-dev --optimize-autoloader --no-interaction
+    networks:
+      - charity_net
+
+  # Build Vite assets into ./src/public/build (run when you deploy)
+  node-build:
+    profiles: ["build"]
+    image: node:20-alpine
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+    command: sh -lc "npm ci && npm run build"
+    networks:
+      - charity_net
+
+  # Cache Laravel (optional, run after build)
+  deploy:
+    profiles: ["deploy"]
+    image: charity-login-app
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html:ro
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    entrypoint: ["sh", "-lc"]
+    command: |
+      php artisan optimize:clear
+      php artisan config:cache
+      php artisan route:cache
+      php artisan view:cache
+    restart: "no"
+    networks:
+      - charity_net
+
+networks:
+  charity_net:
+    external: true
+
+volumes:
+  storage-data:
+  cache-data:

@@ -35,7 +35,7 @@ class DeviceSyncPushTest extends TestCase
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
-    private function event(string $type = 'shift.open', array $overrides = []): array
+    private function event(string $type = 'restock.request', array $overrides = []): array
     {
         return array_merge([
             'client_event_id' => (string) Str::uuid(),
@@ -68,7 +68,7 @@ class DeviceSyncPushTest extends TestCase
         // Use UNHANDLED event types here so this stays a pure ingestion/dedup
         // test — order.* now gets processed (see DeviceSyncOrderTest).
         $order = $this->event('expense.log', ['payload' => ['order' => ['total_baisas' => 1500]]]);
-        $shift = $this->event('shift.open');
+        $shift = $this->event('donation.record');
 
         $res = $this->withToken('mdev_sync')
             ->postJson('/api/v1/device/sync/push', ['events' => [$order, $shift]])
@@ -152,7 +152,7 @@ class DeviceSyncPushTest extends TestCase
         // 50 events queued 4 hours ago while the terminal was offline.
         $events = [];
         for ($i = 0; $i < 50; $i++) {
-            $events[] = $this->event('shift.open', [
+            $events[] = $this->event('restock.request', [
                 'client_timestamp' => now()->subHours(4)->toIso8601String(),
                 'payload' => ['seq' => $i],
             ]);

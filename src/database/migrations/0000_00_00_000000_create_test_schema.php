@@ -412,10 +412,31 @@ return new class extends Migration
             $table->timestamp('occurred_at')->useCurrent();
             $table->timestamp('created_at')->useCurrent();
         });
+
+        // ---- Phase 8.5 shifts slice ----
+
+        Schema::create('pos_shifts', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->timestamp('opened_at')->useCurrent();
+            $table->timestamp('closed_at')->nullable();
+            $table->decimal('opening_cash', 12, 3)->default(0);
+            $table->decimal('closing_cash', 12, 3)->nullable();
+            $table->decimal('expected_cash', 12, 3)->nullable();
+            $table->decimal('variance', 12, 3)->nullable();
+            $table->string('status', 32)->default('open');
+            $table->text('note')->nullable();
+            $table->timestamps();
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_shifts');
         Schema::dropIfExists('pos_loyalty_transactions');
         Schema::dropIfExists('pos_loyalty_accounts');
         Schema::dropIfExists('pos_stock_movements');

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
+use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Device;
@@ -33,6 +34,7 @@ class PayOrderHandler implements SyncEventHandler
     public function __construct(
         private readonly ConsumeInventoryAction $inventory,
         private readonly ApplyLoyaltyEarnAction $loyalty,
+        private readonly ApplyLoyaltyRedeemAction $loyaltyRedeem,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -63,8 +65,9 @@ class PayOrderHandler implements SyncEventHandler
 
         $capturedAt = isset($payload['paid_at']) ? Carbon::parse((string) $payload['paid_at']) : now();
         $loyaltyRuleId = isset($payload['loyalty_rule_id']) ? (int) $payload['loyalty_rule_id'] : null;
+        $loyaltyRedeem = is_array($payload['loyalty_redeem'] ?? null) ? $payload['loyalty_redeem'] : null;
 
-        return DB::transaction(function () use ($order, $payments, $capturedAt, $loyaltyRuleId): array {
+        return DB::transaction(function () use ($order, $payments, $capturedAt, $loyaltyRuleId, $loyaltyRedeem): array {
             $paymentIds = [];
             $tenderedBaisas = 0;
 
@@ -107,12 +110,24 @@ class PayOrderHandler implements SyncEventHandler
             // cashier picked a rule for a known customer.
             $loyaltyTxn = $loyaltyRuleId !== null ? $this->loyalty->apply($order, $loyaltyRuleId) : null;
 
+            // Loyalty redemption: record the points/stamps SPENT (their value
+            // is already on the order as a snapshot discount).
+            $redeemTxn = $loyaltyRedeem !== null && isset($loyaltyRedeem['rule_id'])
+                ? $this->loyaltyRedeem->apply(
+                    $order,
+                    (int) $loyaltyRedeem['rule_id'],
+                    (int) ($loyaltyRedeem['points'] ?? 0),
+                    (int) ($loyaltyRedeem['stamps'] ?? 0),
+                )
+                : null;
+
             return [
                 'order_id' => (int) $order->id,
                 'status' => 'paid',
                 'payment_ids' => $paymentIds,
                 'movements' => $movements,
                 'loyalty_transaction_id' => $loyaltyTxn?->id,
+                'loyalty_redeem_transaction_id' => $redeemTxn?->id,
             ];
         });
     }

@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync;
 
 use App\Actions\Device\IngestSyncEventsAction;
+use App\Actions\Device\Sync\Handlers\CloseShiftHandler;
 use App\Actions\Device\Sync\Handlers\CreateOrderHandler;
+use App\Actions\Device\Sync\Handlers\OpenShiftHandler;
 use App\Actions\Device\Sync\Handlers\PayOrderHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Models\Device;
@@ -30,6 +32,8 @@ class SyncEventDispatcher
         private readonly CreateOrderHandler $createOrder,
         private readonly PayOrderHandler $payOrder,
         private readonly VoidOrderHandler $voidOrder,
+        private readonly OpenShiftHandler $openShift,
+        private readonly CloseShiftHandler $closeShift,
     ) {}
 
     public function dispatch(SyncEvent $event, Device $device): void
@@ -38,6 +42,8 @@ class SyncEventDispatcher
             'order.create' => $this->createOrder,
             'order.pay' => $this->payOrder,
             'order.void' => $this->voidOrder,
+            'shift.open' => $this->openShift,
+            'shift.close' => $this->closeShift,
             default => null,
         };
 

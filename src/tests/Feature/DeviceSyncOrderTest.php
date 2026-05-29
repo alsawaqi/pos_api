@@ -279,7 +279,7 @@ class DeviceSyncOrderTest extends TestCase
 
         $shift = [
             'client_event_id' => (string) Str::uuid(),
-            'event_type' => 'shift.open',
+            'event_type' => 'restock.request',
             'client_timestamp' => now()->toIso8601String(),
             'payload' => ['opening_cash_baisas' => 50000],
         ];

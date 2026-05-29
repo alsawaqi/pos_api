@@ -1,0 +1,88 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+/**
+ * Phase 8.2 — the device offline-sync ledger (shared pos_sync_events
+ * table, owned by pos_admin's schema; blueprint §10.9).
+ *
+ * Append-only idempotency log: every state-mutating action a terminal
+ * performs offline (order, payment, void, donation, expense, restock,
+ * shift) is one row keyed by a client-generated UUID. The UNIQUE
+ * `client_event_id` is what makes a replayed 4-hour-old batch settle
+ * EXACTLY once — a re-pushed event collides and re-returns its first
+ * ACK instead of producing a second effect.
+ *
+ * Unlike the read-only 8.1 catalogue models, pos_api WRITES this table,
+ * so it carries an explicit fillable set. It has NO created_at/updated_at
+ * (the migration tracks server_received_at/processed_at instead), hence
+ * $timestamps = false.
+ *
+ * 8.2 only INGESTS (ack_status = received). Domain processing — turning a
+ * received event into an order/payment/etc. and stamping it processed or
+ * failed with a result_json — lands in 8.3+.
+ */
+#[Fillable([
+    'client_event_id',
+    'device_id',
+    'event_type',
+    'payload_json',
+    'client_timestamp',
+    'server_received_at',
+    'processed_at',
+    'ack_status',
+    'result_json',
+])]
+class SyncEvent extends Model
+{
+    /** Stamped by server_received_at / processed_at, not created_at/updated_at. */
+    public $timestamps = false;
+
+    protected $table = 'pos_sync_events';
+
+    /** Freshly ingested, awaiting domain processing (8.3+). */
+    public const STATUS_RECEIVED = 'received';
+
+    /** Domain handler ran and committed its effect. */
+    public const STATUS_PROCESSED = 'processed';
+
+    /** Domain handler ran and rejected the event. */
+    public const STATUS_FAILED = 'failed';
+
+    /**
+     * The event taxonomy the ledger accepts (blueprint §10.9). The ledger
+     * rejects anything outside this set so junk never lands in it; extend
+     * here as later sub-phases add handlers.
+     *
+     * @var list<string>
+     */
+    public const EVENT_TYPES = [
+        'order.create',
+        'order.pay',
+        'order.void',
+        'donation.record',
+        'expense.log',
+        'restock.request',
+        'shift.open',
+        'shift.close',
+    ];
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'payload_json' => 'array',
+            'result_json' => 'array',
+            'client_timestamp' => 'datetime',
+            'server_received_at' => 'datetime',
+            'processed_at' => 'datetime',
+        ];
+    }
+}

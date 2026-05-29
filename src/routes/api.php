@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
+use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -38,5 +39,8 @@ Route::prefix('v1')->group(function (): void {
         // Config bundle (§11.4): full snapshot + incremental delta.
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');
         Route::get('device/config/delta', [DeviceConfigController::class, 'delta'])->name('device.config.delta');
+
+        // Offline-sync ingestion (§10.9): idempotent batch push of device events.
+        Route::post('device/sync/push', SyncPushController::class)->name('device.sync.push');
     });
 });

@@ -465,10 +465,63 @@ return new class extends Migration
             $table->timestamps();
             $table->unique(['company_id', 'plate_number'], 'pos_cvp_company_plate_unique');
         });
+
+        // ---- Phase 8.8 expense.log + restock.request sync targets ----
+
+        Schema::create('pos_expenses', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->string('category', 32);
+            $table->decimal('amount', 12, 3);
+            $table->text('note')->nullable();
+            $table->string('receipt_photo_path')->nullable();
+            $table->unsignedBigInteger('logged_by_pos_staff_id')->nullable();
+            $table->unsignedBigInteger('logged_by_portal_user_id')->nullable();
+            $table->timestamp('logged_at')->useCurrent();
+            $table->string('status', 32)->default('recorded');
+            $table->unsignedBigInteger('reviewed_by_portal_user_id')->nullable();
+            $table->timestamp('reviewed_at')->nullable();
+            $table->text('review_note')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_restock_requests', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->string('status', 32)->default('draft');
+            $table->unsignedBigInteger('requested_by_user_id')->nullable();
+            $table->timestamp('submitted_at')->nullable();
+            $table->unsignedBigInteger('reviewed_by_user_id')->nullable();
+            $table->timestamp('reviewed_at')->nullable();
+            $table->text('review_note')->nullable();
+            $table->timestamp('fulfilled_at')->nullable();
+            $table->text('note')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_restock_request_lines', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('restock_request_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->decimal('quantity_requested', 12, 3);
+            $table->decimal('quantity_allocated', 12, 3)->default(0);
+            $table->string('unit_at_set', 16);
+            $table->text('note')->nullable();
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->unique(['restock_request_id', 'ingredient_id'], 'pos_rrl_request_ingredient_unique');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_restock_request_lines');
+        Schema::dropIfExists('pos_restock_requests');
+        Schema::dropIfExists('pos_expenses');
         Schema::dropIfExists('pos_customer_vehicle_plates');
         Schema::dropIfExists('pos_staff');
         Schema::dropIfExists('pos_shifts');

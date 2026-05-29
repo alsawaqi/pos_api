@@ -35,7 +35,7 @@ class DeviceSyncPushTest extends TestCase
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
-    private function event(string $type = 'restock.request', array $overrides = []): array
+    private function event(string $type = 'donation.record', array $overrides = []): array
     {
         return array_merge([
             'client_event_id' => (string) Str::uuid(),
@@ -65,9 +65,10 @@ class DeviceSyncPushTest extends TestCase
     public function test_push_ingests_new_events_and_acks_each(): void
     {
         $device = $this->assignedDevice('mdev_sync');
-        // Use UNHANDLED event types here so this stays a pure ingestion/dedup
-        // test — order.* now gets processed (see DeviceSyncOrderTest).
-        $order = $this->event('expense.log', ['payload' => ['order' => ['total_baisas' => 1500]]]);
+        // Use the UNHANDLED event type (donation.record — deferred) so this
+        // stays a pure ingestion/dedup test; order.*/shift.*/expense.log/
+        // restock.request all get processed by their own handlers now.
+        $order = $this->event('donation.record', ['payload' => ['order' => ['total_baisas' => 1500]]]);
         $shift = $this->event('donation.record');
 
         $res = $this->withToken('mdev_sync')
@@ -94,7 +95,7 @@ class DeviceSyncPushTest extends TestCase
         $this->assertDatabaseHas('pos_sync_events', [
             'client_event_id' => $order['client_event_id'],
             'device_id' => $device->id,
-            'event_type' => 'expense.log',
+            'event_type' => 'donation.record',
             'ack_status' => 'received',
         ]);
 
@@ -152,7 +153,7 @@ class DeviceSyncPushTest extends TestCase
         // 50 events queued 4 hours ago while the terminal was offline.
         $events = [];
         for ($i = 0; $i < 50; $i++) {
-            $events[] = $this->event('restock.request', [
+            $events[] = $this->event('donation.record', [
                 'client_timestamp' => now()->subHours(4)->toIso8601String(),
                 'payload' => ['seq' => $i],
             ]);

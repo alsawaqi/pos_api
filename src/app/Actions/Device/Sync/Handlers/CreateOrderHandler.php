@@ -9,8 +9,10 @@ use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\AddOn;
 use App\Models\Branch;
 use App\Models\Device;
+use App\Models\Discount;
 use App\Models\Ingredient;
 use App\Models\Order;
+use App\Models\OrderDiscount;
 use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
 use App\Models\Product;
@@ -68,7 +70,8 @@ class CreateOrderHandler implements SyncEventHandler
                 'note' => $order['note'] ?? null,
             ]);
 
-            foreach ($order['lines'] as $line) {
+            $itemIds = [];
+            foreach ($order['lines'] as $index => $line) {
                 $productId = (int) $line['product_id'];
                 $product = Product::find($productId);
 
@@ -84,6 +87,7 @@ class CreateOrderHandler implements SyncEventHandler
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $line['notes'] ?? null,
                 ]);
+                $itemIds[$index] = (int) $item->id;
 
                 foreach ($line['addons'] ?? [] as $addon) {
                     $addOnId = (int) $addon['add_on_id'];
@@ -98,8 +102,54 @@ class CreateOrderHandler implements SyncEventHandler
                 }
             }
 
-            return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created'];
+            $discountCount = $this->writeDiscounts($order, $model, $device, $itemIds);
+
+            return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created', 'discounts' => $discountCount];
         });
+    }
+
+    /**
+     * Persist the discount-application records (§5.11.7 by-rule report data
+     * path). Pricing is snapshot-authoritative — the device already evaluated
+     * the rules, so this records what it applied rather than re-deriving it. A
+     * discount_id that resolves to a live company rule snapshots the catalogue
+     * name/type; otherwise the payload values stand (a manual / ad-hoc discount
+     * carries no discount_id). A line_index ties the row to that line's item;
+     * absent → an order-level discount.
+     *
+     * @param  array<string, mixed>  $order
+     * @param  array<int, int>  $itemIds  line index → created order_item id
+     */
+    private function writeDiscounts(array $order, Order $model, Device $device, array $itemIds): int
+    {
+        $discounts = $order['discounts'] ?? [];
+        if (! is_array($discounts) || $discounts === []) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ($discounts as $d) {
+            $discountId = isset($d['discount_id']) ? (int) $d['discount_id'] : null;
+            $rule = $discountId !== null
+                ? Discount::query()->where('company_id', $device->company_id)->find($discountId)
+                : null;
+            $lineIndex = isset($d['line_index']) ? (int) $d['line_index'] : null;
+
+            OrderDiscount::create([
+                'company_id' => $device->company_id,
+                'branch_id' => $device->branch_id,
+                'order_id' => $model->id,
+                'order_item_id' => $lineIndex !== null ? ($itemIds[$lineIndex] ?? null) : null,
+                'discount_id' => $rule?->id ?? $discountId,
+                'name_snapshot' => $rule?->name ?? (string) $d['name'],
+                'amount_type_snapshot' => $rule?->amount_type ?? ($d['amount_type'] ?? null),
+                'amount' => Money::toOmr((int) $d['amount_baisas']),
+                'applied_at' => $model->opened_at,
+            ]);
+            $count++;
+        }
+
+        return $count;
     }
 
     /**
@@ -141,6 +191,12 @@ class CreateOrderHandler implements SyncEventHandler
             'lines.*.qty' => ['required', 'numeric', 'gt:0'],
             'lines.*.unit_price_baisas' => ['required', 'integer', 'min:0'],
             'lines.*.line_total_baisas' => ['required', 'integer', 'min:0'],
+            'discounts' => ['sometimes', 'array'],
+            'discounts.*.discount_id' => ['nullable', 'integer'],
+            'discounts.*.name' => ['required', 'string'],
+            'discounts.*.amount_type' => ['nullable', 'string'],
+            'discounts.*.amount_baisas' => ['required', 'integer', 'min:0'],
+            'discounts.*.line_index' => ['nullable', 'integer', 'min:0'],
         ]);
 
         if ($validator->fails()) {

@@ -348,6 +348,21 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        // ---- Phase 8.10 discount-application records (order.create writes here) ----
+        Schema::create('pos_order_discounts', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('order_item_id')->nullable(); // null = order-level
+            $table->unsignedBigInteger('discount_id')->nullable();   // null = manual / ad-hoc
+            $table->string('name_snapshot');
+            $table->string('amount_type_snapshot', 32)->nullable();
+            $table->decimal('amount', 12, 3)->default(0);
+            $table->timestamp('applied_at')->nullable();
+            $table->timestamps();
+        });
+
         Schema::create('pos_payments', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();
@@ -529,6 +544,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_loyalty_accounts');
         Schema::dropIfExists('pos_stock_movements');
         Schema::dropIfExists('pos_payments');
+        Schema::dropIfExists('pos_order_discounts');
         Schema::dropIfExists('pos_order_item_addons');
         Schema::dropIfExists('pos_order_items');
         Schema::dropIfExists('pos_orders');

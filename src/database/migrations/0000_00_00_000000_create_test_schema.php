@@ -380,10 +380,44 @@ return new class extends Migration
             $table->timestamp('occurred_at')->useCurrent();
             $table->timestamp('created_at')->useCurrent();
         });
+
+        // ---- Phase 8.4 loyalty slice (earn-at-sale writes) ----
+
+        Schema::create('pos_loyalty_accounts', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('customer_id');
+            $table->unsignedBigInteger('loyalty_rule_id');
+            $table->integer('stamp_count')->default(0);
+            $table->integer('point_balance')->default(0);
+            $table->timestamp('last_activity_at')->nullable();
+            $table->timestamps();
+            $table->unique(['customer_id', 'loyalty_rule_id'], 'pos_loyalty_accounts_customer_rule_unique');
+        });
+
+        Schema::create('pos_loyalty_transactions', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('loyalty_account_id');
+            $table->string('type', 32);
+            $table->integer('points_delta')->default(0);
+            $table->integer('stamps_delta')->default(0);
+            $table->integer('balance_after_points')->default(0);
+            $table->integer('balance_after_stamps')->default(0);
+            $table->text('reason')->nullable();
+            $table->unsignedBigInteger('order_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_user_id')->nullable();
+            $table->timestamp('occurred_at')->useCurrent();
+            $table->timestamp('created_at')->useCurrent();
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_loyalty_transactions');
+        Schema::dropIfExists('pos_loyalty_accounts');
         Schema::dropIfExists('pos_stock_movements');
         Schema::dropIfExists('pos_payments');
         Schema::dropIfExists('pos_order_item_addons');

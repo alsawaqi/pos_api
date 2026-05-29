@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Device;
@@ -31,6 +32,7 @@ class PayOrderHandler implements SyncEventHandler
 {
     public function __construct(
         private readonly ConsumeInventoryAction $inventory,
+        private readonly ApplyLoyaltyEarnAction $loyalty,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -60,8 +62,9 @@ class PayOrderHandler implements SyncEventHandler
         }
 
         $capturedAt = isset($payload['paid_at']) ? Carbon::parse((string) $payload['paid_at']) : now();
+        $loyaltyRuleId = isset($payload['loyalty_rule_id']) ? (int) $payload['loyalty_rule_id'] : null;
 
-        return DB::transaction(function () use ($order, $payments, $capturedAt): array {
+        return DB::transaction(function () use ($order, $payments, $capturedAt, $loyaltyRuleId): array {
             $paymentIds = [];
             $tenderedBaisas = 0;
 
@@ -100,11 +103,16 @@ class PayOrderHandler implements SyncEventHandler
 
             $movements = $this->inventory->consume($order);
 
+            // Loyalty earn (server-authoritative, §9.1.6): only when the
+            // cashier picked a rule for a known customer.
+            $loyaltyTxn = $loyaltyRuleId !== null ? $this->loyalty->apply($order, $loyaltyRuleId) : null;
+
             return [
                 'order_id' => (int) $order->id,
                 'status' => 'paid',
                 'payment_ids' => $paymentIds,
                 'movements' => $movements,
+                'loyalty_transaction_id' => $loyaltyTxn?->id,
             ];
         });
     }

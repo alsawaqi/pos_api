@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
+use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use Illuminate\Support\Facades\Route;
 
@@ -33,5 +34,9 @@ Route::prefix('v1')->group(function (): void {
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
+
+        // Config bundle (§11.4): full snapshot + incremental delta.
+        Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');
+        Route::get('device/config/delta', [DeviceConfigController::class, 'delta'])->name('device.config.delta');
     });
 });

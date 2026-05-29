@@ -432,10 +432,32 @@ return new class extends Migration
             $table->text('note')->nullable();
             $table->timestamps();
         });
+
+        // ---- Phase 8.6 POS staff (PIN login) ----
+
+        Schema::create('pos_staff', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->string('name');
+            $table->text('phone')->nullable();
+            $table->string('staff_code', 64)->nullable();
+            $table->string('pin_hash');
+            $table->string('position', 32);
+            $table->string('status', 32)->default('active');
+            $table->date('hired_at')->nullable();
+            $table->timestamp('terminated_at')->nullable();
+            $table->timestamp('last_login_at')->nullable();
+            $table->unsignedBigInteger('created_by_user_id')->nullable();
+            $table->timestamps();
+            $table->softDeletes();
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_staff');
         Schema::dropIfExists('pos_shifts');
         Schema::dropIfExists('pos_loyalty_transactions');
         Schema::dropIfExists('pos_loyalty_accounts');

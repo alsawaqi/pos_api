@@ -53,5 +53,11 @@ class AppServiceProvider extends ServiceProvider
 
         RateLimiter::for('device-api', fn (Request $request) => Limit::perMinute(120)
             ->by('device:'.(string) ($request->user()?->getAuthIdentifier() ?? $request->ip())));
+
+        // POS staff PIN login is a 6-digit brute-force surface — throttle it
+        // hard per-device (the device is already resolved by the guard before
+        // this limiter runs), independent of the generous device-api budget.
+        RateLimiter::for('pos-login', fn (Request $request) => Limit::perMinute(10)
+            ->by('pos-login:'.(string) ($request->user()?->getAuthIdentifier() ?? $request->ip())));
     }
 }

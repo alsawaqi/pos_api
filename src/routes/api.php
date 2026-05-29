@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
+use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
@@ -34,6 +35,12 @@ Route::prefix('v1')->group(function (): void {
 
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
+        // POS staff PIN login on a paired device (§11.1). Extra-throttled
+        // (throttle:pos-login) as the PIN brute-force surface.
+        Route::post('auth/pos/login', StaffPosLoginController::class)
+            ->middleware('throttle:pos-login')
+            ->name('pos.login');
+
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
 
         // Config bundle (§11.4): full snapshot + incremental delta.

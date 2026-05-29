@@ -35,7 +35,7 @@ class DeviceSyncPushTest extends TestCase
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
-    private function event(string $type = 'order.create', array $overrides = []): array
+    private function event(string $type = 'shift.open', array $overrides = []): array
     {
         return array_merge([
             'client_event_id' => (string) Str::uuid(),
@@ -65,7 +65,9 @@ class DeviceSyncPushTest extends TestCase
     public function test_push_ingests_new_events_and_acks_each(): void
     {
         $device = $this->assignedDevice('mdev_sync');
-        $order = $this->event('order.create', ['payload' => ['order' => ['total_baisas' => 1500]]]);
+        // Use UNHANDLED event types here so this stays a pure ingestion/dedup
+        // test — order.* now gets processed (see DeviceSyncOrderTest).
+        $order = $this->event('expense.log', ['payload' => ['order' => ['total_baisas' => 1500]]]);
         $shift = $this->event('shift.open');
 
         $res = $this->withToken('mdev_sync')
@@ -92,7 +94,7 @@ class DeviceSyncPushTest extends TestCase
         $this->assertDatabaseHas('pos_sync_events', [
             'client_event_id' => $order['client_event_id'],
             'device_id' => $device->id,
-            'event_type' => 'order.create',
+            'event_type' => 'expense.log',
             'ack_status' => 'received',
         ]);
 
@@ -150,7 +152,7 @@ class DeviceSyncPushTest extends TestCase
         // 50 events queued 4 hours ago while the terminal was offline.
         $events = [];
         for ($i = 0; $i < 50; $i++) {
-            $events[] = $this->event('order.create', [
+            $events[] = $this->event('shift.open', [
                 'client_timestamp' => now()->subHours(4)->toIso8601String(),
                 'payload' => ['seq' => $i],
             ]);

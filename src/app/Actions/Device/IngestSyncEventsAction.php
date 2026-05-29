@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device;
 
+use App\Actions\Device\Sync\SyncEventDispatcher;
 use App\Models\Device;
 use App\Models\SyncEvent;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -33,6 +34,10 @@ use Illuminate\Support\Carbon;
  */
 class IngestSyncEventsAction
 {
+    public function __construct(
+        private readonly SyncEventDispatcher $dispatcher,
+    ) {}
+
     /**
      * @param  list<array{client_event_id: string, event_type: string, client_timestamp: string, payload: array<string, mixed>}>  $events
      * @return array{data: array<string, mixed>, meta: array<string, mixed>}
@@ -65,6 +70,11 @@ class IngestSyncEventsAction
                     'server_received_at' => now(),
                     'ack_status' => SyncEvent::STATUS_RECEIVED,
                 ]);
+
+                // 8.3: process the event inline (order.create/pay/void) so
+                // the ACK carries the settled state + server refs. Unknown
+                // types stay `received`; duplicates never reach here.
+                $this->dispatcher->dispatch($row, $device);
 
                 $accepted++;
                 $results[] = $this->ack($row, duplicate: false);

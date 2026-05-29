@@ -296,10 +296,99 @@ return new class extends Migration
             $table->timestamps();
             $table->softDeletes();
         });
+
+        // ---- Phase 8.3 order-lifecycle slice (sync ingestion writes here) ----
+
+        Schema::create('pos_orders', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->unsignedBigInteger('customer_id')->nullable();
+            $table->unsignedBigInteger('table_id')->nullable();
+            $table->string('order_type', 32);
+            $table->string('status', 32)->default('open');
+            $table->string('source', 32);
+            $table->string('plate_number', 32)->nullable();
+            $table->decimal('subtotal', 12, 3)->default(0);
+            $table->decimal('discount_total', 12, 3)->default(0);
+            $table->decimal('tax_total', 12, 3)->default(0);
+            $table->decimal('grand_total', 12, 3)->default(0);
+            $table->timestamp('opened_at')->useCurrent();
+            $table->timestamp('closed_at')->nullable();
+            $table->string('client_event_id', 64)->nullable()->unique();
+            $table->text('note')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_order_items', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('product_id')->nullable();
+            $table->string('product_name_snapshot');
+            $table->decimal('qty', 12, 3)->default('1.000');
+            $table->decimal('unit_price_snapshot', 12, 3);
+            $table->decimal('line_discount', 12, 3)->default(0);
+            $table->decimal('line_total', 12, 3);
+            $table->text('recipe_snapshot_json')->nullable();
+            $table->string('status', 32)->default('open');
+            $table->text('notes')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_order_item_addons', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('order_item_id');
+            $table->unsignedBigInteger('add_on_id')->nullable();
+            $table->string('add_on_name_snapshot');
+            $table->decimal('price_delta_snapshot', 12, 3);
+            $table->text('ingredient_snapshot_json')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_payments', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('order_id');
+            $table->string('method', 32);
+            $table->decimal('amount', 12, 3);
+            $table->decimal('change_given', 12, 3)->nullable();
+            $table->string('softpos_reference', 64)->nullable();
+            $table->string('softpos_auth_code', 32)->nullable();
+            $table->string('status', 32)->default('success');
+            $table->boolean('pending_reconciliation')->default(false);
+            $table->unsignedBigInteger('reconciled_by_admin_id')->nullable();
+            $table->timestamp('reconciled_at')->nullable();
+            $table->timestamp('captured_at')->useCurrent();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_stock_movements', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->string('movement_type', 32);
+            $table->decimal('quantity', 12, 3);
+            $table->decimal('unit_cost_at_time', 12, 3)->default(0);
+            $table->string('reference_type')->nullable();
+            $table->unsignedBigInteger('reference_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_user_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_pos_staff_id')->nullable();
+            $table->text('note')->nullable();
+            $table->timestamp('occurred_at')->useCurrent();
+            $table->timestamp('created_at')->useCurrent();
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_stock_movements');
+        Schema::dropIfExists('pos_payments');
+        Schema::dropIfExists('pos_order_item_addons');
+        Schema::dropIfExists('pos_order_items');
+        Schema::dropIfExists('pos_orders');
         Schema::dropIfExists('pos_customers');
         Schema::dropIfExists('pos_loyalty_rules');
         Schema::dropIfExists('pos_discount_targets');

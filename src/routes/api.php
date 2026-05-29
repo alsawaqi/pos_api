@@ -25,10 +25,13 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->group(function (): void {
     // Pairing is unauthenticated by the device guard (the device has no
     // token yet) — it authenticates via the one-time activation token.
-    Route::post('auth/device/pair', DevicePairController::class)->name('device.pair');
+    // Throttled hard (per-IP + per-kiosk) as the brute-force surface.
+    Route::post('auth/device/pair', DevicePairController::class)
+        ->middleware('throttle:device-pair')
+        ->name('device.pair');
 
-    // Everything below requires a valid device token.
-    Route::middleware('auth:pos_device')->group(function (): void {
+    // Everything below requires a valid device token, throttled per-device.
+    Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
     });
 });

@@ -9,6 +9,8 @@ use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -42,6 +44,13 @@ Route::prefix('v1')->group(function (): void {
         Route::post('auth/pos/login', StaffPosLoginController::class)
             ->middleware('throttle:pos-login')
             ->name('pos.login');
+
+        // §11.5 — broadcast channel authorization, on-contract at
+        // /api/v1/broadcasting/auth. Broadcast::auth() runs the channel
+        // callbacks in routes/channels.php against the device the guard already
+        // resolved, so a device can only subscribe to its own scope.
+        Route::post('broadcasting/auth', fn (Request $request) => Broadcast::auth($request))
+            ->name('broadcasting.auth');
 
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
 

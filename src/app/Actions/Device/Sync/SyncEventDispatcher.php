@@ -12,6 +12,7 @@ use App\Actions\Device\Sync\Handlers\OpenShiftHandler;
 use App\Actions\Device\Sync\Handlers\PayOrderHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
+use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
 use App\Models\SyncEvent;
 use Throwable;
@@ -70,6 +71,24 @@ class SyncEventDispatcher
                 'processed_at' => now(),
                 'result_json' => ['error' => $e->getMessage()],
             ]);
+
+            return;
+        }
+
+        // §11.5 — real-time push to the branch's other terminals (a second
+        // register, a handheld, the kitchen display) the moment the event
+        // settles. The event is already durably `processed` and the device has
+        // its ACK, so a live-push failure (Reverb down) must NOT fail it: this
+        // is best-effort and swallowed, and sits OUTSIDE the handler try/catch
+        // above (which would otherwise re-stamp a good event `failed`).
+        //
+        // event() routes through the framework dispatcher — it still broadcasts
+        // the ShouldBroadcastNow event in prod, and stays assertable under
+        // Event::fake() in tests.
+        try {
+            event(DeviceSyncBroadcast::fromProcessed($event, $device));
+        } catch (Throwable) {
+            // best-effort; the domain event stands regardless of push delivery
         }
     }
 }

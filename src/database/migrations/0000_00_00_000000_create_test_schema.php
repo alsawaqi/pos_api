@@ -47,6 +47,9 @@ return new class extends Migration
             $table->decimal('last_lng', 10, 7)->nullable();
             $table->smallInteger('last_battery')->nullable();
             $table->json('metadata')->nullable();
+            $table->string('terminal_id', 64)->nullable();
+            $table->unsignedBigInteger('commission_profile_id')->nullable();
+            $table->unsignedBigInteger('bank_id')->nullable();
             $table->timestamps();
             $table->softDeletes();
         });
@@ -92,6 +95,10 @@ return new class extends Migration
             $table->decimal('latitude', 10, 7)->nullable();
             $table->decimal('longitude', 10, 7)->nullable();
             $table->unsignedSmallInteger('geofence_radius_m')->default(500);
+            $table->unsignedBigInteger('country_id')->nullable();
+            $table->unsignedBigInteger('region_id')->nullable();
+            $table->unsignedBigInteger('district_id')->nullable();
+            $table->unsignedBigInteger('city_id')->nullable();
             $table->json('opening_hours_json')->nullable();
             $table->string('default_order_type', 16)->default('dine_in');
             $table->json('settings')->nullable();
@@ -377,6 +384,14 @@ return new class extends Migration
             $table->unsignedBigInteger('reconciled_by_admin_id')->nullable();
             $table->timestamp('reconciled_at')->nullable();
             $table->timestamp('captured_at')->useCurrent();
+            $table->json('bank_response')->nullable();
+            $table->string('terminal_id')->nullable();
+            $table->unsignedBigInteger('bank_id')->nullable();
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->decimal('latitude', 10, 7)->nullable();
+            $table->decimal('longitude', 10, 7)->nullable();
+            $table->decimal('roundup_amount', 12, 3)->nullable();
+            $table->unsignedBigInteger('charity_transaction_id')->nullable();
             $table->timestamps();
         });
 
@@ -530,10 +545,38 @@ return new class extends Migration
             $table->timestamps();
             $table->unique(['restock_request_id', 'ingredient_id'], 'pos_rrl_request_ingredient_unique');
         });
+
+        // ---- Phase 8 round-up donations (donation.record sync target) ----
+        Schema::create('pos_roundup_donations', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('device_id');
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('payment_id');
+            $table->unsignedBigInteger('bank_id')->nullable();
+            $table->string('terminal_id')->nullable();
+            $table->unsignedBigInteger('commission_profile_id')->nullable();
+            $table->decimal('amount', 12, 3);
+            $table->json('bank_response')->nullable();
+            $table->string('status', 30)->default('pending');
+            $table->string('source', 30)->default('pos_roundup');
+            $table->unsignedBigInteger('country_id')->nullable();
+            $table->unsignedBigInteger('region_id')->nullable();
+            $table->unsignedBigInteger('district_id')->nullable();
+            $table->unsignedBigInteger('city_id')->nullable();
+            $table->decimal('latitude', 10, 7)->nullable();
+            $table->decimal('longitude', 10, 7)->nullable();
+            $table->string('client_event_id', 64)->nullable()->unique();
+            $table->timestamp('occurred_at')->nullable();
+            $table->timestamps();
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_roundup_donations');
         Schema::dropIfExists('pos_restock_request_lines');
         Schema::dropIfExists('pos_restock_requests');
         Schema::dropIfExists('pos_expenses');

@@ -121,10 +121,10 @@ class DeviceSyncBroadcastTest extends TestCase
     {
         $this->device();
 
-        // donation.record has no handler → stays `received`, no broadcast.
+        // sync.noop has no handler → stays `received`, no broadcast.
         $this->push([
             'client_event_id' => (string) Str::uuid(),
-            'event_type' => 'donation.record',
+            'event_type' => 'sync.noop',
             'client_timestamp' => now()->toIso8601String(),
             'payload' => ['amount_baisas' => 500],
         ]);

@@ -70,6 +70,11 @@ class SyncEvent extends Model
         'restock.request',
         'shift.open',
         'shift.close',
+        // Reserved no-op: ingested + ACKed but has NO domain handler, so it
+        // settles as 'received'. Lets the ingestion pipe be exercised in
+        // isolation and stays a stable placeholder as handlers are added
+        // (it replaced donation.record once that got a handler).
+        'sync.noop',
     ];
 
     /**

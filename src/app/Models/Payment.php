@@ -51,6 +51,8 @@ class Payment extends Model
             'pending_reconciliation' => 'boolean',
             'captured_at' => 'datetime',
             'reconciled_at' => 'datetime',
+            'roundup_amount' => 'decimal:3',
+            'charity_transaction_id' => 'integer',
         ];
     }
 

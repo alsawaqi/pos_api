@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync;
 use App\Actions\Device\IngestSyncEventsAction;
 use App\Actions\Device\Sync\Handlers\CloseShiftHandler;
 use App\Actions\Device\Sync\Handlers\CreateOrderHandler;
+use App\Actions\Device\Sync\Handlers\DonationRecordHandler;
 use App\Actions\Device\Sync\Handlers\ExpenseLogHandler;
 use App\Actions\Device\Sync\Handlers\OpenShiftHandler;
 use App\Actions\Device\Sync\Handlers\PayOrderHandler;
@@ -39,6 +40,7 @@ class SyncEventDispatcher
         private readonly CloseShiftHandler $closeShift,
         private readonly ExpenseLogHandler $expenseLog,
         private readonly RestockRequestHandler $restockRequest,
+        private readonly DonationRecordHandler $donationRecord,
     ) {}
 
     public function dispatch(SyncEvent $event, Device $device): void
@@ -51,6 +53,7 @@ class SyncEventDispatcher
             'shift.close' => $this->closeShift,
             'expense.log' => $this->expenseLog,
             'restock.request' => $this->restockRequest,
+            'donation.record' => $this->donationRecord,
             default => null,
         };
 

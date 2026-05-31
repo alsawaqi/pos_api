@@ -35,7 +35,7 @@ class DeviceSyncPushTest extends TestCase
      * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
-    private function event(string $type = 'donation.record', array $overrides = []): array
+    private function event(string $type = 'sync.noop', array $overrides = []): array
     {
         return array_merge([
             'client_event_id' => (string) Str::uuid(),
@@ -65,11 +65,11 @@ class DeviceSyncPushTest extends TestCase
     public function test_push_ingests_new_events_and_acks_each(): void
     {
         $device = $this->assignedDevice('mdev_sync');
-        // Use the UNHANDLED event type (donation.record — deferred) so this
+        // Use the UNHANDLED event type (sync.noop — deferred) so this
         // stays a pure ingestion/dedup test; order.*/shift.*/expense.log/
         // restock.request all get processed by their own handlers now.
-        $order = $this->event('donation.record', ['payload' => ['order' => ['total_baisas' => 1500]]]);
-        $shift = $this->event('donation.record');
+        $order = $this->event('sync.noop', ['payload' => ['order' => ['total_baisas' => 1500]]]);
+        $shift = $this->event('sync.noop');
 
         $res = $this->withToken('mdev_sync')
             ->postJson('/api/v1/device/sync/push', ['events' => [$order, $shift]])
@@ -95,7 +95,7 @@ class DeviceSyncPushTest extends TestCase
         $this->assertDatabaseHas('pos_sync_events', [
             'client_event_id' => $order['client_event_id'],
             'device_id' => $device->id,
-            'event_type' => 'donation.record',
+            'event_type' => 'sync.noop',
             'ack_status' => 'received',
         ]);
 
@@ -153,7 +153,7 @@ class DeviceSyncPushTest extends TestCase
         // 50 events queued 4 hours ago while the terminal was offline.
         $events = [];
         for ($i = 0; $i < 50; $i++) {
-            $events[] = $this->event('donation.record', [
+            $events[] = $this->event('sync.noop', [
                 'client_timestamp' => now()->subHours(4)->toIso8601String(),
                 'payload' => ['seq' => $i],
             ]);

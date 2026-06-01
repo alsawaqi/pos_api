@@ -54,6 +54,11 @@ class CreateOrderHandler implements SyncEventHandler
                 'company_id' => $device->company_id,
                 'branch_id' => $device->branch_id,
                 'device_id' => $device->getKey(),
+                // The device's GPS at order time (also used for the
+                // geofence check above). Persisted so reports + support
+                // see where the order was actually taken.
+                'latitude' => isset($order['gps']['lat']) ? (float) $order['gps']['lat'] : null,
+                'longitude' => isset($order['gps']['lng']) ? (float) $order['gps']['lng'] : null,
                 'staff_id' => $order['staff_id'] ?? null,
                 'customer_id' => $order['customer_id'] ?? null,
                 'table_id' => $order['table_id'] ?? null,

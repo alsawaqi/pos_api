@@ -125,4 +125,32 @@ class DeviceGeofenceTest extends TestCase
         $this->assertSame('processed', $res->json('data.results.0.status'));
         $this->assertNotNull(Order::firstWhere('uuid', $uuid));
     }
+
+    public function test_an_order_persists_the_device_gps(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        $uuid = (string) Str::uuid();
+
+        $this->push($uuid, ['lat' => 23.5880, 'lng' => 58.3829])->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $this->assertNotNull($order);
+        $this->assertSame('23.5880000', (string) $order->latitude);
+        $this->assertSame('58.3829000', (string) $order->longitude);
+    }
+
+    public function test_an_order_without_gps_has_null_coordinates(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        $uuid = (string) Str::uuid();
+
+        $this->push($uuid, null)->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $this->assertNotNull($order);
+        $this->assertNull($order->latitude);
+        $this->assertNull($order->longitude);
+    }
 }

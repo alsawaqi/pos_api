@@ -52,6 +52,8 @@ class Order extends Model
             'discount_total' => 'decimal:3',
             'tax_total' => 'decimal:3',
             'grand_total' => 'decimal:3',
+            'latitude' => 'decimal:7',
+            'longitude' => 'decimal:7',
             'opened_at' => 'datetime',
             'closed_at' => 'datetime',
         ];

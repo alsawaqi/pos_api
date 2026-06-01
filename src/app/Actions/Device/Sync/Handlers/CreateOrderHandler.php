@@ -223,15 +223,21 @@ class CreateOrderHandler implements SyncEventHandler
      */
     private function enforceGeofence(array $order, Device $device): void
     {
-        $gps = $order['gps'] ?? null;
-        if (! is_array($gps) || ! isset($gps['lat'], $gps['lng'])) {
+        $branch = Branch::find($device->branch_id);
+        // No branch row, or the branch has no fence configured -> nothing to
+        // enforce.
+        if ($branch === null || ! $this->geofence->isFenced($branch)) {
             return;
         }
 
-        $branch = Branch::find($device->branch_id);
-        if ($branch !== null) {
-            $this->geofence->assertWithin($branch, (float) $gps['lat'], (float) $gps['lng']);
+        $gps = $order['gps'] ?? null;
+        if (! is_array($gps) || ! isset($gps['lat'], $gps['lng'])) {
+            // Fail-closed: a fenced branch REQUIRES a GPS fix so a device
+            // cannot bypass the fence by simply omitting its location.
+            throw new RuntimeException('order rejected: a GPS fix is required at this geofenced branch');
         }
+
+        $this->geofence->assertWithin($branch, (float) $gps['lat'], (float) $gps['lng']);
     }
 
     /**

@@ -30,6 +30,12 @@ final class GeofenceGuard
 
     private const DEFAULT_RADIUS_M = 500;
 
+    /** True when the branch has coordinates configured (an enforceable fence). */
+    public function isFenced(Branch $branch): bool
+    {
+        return $branch->latitude !== null && $branch->longitude !== null;
+    }
+
     public function assertWithin(Branch $branch, float $lat, float $lng): void
     {
         if ($branch->latitude === null || $branch->longitude === null) {

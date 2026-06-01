@@ -81,6 +81,28 @@ class DeviceGeofenceTest extends TestCase
         return $this->withToken('mdev_geo')->postJson('/api/v1/device/sync/push', ['events' => [$this->createEvent($uuid, $gps)]]);
     }
 
+    /**
+     * @param  array{lat: float, lng: float}|null  $gps
+     */
+    private function pushPay(string $orderUuid, ?array $gps): TestResponse
+    {
+        $payload = [
+            'order_uuid' => $orderUuid,
+            'paid_at' => now()->toIso8601String(),
+            'payments' => [['method' => 'cash', 'amount_baisas' => 3000, 'change_given_baisas' => 0]],
+        ];
+        if ($gps !== null) {
+            $payload['gps'] = $gps;
+        }
+
+        return $this->withToken('mdev_geo')->postJson('/api/v1/device/sync/push', ['events' => [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.pay',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => $payload,
+        ]]]);
+    }
+
     public function test_an_order_inside_the_geofence_is_accepted(): void
     {
         $this->device();
@@ -107,16 +129,19 @@ class DeviceGeofenceTest extends TestCase
         $this->assertNull(Order::firstWhere('uuid', $uuid)); // not created
     }
 
-    public function test_an_order_without_gps_skips_enforcement(): void
+    public function test_an_order_without_gps_at_a_fenced_branch_is_rejected(): void
     {
         $this->device();
         $this->seedBranch();
         $uuid = (string) Str::uuid();
 
+        // Fail-closed: a fenced branch REQUIRES a GPS fix; omitting it no
+        // longer slips the order through.
         $res = $this->push($uuid, null)->assertOk();
 
-        $this->assertSame('processed', $res->json('data.results.0.status'));
-        $this->assertNotNull(Order::firstWhere('uuid', $uuid));
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('GPS', $res->json('data.results.0.result.error'));
+        $this->assertNull(Order::firstWhere('uuid', $uuid));
     }
 
     public function test_a_branch_without_coordinates_skips_enforcement(): void
@@ -146,10 +171,12 @@ class DeviceGeofenceTest extends TestCase
         $this->assertSame('58.3829000', (string) $order->longitude);
     }
 
-    public function test_an_order_without_gps_has_null_coordinates(): void
+    public function test_an_order_without_gps_at_an_unfenced_branch_has_null_coordinates(): void
     {
         $this->device();
-        $this->seedBranch();
+        // No coordinates = no fence -> a GPS-less order is still allowed,
+        // and persists null coordinates.
+        $this->seedBranch(['latitude' => null, 'longitude' => null]);
         $uuid = (string) Str::uuid();
 
         $this->push($uuid, null)->assertOk();
@@ -158,5 +185,47 @@ class DeviceGeofenceTest extends TestCase
         $this->assertNotNull($order);
         $this->assertNull($order->latitude);
         $this->assertNull($order->longitude);
+    }
+
+    public function test_pay_inside_the_fence_succeeds(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        $uuid = (string) Str::uuid();
+        $this->push($uuid, ['lat' => 23.5880, 'lng' => 58.3829])->assertOk();
+
+        $res = $this->pushPay($uuid, ['lat' => 23.5880, 'lng' => 58.3829])->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertSame('paid', Order::firstWhere('uuid', $uuid)->status);
+    }
+
+    public function test_pay_without_gps_at_a_fenced_branch_is_rejected(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        $uuid = (string) Str::uuid();
+        $this->push($uuid, ['lat' => 23.5880, 'lng' => 58.3829])->assertOk();
+
+        $res = $this->pushPay($uuid, null)->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('GPS', $res->json('data.results.0.result.error'));
+        $this->assertSame('open', Order::firstWhere('uuid', $uuid)->status); // not paid
+    }
+
+    public function test_pay_outside_the_fence_is_rejected(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        $uuid = (string) Str::uuid();
+        $this->push($uuid, ['lat' => 23.5880, 'lng' => 58.3829])->assertOk();
+
+        // ~2 km away at pay time -> rejected even though the order was created in-fence.
+        $res = $this->pushPay($uuid, ['lat' => 23.6050, 'lng' => 58.4000])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('geofence', $res->json('data.results.0.result.error'));
+        $this->assertSame('open', Order::firstWhere('uuid', $uuid)->status);
     }
 }

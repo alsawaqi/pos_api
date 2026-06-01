@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\Payment;
@@ -35,6 +37,7 @@ class PayOrderHandler implements SyncEventHandler
         private readonly ConsumeInventoryAction $inventory,
         private readonly ApplyLoyaltyEarnAction $loyalty,
         private readonly ApplyLoyaltyRedeemAction $loyaltyRedeem,
+        private readonly GeofenceGuard $geofence,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -62,6 +65,11 @@ class PayOrderHandler implements SyncEventHandler
         if ($order->status === Order::STATUS_VOID) {
             throw new RuntimeException('cannot pay a voided order: '.$orderUuid);
         }
+
+        // Geofence: a device must be inside its branch fence to take payment
+        // (fail-closed at a fenced branch), so it can't be carried away and
+        // keep settling sales.
+        $this->enforceGeofence($device, $payload);
 
         $capturedAt = isset($payload['paid_at']) ? Carbon::parse((string) $payload['paid_at']) : now();
         $loyaltyRuleId = isset($payload['loyalty_rule_id']) ? (int) $payload['loyalty_rule_id'] : null;
@@ -130,5 +138,26 @@ class PayOrderHandler implements SyncEventHandler
                 'loyalty_redeem_transaction_id' => $redeemTxn?->id,
             ];
         });
+    }
+
+    /**
+     * Fail-closed geofence for payment: at a fenced branch the device must
+     * supply a GPS fix inside the fence, else the payment is rejected.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function enforceGeofence(Device $device, array $payload): void
+    {
+        $branch = Branch::find($device->branch_id);
+        if ($branch === null || ! $this->geofence->isFenced($branch)) {
+            return;
+        }
+
+        $gps = $payload['gps'] ?? null;
+        if (! is_array($gps) || ! isset($gps['lat'], $gps['lng'])) {
+            throw new RuntimeException('payment rejected: a GPS fix is required at this geofenced branch');
+        }
+
+        $this->geofence->assertWithin($branch, (float) $gps['lat'], (float) $gps['lng']);
     }
 }

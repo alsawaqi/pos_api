@@ -14,7 +14,7 @@ use Illuminate\Support\Carbon;
  * Phase 8.2 — ingests a batch of device sync events into the
  * pos_sync_events ledger, idempotently, and ACKs each one.
  *
- * The contract is EXACTLY-ONCE settlement keyed on client_event_id:
+ * The contract is EXACTLY-ONCE settlement keyed on (device_id, client_event_id):
  *  - First time we see an id → insert a `received` row, ACK { duplicate:false }.
  *  - Any later push of the same id → no second row, ACK { duplicate:true }
  *    re-returning the ORIGINAL row's id / status / result.
@@ -23,7 +23,7 @@ use Illuminate\Support\Carbon;
  * its whole backlog (or push it twice) and have it settle once. Inserts are
  * independent (no outer transaction): one event never rolls back another, so
  * the per-event ACK the device gets is the durable truth for that event. The
- * UNIQUE column is the real guard — a concurrent batch that wins the insert
+ * composite (device_id, client_event_id) UNIQUE is the real guard — a concurrent batch that wins the insert
  * race surfaces here as a UniqueConstraintViolationException, which we treat
  * as the duplicate it is.
  *
@@ -50,6 +50,7 @@ class IngestSyncEventsAction
 
         foreach ($events as $event) {
             $existing = SyncEvent::query()
+                ->where('device_id', $device->getKey())
                 ->where('client_event_id', $event['client_event_id'])
                 ->first();
 
@@ -82,6 +83,7 @@ class IngestSyncEventsAction
                 // A concurrent push inserted this id between our SELECT and
                 // INSERT — re-read the winner and ACK it as the duplicate.
                 $row = SyncEvent::query()
+                    ->where('device_id', $device->getKey())
                     ->where('client_event_id', $event['client_event_id'])
                     ->firstOrFail();
 

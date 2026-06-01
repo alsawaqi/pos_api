@@ -67,8 +67,9 @@ return new class extends Migration
 
         Schema::create('pos_sync_events', function (Blueprint $table): void {
             $table->id();
-            $table->uuid('client_event_id')->unique();
+            $table->uuid('client_event_id');
             $table->unsignedBigInteger('device_id')->nullable();
+            $table->unique(['device_id', 'client_event_id']);
             $table->string('event_type', 64);
             // sqlite mirror — production is jsonb on Postgres.
             $table->text('payload_json');

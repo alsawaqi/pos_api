@@ -421,4 +421,28 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertSame('processed', $r['status']);
         $this->assertSame(5, (int) Order::firstWhere('uuid', $uuid)->customer_id);
     }
+
+    public function test_idempotency_is_scoped_per_device_not_globally(): void
+    {
+        $this->device('mdev_a', 100, 10);
+        Device::factory()->paired('mdev_b')->create(['company_id' => 200, 'branch_id' => 20]);
+        $noop = ['client_event_id' => (string) Str::uuid(), 'event_type' => 'sync.noop', 'client_timestamp' => now()->toIso8601String(), 'payload' => ['noop' => true]];
+
+        // Device A is first to use this client_event_id.
+        $a = $this->push('mdev_a', [$noop])->assertOk()->json('data.results.0');
+        $this->assertFalse($a['duplicate']);
+
+        // Device B (a DIFFERENT company) reusing the SAME id is NOT a duplicate —
+        // it must not be suppressed or leak A's ACK.
+        $this->app['auth']->forgetGuards();
+        $b = $this->push('mdev_b', [$noop])->assertOk()->json('data.results.0');
+        $this->assertFalse($b['duplicate']);
+        $this->assertDatabaseCount('pos_sync_events', 2);
+
+        // A replaying its OWN id still dedups (same device).
+        $this->app['auth']->forgetGuards();
+        $replay = $this->push('mdev_a', [$noop])->assertOk()->json('data.results.0');
+        $this->assertTrue($replay['duplicate']);
+        $this->assertDatabaseCount('pos_sync_events', 2);
+    }
 }

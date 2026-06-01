@@ -445,4 +445,58 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertTrue($replay['duplicate']);
         $this->assertDatabaseCount('pos_sync_events', 2);
     }
+
+    public function test_paying_a_unit_tracked_product_decrements_its_branch_stock(): void
+    {
+        $this->seedCatalogue();
+        $this->device(); // company 100 / branch 10
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => 20.000, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk(); // product 1, qty 2
+
+        // Not decremented at create.
+        $this->assertEqualsWithDelta(20.0, (float) DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'), 1e-9);
+
+        $this->push('mdev_ord', [$this->payEvent($uuid)])->assertOk();
+
+        // Decremented at pay: 20 - 2 = 18.
+        $this->assertEqualsWithDelta(18.0, (float) DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'), 1e-9);
+    }
+
+    public function test_voiding_a_paid_order_restores_branch_product_stock(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => 20.000, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk();
+        $this->push('mdev_ord', [$this->payEvent($uuid)])->assertOk();
+        $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
+
+        // Net zero: back to 20.
+        $this->assertEqualsWithDelta(20.0, (float) DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'), 1e-9);
+    }
+
+    public function test_an_untracked_product_is_unaffected_by_sales(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        // Product 1 has a row but NULL stock_qty = not unit-tracked.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => null, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk();
+        $this->push('mdev_ord', [$this->payEvent($uuid)])->assertOk();
+
+        // Still null — untracked products aren't decremented.
+        $this->assertNull(DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'));
+    }
 }

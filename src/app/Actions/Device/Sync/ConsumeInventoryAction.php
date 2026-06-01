@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync;
 
+use App\Models\BranchProduct;
 use App\Models\BranchStock;
 use App\Models\Order;
 use App\Models\StockMovement;
@@ -49,6 +50,12 @@ class ConsumeInventoryAction
 
         foreach ($order->items as $item) {
             $itemQty = (float) $item->qty;
+
+            // Per-branch product-unit stock (retail / finished goods): adjust
+            // the pos_branch_product.stock_qty counter when this product is
+            // unit-tracked at the order's branch. Independent of the recipe
+            // ingredient depletion below; NULL/absent = untracked -> no-op.
+            $this->moveProductStock($branchId, (int) $item->product_id, $sign * $itemQty);
 
             foreach ((array) ($item->recipe_snapshot_json ?? []) as $ingredient) {
                 $count += $this->move(
@@ -112,5 +119,31 @@ class ConsumeInventoryAction
         $stock->save();
 
         return 1;
+    }
+
+    /**
+     * Adjust a product's per-branch unit stock. Only unit-tracked products
+     * (a pos_branch_product row with a non-null stock_qty) move; untracked
+     * products (NULL stock_qty, or no row) are unlimited / recipe-depleted
+     * and skipped. Negative stock is allowed (mirrors the ingredient policy:
+     * an oversell surfaces later in the inventory report).
+     */
+    private function moveProductStock(int $branchId, int $productId, float $qty): void
+    {
+        if ($qty === 0.0) {
+            return;
+        }
+
+        $row = BranchProduct::query()
+            ->where('branch_id', $branchId)
+            ->where('product_id', $productId)
+            ->first();
+
+        if ($row === null || $row->stock_qty === null) {
+            return;
+        }
+
+        $row->stock_qty = (float) $row->stock_qty + $qty;
+        $row->save();
     }
 }

@@ -242,6 +242,16 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        Schema::create('pos_branch_product', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('product_id');
+            $table->boolean('is_available')->default(true);
+            $table->decimal('stock_qty', 12, 3)->nullable();
+            $table->timestamps();
+            $table->unique(['branch_id', 'product_id']);
+        });
+
         Schema::create('pos_branch_stock', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('branch_id');

@@ -24,7 +24,8 @@ use Illuminate\Support\Facades\DB;
 /**
  * Phase 8.1 — assembles the device config bundle: everything a terminal
  * caches to render the POS and ring a sale offline, tenant-scoped to the
- * device's company (catalogue) and branch (structure + stock).
+ * device's company (catalogue) and branch (structure, per-branch product
+ * availability + stock).
  *
  * Two modes:
  *  - FULL  ($since === null): every active row.
@@ -73,8 +74,31 @@ class BuildDeviceConfigAction
             $since
         )->get();
 
+        // Per-branch availability + unit stock for THIS branch. A product is
+        // shown to the device when it's assigned-and-available at this branch,
+        // OR not assigned to any branch at all (default: available everywhere,
+        // which keeps pre-feature catalogues working). pos_branch_product also
+        // carries the per-branch unit stock attached to each product below.
+        $branchProductByProduct = DB::table('pos_branch_product')
+            ->where('branch_id', $branchId)
+            ->get()
+            ->keyBy('product_id');
+
         $products = $this->changed(
-            Product::query()->where('company_id', $companyId)->orderBy('display_order'),
+            Product::query()
+                ->where('company_id', $companyId)
+                ->where(function (Builder $q) use ($branchId): void {
+                    $q->whereExists(function ($sub) use ($branchId): void {
+                        $sub->selectRaw('1')->from('pos_branch_product')
+                            ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
+                            ->where('pos_branch_product.branch_id', $branchId)
+                            ->where('pos_branch_product.is_available', true);
+                    })->orWhereNotExists(function ($sub): void {
+                        $sub->selectRaw('1')->from('pos_branch_product')
+                            ->whereColumn('pos_branch_product.product_id', 'pos_products.id');
+                    });
+                })
+                ->orderBy('display_order'),
             $since
         )->get();
         $productIds = $products->pluck('id')->all();
@@ -146,6 +170,7 @@ class BuildDeviceConfigAction
                 $p,
                 $recipesByProduct->get($p->id),
                 $groupIdsByProduct->get($p->id),
+                $branchProductByProduct->get($p->id),
             ))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
@@ -340,7 +365,7 @@ class BuildDeviceConfigAction
      * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $groupRows
      * @return array<string, mixed>
      */
-    private function mapProduct(Product $p, $recipeRows, $groupRows): array
+    private function mapProduct(Product $p, $recipeRows, $groupRows, $branchProduct = null): array
     {
         return [
             'id' => (int) $p->id,
@@ -368,6 +393,12 @@ class BuildDeviceConfigAction
                     'unit' => $r->unit_at_set,
                 ])->values()->all()
                 : [],
+            // Per-branch unit stock for the device's branch: null = not
+            // unit-tracked here (unlimited / recipe-depleted); a number = the
+            // units currently allocated to this branch.
+            'branch_stock_qty' => $branchProduct !== null && $branchProduct->stock_qty !== null
+                ? (float) $branchProduct->stock_qty
+                : null,
         ];
     }
 

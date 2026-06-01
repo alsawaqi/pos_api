@@ -260,4 +260,57 @@ class DeviceConfigTest extends TestCase
         $this->assertNull($data['branch']);
         $this->assertSame([], $data['deleted']['categories']);
     }
+
+    public function test_products_are_filtered_to_the_devices_branch(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // branch 10
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Tea (id 2) is assigned to branch 11 ONLY -> hidden from branch 10.
+        // Latte (id 1) stays unassigned -> available everywhere (incl. 10).
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 11, 'product_id' => 2, 'is_available' => true, 'stock_qty' => null] + $t,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame([1], collect($data['products'])->pluck('id')->all());
+    }
+
+    public function test_a_product_marked_unavailable_at_the_branch_is_hidden(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Latte disabled at branch 10; Tea enabled at branch 10.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => false, 'stock_qty' => null] + $t,
+            ['branch_id' => 10, 'product_id' => 2, 'is_available' => true, 'stock_qty' => null] + $t,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame([2], collect($data['products'])->pluck('id')->all());
+    }
+
+    public function test_per_branch_product_unit_stock_is_returned(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Latte unit-tracked at branch 10 with 20 units; Tea left unassigned.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => 20.000] + $t,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $tea = collect($data['products'])->firstWhere('id', 2);
+        $this->assertEquals(20.0, $latte['branch_stock_qty']);
+        $this->assertNull($tea['branch_stock_qty']);
+    }
 }

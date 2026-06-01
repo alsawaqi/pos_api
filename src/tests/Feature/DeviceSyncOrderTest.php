@@ -329,4 +329,96 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertStringContainsString('order not found', $r['result']['error']);
         $this->assertSame('open', Order::firstWhere('uuid', $uuid)->status);
     }
+
+    public function test_order_create_rejects_a_product_from_another_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device(); // company 100 / branch 10
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_products')->insert([
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'Foreign Latte', 'base_price' => 9.999, 'status' => 'active'] + $t,
+        ]);
+
+        $event = $this->createEvent((string) Str::uuid(), [
+            'subtotal_baisas' => 1000, 'grand_total_baisas' => 1000,
+            'lines' => [['product_id' => 99, 'qty' => 1, 'unit_price_baisas' => 1000, 'line_total_baisas' => 1000]],
+        ]);
+        $r = $this->push('mdev_ord', [$event])->assertOk()->json('data.results.0');
+
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('outside the device tenant', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_order_create_rejects_an_addon_from_another_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_addons')->insert([
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'add_on_group_id' => 1, 'name' => 'Foreign shot', 'price_delta' => 0.500, 'status' => 'active'] + $t,
+        ]);
+
+        $event = $this->createEvent((string) Str::uuid(), [
+            'lines' => [[
+                'product_id' => 1, 'qty' => 2, 'unit_price_baisas' => 1500, 'line_total_baisas' => 3000,
+                'addons' => [['add_on_id' => 99, 'price_delta_baisas' => 500]],
+            ]],
+        ]);
+        $r = $this->push('mdev_ord', [$event])->assertOk()->json('data.results.0');
+
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('outside the device tenant', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_order_create_rejects_a_customer_from_another_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_customers')->insert([
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'Foreign Cust', 'phone' => '90000099'] + $t,
+        ]);
+
+        $event = $this->createEvent((string) Str::uuid(), ['customer_id' => 99]);
+        $r = $this->push('mdev_ord', [$event])->assertOk()->json('data.results.0');
+
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('customer', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_order_create_rejects_a_table_from_another_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_tables')->insert([
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'floor_id' => 1, 'label' => 'T99'] + $t,
+        ]);
+
+        $event = $this->createEvent((string) Str::uuid(), ['table_id' => 99]);
+        $r = $this->push('mdev_ord', [$event])->assertOk()->json('data.results.0');
+
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('table', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_order_create_accepts_a_customer_from_the_same_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_customers')->insert([
+            ['id' => 5, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Own Cust', 'phone' => '90000005'] + $t,
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $r = $this->push('mdev_ord', [$this->createEvent($uuid, ['customer_id' => 5])])->assertOk()->json('data.results.0');
+
+        $this->assertSame('processed', $r['status']);
+        $this->assertSame(5, (int) Order::firstWhere('uuid', $uuid)->customer_id);
+    }
 }

@@ -8,6 +8,7 @@ use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\AddOn;
 use App\Models\Branch;
+use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Ingredient;
@@ -17,6 +18,7 @@ use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
 use App\Models\Product;
 use App\Models\SyncEvent;
+use App\Models\Table;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -46,6 +48,7 @@ class CreateOrderHandler implements SyncEventHandler
         $order = (array) ($event->payload_json['order'] ?? null);
         $this->validate($order);
         $this->assertMoneyInvariant($order);
+        $this->assertReferencesInTenant($order, $device);
         $this->enforceGeofence($order, $device);
 
         return DB::transaction(function () use ($order, $device, $event): array {
@@ -78,7 +81,7 @@ class CreateOrderHandler implements SyncEventHandler
             $itemIds = [];
             foreach ($order['lines'] as $index => $line) {
                 $productId = (int) $line['product_id'];
-                $product = Product::find($productId);
+                $product = Product::query()->where('company_id', $device->company_id)->find($productId);
 
                 $item = OrderItem::create([
                     'order_id' => $model->id,
@@ -96,7 +99,7 @@ class CreateOrderHandler implements SyncEventHandler
 
                 foreach ($line['addons'] ?? [] as $addon) {
                     $addOnId = (int) $addon['add_on_id'];
-                    $addOn = AddOn::find($addOnId);
+                    $addOn = AddOn::query()->where('company_id', $device->company_id)->find($addOnId);
                     OrderItemAddon::create([
                         'order_item_id' => $item->id,
                         'add_on_id' => $addOnId,
@@ -111,6 +114,60 @@ class CreateOrderHandler implements SyncEventHandler
 
             return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created', 'discounts' => $discountCount];
         });
+    }
+
+    /**
+     * Tenant-isolation guard (blueprint §9.11.2 / §9.11.4): every entity the
+     * order references — products, add-ons, customer, table — MUST belong to
+     * the device's own company. A reference outside the tenant fails the whole
+     * event rather than silently snapshotting another company's data (which
+     * would leak product names/recipes/costs and pollute another company's
+     * customer loyalty). Mirrors the company-scoped resolution already used for
+     * discounts ({@see writeDiscounts}). Pricing stays snapshot-authoritative;
+     * this validates IDENTITY/ownership only, not money.
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function assertReferencesInTenant(array $order, Device $device): void
+    {
+        $companyId = $device->company_id;
+
+        $productIds = array_values(array_unique(array_map(
+            static fn (array $line): int => (int) $line['product_id'],
+            $order['lines'],
+        )));
+        $owned = Product::query()->where('company_id', $companyId)->whereIn('id', $productIds)->pluck('id')->all();
+        $foreign = array_diff($productIds, array_map('intval', $owned));
+        if ($foreign !== []) {
+            throw new RuntimeException('order references product(s) outside the device tenant: '.implode(',', $foreign));
+        }
+
+        $addOnIds = [];
+        foreach ($order['lines'] as $line) {
+            foreach ($line['addons'] ?? [] as $addon) {
+                $addOnIds[] = (int) $addon['add_on_id'];
+            }
+        }
+        $addOnIds = array_values(array_unique($addOnIds));
+        if ($addOnIds !== []) {
+            $ownedAddOns = AddOn::query()->where('company_id', $companyId)->whereIn('id', $addOnIds)->pluck('id')->all();
+            $foreignAddOns = array_diff($addOnIds, array_map('intval', $ownedAddOns));
+            if ($foreignAddOns !== []) {
+                throw new RuntimeException('order references add-on(s) outside the device tenant: '.implode(',', $foreignAddOns));
+            }
+        }
+
+        $customerId = isset($order['customer_id']) ? (int) $order['customer_id'] : null;
+        if ($customerId !== null
+            && ! Customer::query()->where('company_id', $companyId)->whereKey($customerId)->exists()) {
+            throw new RuntimeException('order references a customer outside the device tenant');
+        }
+
+        $tableId = isset($order['table_id']) ? (int) $order['table_id'] : null;
+        if ($tableId !== null
+            && ! Table::query()->where('company_id', $companyId)->whereKey($tableId)->exists()) {
+            throw new RuntimeException('order references a table outside the device tenant');
+        }
     }
 
     /**

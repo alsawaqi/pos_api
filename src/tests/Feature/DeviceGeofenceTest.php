@@ -25,6 +25,12 @@ class DeviceGeofenceTest extends TestCase
 
     private function device(string $token = 'mdev_geo'): Device
     {
+        // order.create references product 1; it must belong to the device's
+        // company or the tenant guard (correctly) rejects the order.
+        DB::table('pos_products')->insert([
+            'id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Item', 'base_price' => 3.000, 'status' => 'active',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
         return Device::factory()->paired($token)->create(['company_id' => 100, 'branch_id' => 10]);
     }
 

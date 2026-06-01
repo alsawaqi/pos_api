@@ -8,6 +8,7 @@ use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -41,6 +42,12 @@ class DeviceSyncBroadcastTest extends TestCase
 
     private function device(): Device
     {
+        // order.create references product 1; it must belong to the device's
+        // company or the tenant guard (correctly) rejects the order.
+        DB::table('pos_products')->insert([
+            'id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Item', 'base_price' => 3.000, 'status' => 'active',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
         return Device::factory()->paired('mdev_bcast')->create(['company_id' => 100, 'branch_id' => 10]);
     }
 

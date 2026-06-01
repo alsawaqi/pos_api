@@ -28,7 +28,12 @@ class AppServiceProvider extends ServiceProvider
         // presenting its long-lived device_token as a Bearer credential;
         // we resolve it straight off the shared pos_devices table. No
         // Sanctum — the token is a column, not a personal-access-token.
-        // SoftDeletes on the Device model auto-excludes decommissioned rows.
+        // SoftDeletes excludes deleted rows; the status filter additionally
+        // rejects REVOKED devices whose token column is still set — 'blocked'
+        // (decommissioned/suspended by the admin) and 'inactive' (disabled).
+        // A paired, operable device is 'active'; pre-pairing states
+        // ('registered'/'assigned') carry no token so never reach here.
+        // Statuses mirror pos_admin's DeviceStatus enum.
         Auth::viaRequest('pos_device', function (Request $request): ?Device {
             $token = $request->bearerToken();
             if ($token === null || $token === '') {
@@ -37,6 +42,7 @@ class AppServiceProvider extends ServiceProvider
 
             return Device::query()
                 ->where('device_token', $token)
+                ->whereNotIn('status', ['blocked', 'inactive'])
                 ->first();
         });
 

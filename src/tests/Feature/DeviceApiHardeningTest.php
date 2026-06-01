@@ -69,4 +69,27 @@ class DeviceApiHardeningTest extends TestCase
             (string) $res->headers->get('Content-Type'),
         );
     }
+
+    public function test_an_active_device_token_is_accepted(): void
+    {
+        Device::factory()->paired('mdev_live')->create(['company_id' => 100, 'branch_id' => 10, 'status' => 'active']);
+
+        $this->withToken('mdev_live')->getJson('/api/v1/device/orders/active')->assertOk();
+    }
+
+    public function test_a_blocked_device_token_is_rejected(): void
+    {
+        // A decommissioned/suspended device keeps its token column but must not
+        // authenticate (blueprint device-lifecycle revocation).
+        Device::factory()->paired('mdev_blocked')->create(['company_id' => 100, 'branch_id' => 10, 'status' => 'blocked']);
+
+        $this->withToken('mdev_blocked')->getJson('/api/v1/device/orders/active')->assertStatus(401);
+    }
+
+    public function test_an_inactive_device_token_is_rejected(): void
+    {
+        Device::factory()->paired('mdev_off')->create(['company_id' => 100, 'branch_id' => 10, 'status' => 'inactive']);
+
+        $this->withToken('mdev_off')->getJson('/api/v1/device/orders/active')->assertStatus(401);
+    }
 }

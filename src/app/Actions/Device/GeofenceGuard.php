@@ -55,6 +55,23 @@ final class GeofenceGuard
         }
     }
 
+    /**
+     * True when the point is inside the branch fence (radius + tolerance), or
+     * the branch has no fence configured. The non-throwing companion to
+     * {@see assertWithin()} — used by the staff-login geofence check.
+     */
+    public function isWithin(Branch $branch, float $lat, float $lng): bool
+    {
+        if ($branch->latitude === null || $branch->longitude === null) {
+            return true;
+        }
+
+        $distance = $this->haversineMetres((float) $branch->latitude, (float) $branch->longitude, $lat, $lng);
+        $radius = (int) ($branch->geofence_radius_m ?? self::DEFAULT_RADIUS_M);
+
+        return $distance <= $radius + self::TOLERANCE_M;
+    }
+
     private function haversineMetres(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
         $dLat = deg2rad($lat2 - $lat1);

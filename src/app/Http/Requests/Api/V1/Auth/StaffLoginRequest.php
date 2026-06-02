@@ -27,6 +27,10 @@ class StaffLoginRequest extends FormRequest
     {
         return [
             'pin' => ['required', 'string', 'regex:/^\d{4,6}$/'],
+            // Optional GPS for the login-time geofence check (§9.4). A fenced
+            // branch REQUIRES it; the controller fail-closes when it's absent.
+            'lat' => ['nullable', 'numeric', 'between:-90,90'],
+            'lng' => ['nullable', 'numeric', 'between:-180,180'],
         ];
     }
 }

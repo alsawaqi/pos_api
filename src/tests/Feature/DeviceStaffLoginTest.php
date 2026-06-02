@@ -45,6 +45,25 @@ class DeviceStaffLoginTest extends TestCase
         ], $overrides));
     }
 
+    /**
+     * Inserts a real branch row (fenced by default) and returns its id.
+     *
+     * @param  array<string, mixed>  $overrides
+     */
+    private function branch(array $overrides = []): int
+    {
+        return (int) DB::table('pos_branches')->insertGetId(array_merge([
+            'uuid' => (string) Str::uuid(),
+            'company_id' => 100,
+            'name' => 'Test Branch',
+            'latitude' => 23.5880,
+            'longitude' => 58.3829,
+            'geofence_radius_m' => 500,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $overrides));
+    }
+
     public function test_a_valid_pin_returns_the_staff_profile(): void
     {
         $this->device();
@@ -151,5 +170,48 @@ class DeviceStaffLoginTest extends TestCase
 
         $this->withToken('mdev_pos')->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
             ->assertStatus(429);
+    }
+
+    public function test_login_at_a_fenced_branch_enforces_location(): void
+    {
+        $branchId = $this->branch();
+        Device::factory()->paired('mdev_fenced')->create([
+            'company_id' => 100,
+            'branch_id' => $branchId,
+        ]);
+        $this->staff('123456', ['company_id' => 100, 'branch_id' => $branchId]);
+
+        // Inside the fence -> login succeeds.
+        $this->withToken('mdev_fenced')
+            ->postJson('/api/v1/auth/pos/login', ['pin' => '123456', 'lat' => 23.5881, 'lng' => 58.3830])
+            ->assertOk()
+            ->assertJsonPath('data.staff.name', 'Ali');
+
+        // Outside the fence -> rejected.
+        $this->withToken('mdev_fenced')
+            ->postJson('/api/v1/auth/pos/login', ['pin' => '123456', 'lat' => 23.7000, 'lng' => 58.5000])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.0.code', 'outside_geofence');
+
+        // Fenced branch but no GPS supplied -> fail-closed.
+        $this->withToken('mdev_fenced')
+            ->postJson('/api/v1/auth/pos/login', ['pin' => '123456'])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.0.code', 'location_required');
+    }
+
+    public function test_login_at_an_unfenced_branch_needs_no_location(): void
+    {
+        // A real branch row with NO coordinates = no fence to enforce.
+        $branchId = $this->branch(['latitude' => null, 'longitude' => null]);
+        Device::factory()->paired('mdev_open')->create([
+            'company_id' => 100,
+            'branch_id' => $branchId,
+        ]);
+        $this->staff('123456', ['company_id' => 100, 'branch_id' => $branchId]);
+
+        $this->withToken('mdev_open')
+            ->postJson('/api/v1/auth/pos/login', ['pin' => '123456'])
+            ->assertOk();
     }
 }

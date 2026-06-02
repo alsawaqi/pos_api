@@ -196,6 +196,7 @@ class BuildDeviceConfigAction
                 'money_unit' => 'baisas',
                 'company_id' => $companyId,
                 'branch_id' => $branchId,
+                'terminal_id' => $device->terminal_id,
             ],
         ];
     }

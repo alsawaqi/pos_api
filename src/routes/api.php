@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\V1\Auth\DeviceClaimController;
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
@@ -36,6 +37,13 @@ Route::prefix('v1')->group(function (): void {
     Route::post('auth/device/pair', DevicePairController::class)
         ->middleware('throttle:device-pair')
         ->name('device.pair');
+
+    // Claim by terminal_id — pairing-free alternative for deployments that
+    // identify a device by the bank terminal_id set at assignment (no kiosk_id
+    // / activation token). Throttled per-IP as the brute-force surface.
+    Route::post('auth/device/claim', DeviceClaimController::class)
+        ->middleware('throttle:30,1')
+        ->name('device.claim');
 
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {

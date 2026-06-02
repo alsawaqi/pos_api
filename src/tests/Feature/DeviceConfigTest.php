@@ -125,6 +125,47 @@ class DeviceConfigTest extends TestCase
         ]);
     }
 
+    public function test_full_config_includes_delivery_providers_and_per_product_prices(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        DB::table('pos_delivery_providers')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Talabat', 'color' => '#FF5A00', 'is_active' => true, 'sort_order' => 1] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Otlob', 'color' => null, 'is_active' => true, 'sort_order' => 2] + $t,
+            // Inactive + another company — both excluded from the picker.
+            ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Paused', 'color' => null, 'is_active' => false, 'sort_order' => 3] + $t,
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoProvider', 'color' => null, 'is_active' => true, 'sort_order' => 1] + $t,
+        ]);
+        // Soft-deleted provider (separate insert — carries the extra deleted_at column).
+        DB::table('pos_delivery_providers')->insert(
+            ['id' => 4, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Gone', 'color' => null, 'is_active' => true, 'sort_order' => 4, 'deleted_at' => $this->old] + $t,
+        );
+
+        DB::table('pos_product_delivery_prices')->insert([
+            // Latte (1) is 2.000 on Talabat (1) — overrides its 1.500 base.
+            ['product_id' => 1, 'delivery_provider_id' => 1, 'company_id' => 100, 'price' => 2.000] + $t,
+        ]);
+
+        $res = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk();
+        $data = $res->json('data');
+
+        // Only company 100's ACTIVE, non-deleted providers, in sort order.
+        $this->assertCount(2, $data['delivery_providers']);
+        $this->assertSame([1, 2], collect($data['delivery_providers'])->pluck('id')->all());
+        $this->assertSame('Talabat', $data['delivery_providers'][0]['name']);
+        $this->assertSame('#FF5A00', $data['delivery_providers'][0]['color']);
+
+        // Latte carries the Talabat override (baisas); Tea has none.
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $tea = collect($data['products'])->firstWhere('id', 2);
+        $this->assertCount(1, $latte['delivery_prices']);
+        $this->assertSame(1, $latte['delivery_prices'][0]['provider_id']);
+        $this->assertSame(2000, $latte['delivery_prices'][0]['price_baisas']);
+        $this->assertSame([], $tea['delivery_prices']);
+    }
+
     public function test_full_config_returns_the_scoped_catalogue(): void
     {
         $this->seedCatalogue();

@@ -129,6 +129,22 @@ class BuildDeviceConfigAction
             ->get()
             ->groupBy('add_on_group_id');
 
+        // ---- Delivery providers + per-product price overrides (§6.3). The POS
+        // shows the provider picker on a delivery order; each product's price
+        // then resolves override → delivery_price → base_price on the device. ----
+        $deliveryProviders = DB::table('pos_delivery_providers')
+            ->where('company_id', $companyId)
+            ->whereNull('deleted_at')
+            ->where('is_active', true)
+            ->when($since !== null, fn ($q) => $q->where('updated_at', '>', $since))
+            ->orderBy('sort_order')
+            ->get();
+
+        $deliveryPricesByProduct = DB::table('pos_product_delivery_prices')
+            ->whereIn('product_id', $productIds ?: [0])
+            ->get()
+            ->groupBy('product_id');
+
         $ingredients = $this->changed(
             Ingredient::query()->where('company_id', $companyId),
             $since
@@ -179,7 +195,9 @@ class BuildDeviceConfigAction
                 $recipesByProduct->get($p->id),
                 $groupIdsByProduct->get($p->id),
                 $branchProductByProduct->get($p->id),
+                $deliveryPricesByProduct->get($p->id),
             ))->all(),
+            'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
                 $addonsByGroup->get($g->id),
@@ -239,7 +257,7 @@ class BuildDeviceConfigAction
         $empty = [
             'floors' => [], 'tables' => [], 'categories' => [], 'products' => [],
             'addon_groups' => [], 'addons' => [], 'ingredients' => [], 'discounts' => [],
-            'loyalty_rules' => [], 'customers' => [],
+            'loyalty_rules' => [], 'customers' => [], 'delivery_providers' => [],
         ];
 
         if ($since === null) {
@@ -257,6 +275,13 @@ class BuildDeviceConfigAction
             'discounts' => $this->trashedIds(Discount::query()->where('company_id', $companyId), $since),
             'loyalty_rules' => $this->trashedIds(LoyaltyRule::query()->where('company_id', $companyId), $since),
             'customers' => $this->trashedIds(Customer::query()->where('company_id', $companyId), $since),
+            'delivery_providers' => DB::table('pos_delivery_providers')
+                ->where('company_id', $companyId)
+                ->whereNotNull('deleted_at')
+                ->where('deleted_at', '>', $since)
+                ->pluck('id')
+                ->map(fn ($id): int => (int) $id)
+                ->all(),
         ];
     }
 
@@ -390,7 +415,7 @@ class BuildDeviceConfigAction
      * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $groupRows
      * @return array<string, mixed>
      */
-    private function mapProduct(Product $p, $recipeRows, $groupRows, $branchProduct = null): array
+    private function mapProduct(Product $p, $recipeRows, $groupRows, $branchProduct = null, $deliveryPriceRows = null): array
     {
         return [
             'id' => (int) $p->id,
@@ -424,6 +449,29 @@ class BuildDeviceConfigAction
             'branch_stock_qty' => $branchProduct !== null && $branchProduct->stock_qty !== null
                 ? (float) $branchProduct->stock_qty
                 : null,
+            // Per-delivery-provider price overrides (§6.3). The device resolves
+            // a delivery line as: this map's provider price → delivery_price_baisas
+            // → base_price_baisas.
+            'delivery_prices' => $deliveryPriceRows
+                ? $deliveryPriceRows->map(fn ($r): array => [
+                    'provider_id' => (int) $r->delivery_provider_id,
+                    'price_baisas' => $this->baisas($r->price),
+                ])->values()->all()
+                : [],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mapDeliveryProvider(object $p): array
+    {
+        return [
+            'id' => (int) $p->id,
+            'uuid' => $p->uuid,
+            'name' => $p->name,
+            'color' => $p->color,
+            'sort_order' => (int) $p->sort_order,
         ];
     }
 

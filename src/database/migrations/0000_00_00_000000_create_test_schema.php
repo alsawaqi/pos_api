@@ -217,6 +217,27 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        Schema::create('pos_delivery_providers', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('name', 64);
+            $table->string('color', 7)->nullable();
+            $table->boolean('is_active')->default(true);
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
+        Schema::create('pos_product_delivery_prices', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('product_id');
+            $table->unsignedBigInteger('delivery_provider_id');
+            $table->unsignedBigInteger('company_id');
+            $table->decimal('price', 12, 3);
+            $table->timestamps();
+        });
+
         Schema::create('pos_ingredients', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();

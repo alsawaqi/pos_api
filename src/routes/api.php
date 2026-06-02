@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\V1\Auth\DeviceActivateController;
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
@@ -36,6 +37,13 @@ Route::prefix('v1')->group(function (): void {
     Route::post('auth/device/pair', DevicePairController::class)
         ->middleware('throttle:device-pair')
         ->name('device.pair');
+
+    // Single-code activation: the device exchanges one admin-generated code
+    // (looked up globally by its hash) for a device_token. No kiosk_id needed on
+    // the device. Throttled per-IP as the brute-force surface.
+    Route::post('auth/device/activate', DeviceActivateController::class)
+        ->middleware('throttle:30,1')
+        ->name('device.activate');
 
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {

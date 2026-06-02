@@ -116,6 +116,13 @@ class DeviceConfigTest extends TestCase
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Ali', 'phone' => '+96890000000', 'wallet_balance' => 3.000] + $t,
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoCust', 'phone' => '+96899999999', 'wallet_balance' => 1.000] + $t,
         ]);
+
+        DB::table('pos_taxes')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'VAT', 'rate_percent' => 5.00, 'is_active' => true, 'sort_order' => 1] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Municipality', 'rate_percent' => 2.00, 'is_active' => true, 'sort_order' => 2] + $t,
+            ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Inactive', 'rate_percent' => 9.00, 'is_active' => false, 'sort_order' => 3] + $t,
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoTax', 'rate_percent' => 7.00, 'is_active' => true, 'sort_order' => 1] + $t,
+        ]);
     }
 
     public function test_full_config_returns_the_scoped_catalogue(): void
@@ -181,6 +188,13 @@ class DeviceConfigTest extends TestCase
         $this->assertSame(10, $data['loyalty_rules'][0]['config']['stamps_required']);
         $this->assertCount(1, $data['customers']);
         $this->assertSame(3000, $data['customers'][0]['wallet_balance_baisas']);
+
+        // Taxes: only active company-100 taxes (inactive + company-200 excluded)
+        $this->assertCount(2, $data['taxes']);
+        $this->assertSame([1, 2], collect($data['taxes'])->pluck('id')->all());
+        $vat = collect($data['taxes'])->firstWhere('id', 1);
+        $this->assertSame('VAT', $vat['name']);
+        $this->assertEquals(5.0, $vat['rate_percent']);
 
         // Nothing from company 200 leaked
         $this->assertNotContains(99, collect($data['products'])->pluck('id')->all());

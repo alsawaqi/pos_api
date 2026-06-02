@@ -304,6 +304,19 @@ return new class extends Migration
             $table->softDeletes();
         });
 
+        Schema::create('pos_taxes', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('name', 64);
+            $table->string('name_ar', 64)->nullable();
+            $table->decimal('rate_percent', 5, 2);
+            $table->boolean('is_active')->default(true);
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
         Schema::create('pos_customers', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();

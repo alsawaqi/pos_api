@@ -17,6 +17,7 @@ use App\Models\LoyaltyRule;
 use App\Models\Product;
 use App\Models\ProductCategory;
 use App\Models\Table;
+use App\Models\Tax;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -161,6 +162,13 @@ class BuildDeviceConfigAction
             $since
         )->get();
 
+        // ---- Company taxes (active set; the POS adds each, as its own line,
+        // on top of the order total — exclusive). ----
+        $taxes = $this->changed(
+            Tax::query()->where('company_id', $companyId)->where('is_active', true)->orderBy('sort_order'),
+            $since
+        )->get();
+
         $data = [
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
@@ -184,6 +192,7 @@ class BuildDeviceConfigAction
             ))->all(),
             'loyalty_rules' => $loyaltyRules->map(fn (LoyaltyRule $r): array => $this->mapLoyaltyRule($r))->all(),
             'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer($c))->all(),
+            'taxes' => $taxes->map(fn (Tax $t): array => $this->mapTax($t))->all(),
             'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since),
         ];
 
@@ -358,6 +367,21 @@ class BuildDeviceConfigAction
             'image_url' => $c->image_url,
             'display_order' => (int) $c->display_order,
             'status' => $c->status,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mapTax(Tax $t): array
+    {
+        return [
+            'id' => (int) $t->id,
+            'uuid' => $t->uuid,
+            'name' => $t->name,
+            'name_ar' => $t->name_ar,
+            'rate_percent' => (float) $t->rate_percent,
+            'is_active' => (bool) $t->is_active,
         ];
     }
 

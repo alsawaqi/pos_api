@@ -8,6 +8,7 @@ use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
+use App\Actions\Device\Sync\RecordSaleCommissionAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Branch;
 use App\Models\Device;
@@ -38,6 +39,7 @@ class PayOrderHandler implements SyncEventHandler
         private readonly ApplyLoyaltyEarnAction $loyalty,
         private readonly ApplyLoyaltyRedeemAction $loyaltyRedeem,
         private readonly GeofenceGuard $geofence,
+        private readonly RecordSaleCommissionAction $saleCommission,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -75,7 +77,7 @@ class PayOrderHandler implements SyncEventHandler
         $loyaltyRuleId = isset($payload['loyalty_rule_id']) ? (int) $payload['loyalty_rule_id'] : null;
         $loyaltyRedeem = is_array($payload['loyalty_redeem'] ?? null) ? $payload['loyalty_redeem'] : null;
 
-        return DB::transaction(function () use ($order, $payments, $capturedAt, $loyaltyRuleId, $loyaltyRedeem): array {
+        return DB::transaction(function () use ($order, $device, $event, $payments, $capturedAt, $loyaltyRuleId, $loyaltyRedeem): array {
             $paymentIds = [];
             $tenderedBaisas = 0;
 
@@ -114,6 +116,17 @@ class PayOrderHandler implements SyncEventHandler
 
             $movements = $this->inventory->consume($order);
 
+            // Per-sale commission split: apply the merchant's profile and
+            // record the platform/bank/other/merchant breakdown. No active
+            // profile ⇒ no rows (merchant keeps 100%). Snapshots the
+            // percents so later profile edits never rewrite this sale.
+            $saleCommissionIds = $this->saleCommission->record(
+                $order,
+                $device,
+                $paymentIds[0] ?? null,
+                $event->client_event_id,
+            );
+
             // Loyalty earn (server-authoritative, §9.1.6): only when the
             // cashier picked a rule for a known customer.
             $loyaltyTxn = $loyaltyRuleId !== null ? $this->loyalty->apply($order, $loyaltyRuleId) : null;
@@ -134,6 +147,7 @@ class PayOrderHandler implements SyncEventHandler
                 'status' => 'paid',
                 'payment_ids' => $paymentIds,
                 'movements' => $movements,
+                'sale_commission_ids' => $saleCommissionIds,
                 'loyalty_transaction_id' => $loyaltyTxn?->id,
                 'loyalty_redeem_transaction_id' => $redeemTxn?->id,
             ];

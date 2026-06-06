@@ -620,10 +620,54 @@ return new class extends Migration
             $table->timestamp('occurred_at')->nullable();
             $table->timestamps();
         });
+
+        // ---- Per-merchant commission profiles + per-sale breakdown ----
+        Schema::create('pos_commission_profiles', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id')->unique();
+            $table->boolean('is_active')->default(true);
+            $table->decimal('merchant_percent', 5, 2)->default(100);
+            $table->timestamps();
+        });
+
+        Schema::create('pos_commission_shares', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('commission_profile_id');
+            $table->string('party_type', 20);
+            $table->string('label', 120);
+            $table->decimal('percent', 5, 2);
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->timestamps();
+        });
+
+        Schema::create('pos_sale_commissions', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('device_id');
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('payment_id')->nullable();
+            $table->unsignedBigInteger('commission_profile_id')->nullable();
+            $table->string('party_type', 20);
+            $table->string('party_label', 120);
+            $table->decimal('percent', 5, 2);
+            $table->decimal('gross_amount', 12, 3);
+            $table->decimal('commission_amount', 12, 3);
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->string('client_event_id', 64)->nullable();
+            $table->timestamp('occurred_at')->nullable();
+            $table->timestamps();
+            $table->unique(['order_id', 'sort_order'], 'pos_sale_commissions_order_sort_unique');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_sale_commissions');
+        Schema::dropIfExists('pos_commission_shares');
+        Schema::dropIfExists('pos_commission_profiles');
         Schema::dropIfExists('pos_roundup_donations');
         Schema::dropIfExists('pos_restock_request_lines');
         Schema::dropIfExists('pos_restock_requests');

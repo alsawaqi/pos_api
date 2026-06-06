@@ -63,9 +63,9 @@ class DeviceConfigTest extends TestCase
         ]);
 
         DB::table('pos_products')->insert([
-            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'category_id' => 1, 'name' => 'Latte', 'base_price' => 1.500, 'status' => 'active'] + $t,
-            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'category_id' => 1, 'name' => 'Tea', 'base_price' => 0.800, 'status' => 'active'] + $t,
-            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'category_id' => null, 'name' => 'OtherCoProd', 'base_price' => 5.000, 'status' => 'active'] + $t,
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'category_id' => 1, 'name' => 'Latte', 'base_price' => 1.500, 'stock_mode' => 'ingredient', 'status' => 'active'] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'category_id' => 1, 'name' => 'Tea', 'base_price' => 0.800, 'stock_mode' => 'unit', 'status' => 'active'] + $t,
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'category_id' => null, 'name' => 'OtherCoProd', 'base_price' => 5.000, 'stock_mode' => 'untracked', 'status' => 'active'] + $t,
         ]);
 
         DB::table('pos_product_recipes')->insert([
@@ -195,6 +195,8 @@ class DeviceConfigTest extends TestCase
 
         $latte = collect($data['products'])->firstWhere('id', 1);
         $this->assertSame(1500, $latte['base_price_baisas']);
+        $this->assertSame('ingredient', $latte['stock_mode']);
+        $this->assertSame('unit', collect($data['products'])->firstWhere('id', 2)['stock_mode']);
         $this->assertSame([1], $latte['addon_group_ids']);
         $this->assertCount(1, $latte['recipe']);
         $this->assertSame(1, $latte['recipe'][0]['ingredient_id']);

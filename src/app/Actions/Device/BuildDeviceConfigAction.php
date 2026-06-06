@@ -433,6 +433,9 @@ class BuildDeviceConfigAction
             'tax_rate_percent' => $this->num($p->tax_rate),
             'display_order' => (int) $p->display_order,
             'status' => $p->status,
+            // Phase 7 — stock mode: unit (piece-counted) | ingredient
+            // (recipe-driven) | untracked. Drives device sold-out enforcement.
+            'stock_mode' => $p->stock_mode,
             'addon_group_ids' => $groupRows
                 ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all()
                 : [],

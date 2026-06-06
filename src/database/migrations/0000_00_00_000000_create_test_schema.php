@@ -170,6 +170,7 @@ return new class extends Migration
             $table->string('image_url', 500)->nullable();
             $table->decimal('base_price', 12, 3);
             $table->decimal('delivery_price', 12, 3)->nullable();
+            $table->string('stock_mode', 16)->default('untracked');
             $table->decimal('cost_price', 12, 3)->nullable();
             $table->decimal('tax_rate', 5, 2)->nullable();
             $table->unsignedSmallInteger('display_order')->default(0);

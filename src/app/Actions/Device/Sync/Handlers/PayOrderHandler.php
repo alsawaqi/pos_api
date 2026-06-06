@@ -80,6 +80,9 @@ class PayOrderHandler implements SyncEventHandler
         return DB::transaction(function () use ($order, $device, $event, $payments, $capturedAt, $loyaltyRuleId, $loyaltyRedeem): array {
             $paymentIds = [];
             $tenderedBaisas = 0;
+            // Card-paid portion of this sale — drives the acquirer (bank)
+            // commission slice, which is charged on card money only.
+            $cardBaisas = 0;
 
             foreach ($payments as $tender) {
                 if (! isset($tender['method'], $tender['amount_baisas']) || ! in_array($tender['method'], Payment::METHODS, true)) {
@@ -102,6 +105,10 @@ class PayOrderHandler implements SyncEventHandler
 
                 $paymentIds[] = (int) $payment->id;
                 $tenderedBaisas += (int) $tender['amount_baisas'];
+
+                if ($tender['method'] === Payment::METHOD_CARD && $status !== Payment::STATUS_FAILED) {
+                    $cardBaisas += (int) $tender['amount_baisas'];
+                }
             }
 
             $grandBaisas = Money::toBaisas($order->grand_total);
@@ -123,6 +130,7 @@ class PayOrderHandler implements SyncEventHandler
             $saleCommissionIds = $this->saleCommission->record(
                 $order,
                 $device,
+                $cardBaisas,
                 $paymentIds[0] ?? null,
                 $event->client_event_id,
             );

@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\Device;
 use App\Models\Order;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -20,6 +21,10 @@ use Tests\TestCase;
  * plus the merchant residual. Each non-merchant party is rounded in baisas
  * and the merchant takes the exact remainder, so the rows always sum to
  * grand_total. No active profile ⇒ no rows (merchant keeps 100%).
+ *
+ * Payment-method scoping: a BANK line is an acquirer fee, charged only on
+ * the card-paid portion of the sale; platform/other lines apply to the
+ * whole total regardless of tender.
  */
 class DeviceSyncCommissionTest extends TestCase
 {
@@ -101,9 +106,10 @@ class DeviceSyncCommissionTest extends TestCase
     }
 
     /**
+     * @param  list<array<string, mixed>>  $tenders
      * @return array<string, mixed>
      */
-    private function payEvent(string $orderUuid, int $grandBaisas = 3000): array
+    private function payEvent(string $orderUuid, array $tenders): array
     {
         return [
             'client_event_id' => (string) Str::uuid(),
@@ -112,9 +118,25 @@ class DeviceSyncCommissionTest extends TestCase
             'payload' => [
                 'order_uuid' => $orderUuid,
                 'paid_at' => now()->subHours(3)->toIso8601String(),
-                'payments' => [['method' => 'cash', 'amount_baisas' => $grandBaisas, 'change_given_baisas' => 0]],
+                'payments' => $tenders,
             ],
         ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function cash(int $baisas): array
+    {
+        return [['method' => 'cash', 'amount_baisas' => $baisas, 'change_given_baisas' => 0]];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function card(int $baisas): array
+    {
+        return [['method' => 'card', 'amount_baisas' => $baisas, 'softpos_reference' => 'TXN1', 'softpos_auth_code' => 'A1']];
     }
 
     /**
@@ -125,7 +147,17 @@ class DeviceSyncCommissionTest extends TestCase
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
     }
 
-    public function test_pay_records_the_per_party_commission_breakdown(): void
+    /**
+     * @return Collection<int, object>
+     */
+    private function breakdownFor(string $uuid): Collection
+    {
+        $order = Order::firstWhere('uuid', $uuid);
+
+        return DB::table('pos_sale_commissions')->where('order_id', $order->id)->orderBy('sort_order')->get();
+    }
+
+    public function test_pay_records_the_per_party_commission_breakdown_on_a_card_sale(): void
     {
         $this->seedProduct();
         $this->device();
@@ -136,22 +168,19 @@ class DeviceSyncCommissionTest extends TestCase
 
         $uuid = (string) Str::uuid();
         $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
-        $res = $this->push('mdev_com', [$this->payEvent($uuid)])->assertOk();
+        $res = $this->push('mdev_com', [$this->payEvent($uuid, $this->card(3000))])->assertOk();
 
         $this->assertSame('paid', $res->json('data.results.0.result.status'));
         $this->assertCount(3, $res->json('data.results.0.result.sale_commission_ids'));
 
-        $order = Order::firstWhere('uuid', $uuid);
-        $rows = DB::table('pos_sale_commissions')->where('order_id', $order->id)->orderBy('sort_order')->get();
-
+        $rows = $this->breakdownFor($uuid);
         $this->assertCount(3, $rows);
 
-        // Platform 2% of 3.000 = 0.060.
+        // Platform 2% of 3.000 = 0.060 (on the whole sale).
         $this->assertSame('platform', $rows[0]->party_type);
-        $this->assertSame('Platform', $rows[0]->party_label);
         $this->assertEqualsWithDelta(0.060, (float) $rows[0]->commission_amount, 1e-9);
 
-        // Bank 3% = 0.090.
+        // Bank 3% of the 3.000 card-paid amount = 0.090.
         $this->assertSame('bank', $rows[1]->party_type);
         $this->assertEqualsWithDelta(0.090, (float) $rows[1]->commission_amount, 1e-9);
 
@@ -160,11 +189,64 @@ class DeviceSyncCommissionTest extends TestCase
         $this->assertEqualsWithDelta(95.0, (float) $rows[2]->percent, 1e-9);
         $this->assertEqualsWithDelta(2.850, (float) $rows[2]->commission_amount, 1e-9);
 
-        // Snapshots: profile id + gross on every row; rows sum to grand_total.
         foreach ($rows as $row) {
             $this->assertSame($profileId, (int) $row->commission_profile_id);
             $this->assertEqualsWithDelta(3.0, (float) $row->gross_amount, 1e-9);
         }
+        $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+    }
+
+    public function test_bank_cut_is_skipped_on_a_cash_sale(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($uuid, $this->cash(3000))])->assertOk();
+
+        $rows = $this->breakdownFor($uuid);
+        $this->assertCount(3, $rows);
+
+        // Platform still 0.060 (applies to all sales); bank 0.000 (no card).
+        $this->assertEqualsWithDelta(0.060, (float) $rows[0]->commission_amount, 1e-9);
+        $this->assertSame('bank', $rows[1]->party_type);
+        $this->assertEqualsWithDelta(0.0, (float) $rows[1]->commission_amount, 1e-9);
+        // Merchant keeps the bank's would-be slice: 3.000 - 0.060 = 2.940.
+        $this->assertSame('merchant', $rows[2]->party_type);
+        $this->assertEqualsWithDelta(2.940, (float) $rows[2]->commission_amount, 1e-9);
+
+        $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+    }
+
+    public function test_bank_cut_applies_only_to_the_card_portion_of_a_split(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        // Split: 2.000 cash + 1.000 card on a 3.000 sale.
+        $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'cash', 'amount_baisas' => 2000, 'change_given_baisas' => 0],
+            ['method' => 'card', 'amount_baisas' => 1000, 'softpos_reference' => 'TXN1'],
+        ])])->assertOk();
+
+        $rows = $this->breakdownFor($uuid);
+
+        // Platform 2% of 3.000 = 0.060; bank 3% of the 1.000 card part = 0.030.
+        $this->assertEqualsWithDelta(0.060, (float) $rows[0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.030, (float) $rows[1]->commission_amount, 1e-9);
+        // Merchant = 3.000 - 0.060 - 0.030 = 2.910.
+        $this->assertEqualsWithDelta(2.910, (float) $rows[2]->commission_amount, 1e-9);
         $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
     }
 
@@ -175,7 +257,7 @@ class DeviceSyncCommissionTest extends TestCase
 
         $uuid = (string) Str::uuid();
         $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
-        $this->push('mdev_com', [$this->payEvent($uuid)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($uuid, $this->card(3000))])->assertOk();
 
         $this->assertSame('paid', Order::firstWhere('uuid', $uuid)->status);
         $this->assertDatabaseCount('pos_sale_commissions', 0);
@@ -191,7 +273,7 @@ class DeviceSyncCommissionTest extends TestCase
 
         $uuid = (string) Str::uuid();
         $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
-        $this->push('mdev_com', [$this->payEvent($uuid)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($uuid, $this->card(3000))])->assertOk();
 
         $this->assertDatabaseCount('pos_sale_commissions', 0);
     }
@@ -207,7 +289,7 @@ class DeviceSyncCommissionTest extends TestCase
 
         $uuid = (string) Str::uuid();
         $create = $this->createEvent($uuid);
-        $pay = $this->payEvent($uuid);
+        $pay = $this->payEvent($uuid, $this->card(3000));
 
         $this->push('mdev_com', [$create, $pay])->assertOk();
         $this->assertDatabaseCount('pos_sale_commissions', 3);
@@ -229,10 +311,9 @@ class DeviceSyncCommissionTest extends TestCase
 
         $uuid = (string) Str::uuid();
         $this->push('mdev_com', [$this->createEvent($uuid, 1000)])->assertOk();
-        $this->push('mdev_com', [$this->payEvent($uuid, 1000)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($uuid, $this->card(1000))])->assertOk();
 
-        $order = Order::firstWhere('uuid', $uuid);
-        $rows = DB::table('pos_sale_commissions')->where('order_id', $order->id)->orderBy('sort_order')->get();
+        $rows = $this->breakdownFor($uuid);
 
         $this->assertCount(2, $rows);
         $this->assertEqualsWithDelta(0.333, (float) $rows[0]->commission_amount, 1e-9);

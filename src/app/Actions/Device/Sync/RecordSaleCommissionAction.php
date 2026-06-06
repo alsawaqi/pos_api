@@ -22,16 +22,24 @@ use Illuminate\Support\Str;
  * baisa. The profile + percents are SNAPSHOT onto every row, so later
  * edits to the merchant's profile never rewrite settled history.
  *
+ * Payment-method scoping: a BANK line is an acquirer fee, so it is charged
+ * only on the card-paid portion of the sale ($cardBaisas) — a pure-cash
+ * sale carries no bank cut and the merchant keeps that slice. Platform and
+ * other lines apply to the whole grand_total regardless of tender.
+ *
  * No active profile (or a profile with no share lines) ⇒ nothing is
  * recorded; the merchant simply keeps 100% (the blueprint default).
  * Idempotent: if the order already has a breakdown it is left untouched.
  */
 final readonly class RecordSaleCommissionAction
 {
+    private const PARTY_BANK = 'bank';
+
     /**
+     * @param  int  $cardBaisas  the card-paid amount of the sale (≤ grand_total)
      * @return array<int, int> ids of the created sale-commission rows
      */
-    public function record(Order $order, Device $device, ?int $paymentId, ?string $clientEventId): array
+    public function record(Order $order, Device $device, int $cardBaisas, ?int $paymentId, ?string $clientEventId): array
     {
         // Idempotency: one breakdown per order, ever.
         if (SaleCommission::query()->where('order_id', $order->id)->exists()) {
@@ -57,7 +65,11 @@ final readonly class RecordSaleCommissionAction
 
         foreach ($profile->shares as $share) {
             $percent = (float) $share->percent;
-            $amountBaisas = (int) round($grossBaisas * $percent / 100);
+            // Bank (acquirer) cut only on card money; everyone else on the
+            // whole sale. $cardBaisas ≤ $grossBaisas, so the bank slice can
+            // never exceed its share of the total.
+            $base = $share->party_type === self::PARTY_BANK ? $cardBaisas : $grossBaisas;
+            $amountBaisas = (int) round($base * $percent / 100);
             $allocatedBaisas += $amountBaisas;
 
             $rows[] = [

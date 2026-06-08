@@ -48,6 +48,12 @@ RUN docker-php-ext-install pdo pdo_pgsql pgsql opcache
 # ✅ ADD THIS: install pcntl so Reverb can catch signals
 RUN docker-php-ext-install pcntl
 
+# ✅ phpredis: the app uses Redis for cache/session/queue (REDIS_CLIENT=phpredis).
+# Without this extension the container boots but EVERY request 500s with
+# `Class "Redis" not found`.
+RUN pecl install redis \
+    && docker-php-ext-enable redis
+
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Install Composer

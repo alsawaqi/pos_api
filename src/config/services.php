@@ -35,4 +35,14 @@ return [
         ],
     ],
 
+    // The charity Laravel API (shared charity_db, reachable over charity_net).
+    // A POS card round-up is forwarded to its store_dhofar so a real
+    // charity_transaction (+ shares) is created for a dual-registered device.
+    // Unset (null) ⇒ forwarding is skipped (the pos_roundup_donations row still
+    // records it). In the docker dev stack this is the charity nginx container.
+    'charity' => [
+        'url' => env('CHARITY_API_URL'),
+        'timeout' => (int) env('CHARITY_API_TIMEOUT', 8),
+    ],
+
 ];

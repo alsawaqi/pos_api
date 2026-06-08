@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\Sync\ForwardCharityDonationAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Branch;
 use App\Models\Device;
@@ -30,9 +31,17 @@ use RuntimeException;
  * (whose device_id + country_id are NOT NULL and assume a charity device) —
  * charity reporting UNIONs this table later. The pos_payment that generated
  * the round-up gets `roundup_amount` + `charity_transaction_id` linked back.
+ *
+ * After the POS row commits, the round-up is ALSO forwarded (best-effort) to
+ * the charity app's store_dhofar so a real charity_transaction (+ shares) is
+ * created for a dual-registered device — see {@see ForwardCharityDonationAction}.
  */
 class DonationRecordHandler implements SyncEventHandler
 {
+    public function __construct(
+        private readonly ForwardCharityDonationAction $charityForwarder,
+    ) {}
+
     public function handle(SyncEvent $event, Device $device): array
     {
         $payload = (array) $event->payload_json;
@@ -70,7 +79,7 @@ class DonationRecordHandler implements SyncEventHandler
         $status = $this->statusFromReceipt($receipt);
         $amount = Money::toOmr((int) $payload['amount_baisas']);
 
-        return DB::transaction(function () use ($payload, $event, $device, $order, $payment, $branch, $receipt, $status, $amount): array {
+        $result = DB::transaction(function () use ($payload, $event, $device, $order, $payment, $branch, $receipt, $status, $amount): array {
             $donation = RoundupDonation::create([
                 'uuid' => (string) Str::uuid(),
                 'company_id' => $device->company_id,
@@ -109,6 +118,20 @@ class DonationRecordHandler implements SyncEventHandler
                 'status' => $donation->status,
             ];
         });
+
+        // After the POS round-up has durably committed, forward it to the
+        // charity store_dhofar (best-effort — never fails the round-up) so a
+        // real charity_transaction + shares are created for a dual-registered
+        // device. A POS-only device (no charity twin) is silently skipped.
+        $this->charityForwarder->forward(
+            $device,
+            $amount,
+            $receipt,
+            $branch?->latitude !== null ? (float) $branch->latitude : null,
+            $branch?->longitude !== null ? (float) $branch->longitude : null,
+        );
+
+        return $result;
     }
 
     private function resolveCardPayment(int $orderId, ?string $paymentUuid): ?Payment

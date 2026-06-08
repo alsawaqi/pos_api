@@ -32,6 +32,7 @@ class DeviceSyncDonationTest extends TestCase
             'bank_id' => 5,
             'terminal_id' => 'TID-9',
             'commission_profile_id' => 7,
+            'organization_id' => 3,
         ]);
     }
 
@@ -179,6 +180,7 @@ class DeviceSyncDonationTest extends TestCase
                 && $request['pos_device_id'] === $device->id
                 && $request['pos_branch_id'] === 10
                 && $request['commission_profile_id'] === 7
+                && $request['organization_id'] === 3
                 && $request['bank_id'] === 5
                 && $request['amount'] === '0.200'
                 && $request['terminal_id'] === 'TID-9'

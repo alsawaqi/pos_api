@@ -50,6 +50,7 @@ return new class extends Migration
             $table->string('terminal_id', 64)->nullable();
             $table->unsignedBigInteger('commission_profile_id')->nullable();
             $table->unsignedBigInteger('bank_id')->nullable();
+            $table->unsignedBigInteger('organization_id')->nullable();
             $table->timestamps();
             $table->softDeletes();
         });

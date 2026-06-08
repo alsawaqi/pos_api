@@ -50,8 +50,10 @@ class ForwardCharityDonationAction
                 ->post($baseUrl.'/api/donations-pos-roundup', [
                     'pos_device_id' => $device->getKey(),
                     'pos_branch_id' => $device->branch_id,
-                    // The device's CHARITY commission profile drives the shares.
+                    // The device's CHARITY commission profile drives the shares;
+                    // organization_id is the beneficiary org assigned in pos_admin.
                     'commission_profile_id' => $device->commission_profile_id,
+                    'organization_id' => $device->organization_id,
                     'amount' => $amountOmr,
                     'receipt' => $receipt,
                     'terminal_id' => $device->terminal_id,

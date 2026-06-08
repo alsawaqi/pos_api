@@ -33,8 +33,9 @@ use RuntimeException;
  * the round-up gets `roundup_amount` + `charity_transaction_id` linked back.
  *
  * After the POS row commits, the round-up is ALSO forwarded (best-effort) to
- * the charity app's store_dhofar so a real charity_transaction (+ shares) is
- * created for a dual-registered device — see {@see ForwardCharityDonationAction}.
+ * the charity app (POST /api/donations-pos-roundup) so a real charity_transaction
+ * (+ shares) is created linked to this POS device + branch — see
+ * {@see ForwardCharityDonationAction}.
  */
 class DonationRecordHandler implements SyncEventHandler
 {
@@ -120,16 +121,10 @@ class DonationRecordHandler implements SyncEventHandler
         });
 
         // After the POS round-up has durably committed, forward it to the
-        // charity store_dhofar (best-effort — never fails the round-up) so a
-        // real charity_transaction + shares are created for a dual-registered
-        // device. A POS-only device (no charity twin) is silently skipped.
-        $this->charityForwarder->forward(
-            $device,
-            $amount,
-            $receipt,
-            $branch?->latitude !== null ? (float) $branch->latitude : null,
-            $branch?->longitude !== null ? (float) $branch->longitude : null,
-        );
+        // charity app (best-effort — never fails the round-up) so a real
+        // charity_transaction + shares are created, linked to this POS device +
+        // branch with the branch's geo copied across.
+        $this->charityForwarder->forward($device, $branch, $amount, $receipt);
 
         return $result;
     }

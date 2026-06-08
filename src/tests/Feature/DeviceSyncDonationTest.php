@@ -160,30 +160,30 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertSame('fail', RoundupDonation::firstOrFail()->status);
     }
 
-    public function test_donation_is_forwarded_to_the_charity_store_dhofar(): void
+    public function test_donation_is_forwarded_to_the_charity_pos_roundup_endpoint(): void
     {
         config(['services.charity.url' => 'http://charity.test']);
         Http::fake(['*' => Http::response(['success' => true], 201)]);
 
-        Device::factory()->paired('mdev_x')->create([
-            'company_id' => 100, 'branch_id' => 10, 'bank_id' => 5,
-            'terminal_id' => 'TID-9', 'commission_profile_id' => 7, 'kiosk_id' => 'KIOSK-DUAL',
-        ]);
+        $device = $this->device();
         $this->seedBranch();
         $this->seedOrderAndCard();
 
         $res = $this->push('mdev_x', [$this->donationEvent()])->assertOk();
         $this->assertSame('processed', $res->json('data.results.0.status'));
 
-        // The SAME charity function is invoked, keyed by kiosk_id, with the
-        // round-up amount, receipt, branch geo + the device terminal fallback.
-        Http::assertSent(function ($request) {
-            return str_contains($request->url(), '/api/donations-dhofar')
-                && $request['id'] === 'KIOSK-DUAL'
+        // Forwarded to the POS round-up endpoint, linking the POS device + branch
+        // with the branch geo + the device's charity commission profile.
+        Http::assertSent(function ($request) use ($device) {
+            return str_contains($request->url(), '/api/donations-pos-roundup')
+                && $request['pos_device_id'] === $device->id
+                && $request['pos_branch_id'] === 10
+                && $request['commission_profile_id'] === 7
+                && $request['bank_id'] === 5
                 && $request['amount'] === '0.200'
-                && $request['terminalId'] === 'TID-9'
-                && ($request['receipt']['status'] ?? null) === 'success'
-                && abs(((float) $request['latitude']) - 23.588) < 1e-6;
+                && $request['terminal_id'] === 'TID-9'
+                && $request['country_id'] === 1
+                && ($request['receipt']['status'] ?? null) === 'success';
         });
 
         // The POS round-up still records normally.

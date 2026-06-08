@@ -1,6 +1,7 @@
 services:
-  charity_login:
-    image: charity-login-app
+  # ── PHP-FPM application (the device-facing JSON API) ──────────────────────
+  pos_api:
+    image: pos_api-app
     build:
       context: .
       dockerfile: docker/prod/php/php.dockerfile
@@ -13,14 +14,17 @@ services:
       APP_ENV: production
       APP_DEBUG: "false"
       LOG_CHANNEL: stderr
+    depends_on:
+      - pos_api_redis
     networks:
       - charity_net
 
+  # ── nginx (fronts php-fpm; Nginx Proxy Manager forwards to it by alias) ───
   nginx:
     image: nginx:1.25-alpine
     restart: unless-stopped
     depends_on:
-      - charity_login
+      - pos_api
     volumes:
       - ./src/public:/var/www/html/public
       - storage-data:/var/www/html/storage
@@ -35,11 +39,26 @@ services:
     networks:
       charity_net:
         aliases:
-          - charity-login-web
+          - pos-api-web
 
-  # One-time permissions fix (run when needed)
+  # ── Redis (REQUIRED) ──────────────────────────────────────────────────────
+  # pos_api's .env points SESSION_DRIVER, CACHE_STORE and QUEUE_CONNECTION at
+  # REDIS_HOST=pos_api_redis, so the app will not boot without this. The name
+  # is deliberately UNIQUE: charity_net hosts sibling projects that also have a
+  # service named `redis`; a shared name makes Docker DNS round-robin between
+  # instances and split sessions/cache across them. Keep it distinct.
+  pos_api_redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - charity_net
+
+  # ── One-time permissions fix (run when needed): --profile init ───────────
   init-perms:
-    image: charity-login-app
+    image: pos_api-app
     profiles: ["init"]
     user: "0:0"
     volumes:
@@ -57,7 +76,10 @@ services:
     networks:
       - charity_net
 
-  # Install PHP deps into ./src/vendor (run when you deploy)
+  # ── Install PHP deps into ./src/vendor (run on deploy): --profile build ──
+  # NOTE: pos_api owns NO database schema (pos_admin owns the shared pos_*
+  # tables), so there is intentionally NO `migrate` step here. Never run
+  # `php artisan migrate` against the shared charity_db from this stack.
   composer:
     profiles: ["build"]
     image: composer:2
@@ -68,21 +90,26 @@ services:
     networks:
       - charity_net
 
-  # Build Vite assets into ./src/public/build (run when you deploy)
+  # ── Build Vite assets (run on deploy): --profile build ───────────────────
+  # pos_api is a JSON-only device API and serves no SPA — BUT the default
+  # welcome.blade.php still references @vite(['resources/css/app.css',
+  # 'resources/js/app.js']), so a manifest must exist or hitting `/` 500s.
+  # `npm install` (not `npm ci`) because there may be no lockfile. If you
+  # delete the @vite line from welcome.blade.php you can drop this service.
   node-build:
     profiles: ["build"]
     image: node:20-alpine
     working_dir: /var/www/html
     volumes:
       - ./src:/var/www/html
-    command: sh -lc "npm ci && npm run build"
+    command: sh -lc "npm install && npm run build"
     networks:
       - charity_net
 
-  # Cache Laravel (optional, run after build)
+  # ── Cache Laravel config/routes/views (run after build): --profile deploy ─
   deploy:
     profiles: ["deploy"]
-    image: charity-login-app
+    image: pos_api-app
     working_dir: /var/www/html
     volumes:
       - ./src:/var/www/html:ro
@@ -98,6 +125,63 @@ services:
     networks:
       - charity_net
 
+  # ── Real-time push (OPTIONAL, OFF by default): --profile reverb ──────────
+  # The device does not subscribe to Reverb yet, so the simple prod posture is
+  # to leave this off and set BROADCAST_CONNECTION=log + QUEUE_CONNECTION=sync
+  # in .env (nothing queues, no worker needed). To turn real-time ON instead:
+  #   1. in .env: BROADCAST_CONNECTION=reverb, QUEUE_CONNECTION=redis, and set
+  #      REVERB_APP_ID / REVERB_APP_KEY / REVERB_APP_SECRET (php artisan
+  #      reverb:install) + REVERB_HOST to the public WS hostname.
+  #   2. point a Proxy Manager host (e.g. wss://posapi.mithqal.net) at the
+  #      `pos-api-reverb` alias : 8080.
+  #   3. bring the stack up with:  --profile reverb up -d
+  reverb:
+    profiles: ["reverb"]
+    image: pos_api-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_CHANNEL: stderr
+    entrypoint: ["sh", "-lc"]
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    depends_on:
+      - pos_api_redis
+    expose:
+      - "8080"
+    networks:
+      charity_net:
+        aliases:
+          - pos-api-reverb
+
+  # Queue worker — only needed when QUEUE_CONNECTION=redis (i.e. with Reverb
+  # on, broadcast jobs are queued). Off by default with the rest of --profile
+  # reverb. With QUEUE_CONNECTION=sync this is unnecessary.
+  queue:
+    profiles: ["reverb"]
+    image: pos_api-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_CHANNEL: stderr
+    entrypoint: ["sh", "-lc"]
+    command: php artisan queue:work --tries=3 --sleep=3 --max-time=3600
+    depends_on:
+      - pos_api_redis
+    networks:
+      - charity_net
+
 networks:
   charity_net:
     external: true
@@ -105,3 +189,4 @@ networks:
 volumes:
   storage-data:
   cache-data:
+  redis-data:

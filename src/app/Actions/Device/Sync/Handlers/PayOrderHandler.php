@@ -100,6 +100,14 @@ class PayOrderHandler implements SyncEventHandler
                     'softpos_auth_code' => $tender['softpos_auth_code'] ?? null,
                     'status' => $status,
                     'pending_reconciliation' => $status === Payment::STATUS_PENDING_RECONCILIATION,
+                    // Snapshot the device's acquirer facts onto the payment row so
+                    // the admin Bank Reconciliation Queue matches on the payment's
+                    // own columns instead of a device join. bank_response is the raw
+                    // Soft POS verdict (card tenders only); cash carries none.
+                    'device_id' => $device->id,
+                    'terminal_id' => $device->terminal_id,
+                    'bank_id' => $device->bank_id,
+                    'bank_response' => is_array($tender['bank_response'] ?? null) ? $tender['bank_response'] : null,
                     'captured_at' => $capturedAt,
                 ]);
 

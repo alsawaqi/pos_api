@@ -273,6 +273,32 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertTrue((bool) $payment->pending_reconciliation);
     }
 
+    public function test_payment_snapshots_the_devices_acquirer_facts_and_bank_response(): void
+    {
+        $this->seedCatalogue();
+        $device = Device::factory()->paired('mdev_ord')->create([
+            'company_id' => 100,
+            'branch_id' => 10,
+            'terminal_id' => 'TERM-9001',
+            'bank_id' => 42,
+        ]);
+        $uuid = (string) Str::uuid();
+
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk();
+        $this->push('mdev_ord', [$this->payEvent($uuid, [
+            ['method' => 'card', 'amount_baisas' => 3000, 'softpos_reference' => 'TXN9', 'softpos_auth_code' => 'AUTH9', 'bank_response' => ['rrn' => 'TXN9', 'authCode' => 'AUTH9', 'result' => 'SUCCESS']],
+        ])])->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $payment = Payment::firstWhere('order_id', $order->id);
+
+        $this->assertSame($device->id, (int) $payment->device_id);
+        $this->assertSame('TERM-9001', $payment->terminal_id);
+        $this->assertSame(42, (int) $payment->bank_id);
+        $this->assertSame('SUCCESS', $payment->bank_response['result']);
+        $this->assertSame('TXN9', $payment->bank_response['rrn']);
+    }
+
     public function test_a_broken_money_invariant_fails_only_that_event(): void
     {
         $this->device();

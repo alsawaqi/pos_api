@@ -49,6 +49,7 @@ class Payment extends Model
             'amount' => 'decimal:3',
             'change_given' => 'decimal:3',
             'pending_reconciliation' => 'boolean',
+            'bank_response' => 'array',
             'captured_at' => 'datetime',
             'reconciled_at' => 'datetime',
             'roundup_amount' => 'decimal:3',

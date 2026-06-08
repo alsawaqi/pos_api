@@ -50,6 +50,29 @@ class DeviceCustomersTest extends TestCase
         $this->assertSame(3000, $res->json('data.customers.0.wallet_balance_baisas'));
     }
 
+    public function test_search_returns_live_loyalty_balances(): void
+    {
+        $this->device();
+        $c = $this->customer(['phone' => '+96890001234']);
+        DB::table('pos_loyalty_rules')->insert([
+            'id' => 7, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Points',
+            'type' => 'spend_based', 'config_json' => json_encode(['points_per_omr' => 10]),
+            'status' => 'active', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('pos_loyalty_accounts')->insert([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'customer_id' => $c->id,
+            'loyalty_rule_id' => 7, 'point_balance' => 240, 'stamp_count' => 3,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $res = $this->withToken('mdev_cust')->getJson('/api/v1/device/customers/search?q=0001234')->assertOk();
+        $loyalty = $res->json('data.customers.0.loyalty');
+        $this->assertCount(1, $loyalty);
+        $this->assertSame(7, $loyalty[0]['rule_id']);
+        $this->assertSame(240, $loyalty[0]['points']);
+        $this->assertSame(3, $loyalty[0]['stamps']);
+    }
+
     public function test_search_finds_by_name_case_insensitively(): void
     {
         $this->device();

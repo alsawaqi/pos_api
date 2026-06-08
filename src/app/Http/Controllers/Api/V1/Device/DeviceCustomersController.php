@@ -8,6 +8,7 @@ use App\Http\Requests\Api\V1\Device\CreateCustomerRequest;
 use App\Models\Customer;
 use App\Models\CustomerVehiclePlate;
 use App\Models\Device;
+use App\Models\LoyaltyAccount;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
@@ -59,14 +60,20 @@ class DeviceCustomersController
             ->limit(25)
             ->get();
 
+        $customerIds = $customers->pluck('id')->all() ?: [0];
         $platesByCustomer = CustomerVehiclePlate::query()
-            ->whereIn('customer_id', $customers->pluck('id')->all() ?: [0])
+            ->whereIn('customer_id', $customerIds)
+            ->get()
+            ->groupBy('customer_id');
+
+        $accountsByCustomer = LoyaltyAccount::query()
+            ->whereIn('customer_id', $customerIds)
             ->get()
             ->groupBy('customer_id');
 
         return response()->json([
             'data' => [
-                'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer($c, $platesByCustomer->get($c->id)))->all(),
+                'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer($c, $platesByCustomer->get($c->id), $accountsByCustomer->get($c->id)))->all(),
             ],
             'meta' => ['money_unit' => 'baisas'],
             'errors' => [],
@@ -111,9 +118,10 @@ class DeviceCustomersController
         });
 
         $plates = CustomerVehiclePlate::query()->where('customer_id', $customer->id)->get();
+        $accounts = LoyaltyAccount::query()->where('customer_id', $customer->id)->get();
 
         return response()->json([
-            'data' => ['customer' => $this->mapCustomer($customer, $plates)],
+            'data' => ['customer' => $this->mapCustomer($customer, $plates, $accounts)],
             'errors' => [],
         ]);
     }
@@ -128,9 +136,10 @@ class DeviceCustomersController
 
     /**
      * @param  Collection<int, CustomerVehiclePlate>|null  $plates
+     * @param  Collection<int, LoyaltyAccount>|null  $accounts
      * @return array<string, mixed>
      */
-    private function mapCustomer(Customer $customer, ?Collection $plates): array
+    private function mapCustomer(Customer $customer, ?Collection $plates, ?Collection $accounts = null): array
     {
         return [
             'id' => (int) $customer->id,
@@ -140,6 +149,15 @@ class DeviceCustomersController
             'wallet_balance_baisas' => Money::toBaisas($customer->wallet_balance ?? 0),
             'plates' => ($plates ?? new Collection)
                 ->map(fn (CustomerVehiclePlate $p): string => $p->plate_number)
+                ->values()
+                ->all(),
+            // Live loyalty balances per rule (NOT in the config bundle — volatile).
+            'loyalty' => ($accounts ?? new Collection)
+                ->map(fn (LoyaltyAccount $a): array => [
+                    'rule_id' => (int) $a->loyalty_rule_id,
+                    'points' => (int) $a->point_balance,
+                    'stamps' => (int) $a->stamp_count,
+                ])
                 ->values()
                 ->all(),
         ];

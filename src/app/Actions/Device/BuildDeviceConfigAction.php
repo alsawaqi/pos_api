@@ -13,6 +13,7 @@ use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Floor;
 use App\Models\Ingredient;
+use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyRule;
 use App\Models\Product;
 use App\Models\ProductCategory;
@@ -177,6 +178,12 @@ class BuildDeviceConfigAction
             Customer::query()->where('company_id', $companyId),
             $since
         )->get();
+        // Each cached customer's CURRENT loyalty balances (points/stamps per
+        // rule) so the device can show + redeem them OFFLINE. One bulk query.
+        $loyaltyAccountsByCustomer = LoyaltyAccount::query()
+            ->whereIn('customer_id', $customers->pluck('id')->all() ?: [0])
+            ->get()
+            ->groupBy('customer_id');
 
         // ---- Company taxes (active set; the POS adds each, as its own line,
         // on top of the order total — exclusive). ----
@@ -209,7 +216,10 @@ class BuildDeviceConfigAction
                 $targetsByDiscount->get($d->id),
             ))->all(),
             'loyalty_rules' => $loyaltyRules->map(fn (LoyaltyRule $r): array => $this->mapLoyaltyRule($r))->all(),
-            'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer($c))->all(),
+            'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer(
+                $c,
+                $loyaltyAccountsByCustomer->get($c->id),
+            ))->all(),
             'taxes' => $taxes->map(fn (Tax $t): array => $this->mapTax($t))->all(),
             'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since),
         ];
@@ -600,7 +610,11 @@ class BuildDeviceConfigAction
     /**
      * @return array<string, mixed>
      */
-    private function mapCustomer(Customer $c): array
+    /**
+     * @param  \Illuminate\Support\Collection<int, LoyaltyAccount>|null  $accounts
+     * @return array<string, mixed>
+     */
+    private function mapCustomer(Customer $c, $accounts = null): array
     {
         return [
             'id' => (int) $c->id,
@@ -608,6 +622,14 @@ class BuildDeviceConfigAction
             'name' => $c->name,
             'phone' => $c->phone,
             'wallet_balance_baisas' => $this->baisas($c->wallet_balance),
+            // CURRENT loyalty balances per rule. Volatile — refreshed on each
+            // full sync; the device uses them for OFFLINE view/redeem, while the
+            // server still re-checks the balance authoritatively on order.pay.
+            'loyalty' => collect($accounts ?? [])->map(fn ($a): array => [
+                'rule_id' => (int) $a->loyalty_rule_id,
+                'points' => (int) $a->point_balance,
+                'stamps' => (int) $a->stamp_count,
+            ])->values()->all(),
         ];
     }
 }

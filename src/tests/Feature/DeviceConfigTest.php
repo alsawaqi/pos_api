@@ -117,6 +117,11 @@ class DeviceConfigTest extends TestCase
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoCust', 'phone' => '+96899999999', 'wallet_balance' => 1.000] + $t,
         ]);
 
+        // Customer 1 holds a loyalty balance under rule 1 (for the offline cache).
+        DB::table('pos_loyalty_accounts')->insert([
+            ['uuid' => (string) Str::uuid(), 'company_id' => 100, 'customer_id' => 1, 'loyalty_rule_id' => 1, 'point_balance' => 50, 'stamp_count' => 3] + $t,
+        ]);
+
         DB::table('pos_taxes')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'VAT', 'rate_percent' => 5.00, 'is_active' => true, 'sort_order' => 1] + $t,
             ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Municipality', 'rate_percent' => 2.00, 'is_active' => true, 'sort_order' => 2] + $t,
@@ -231,6 +236,11 @@ class DeviceConfigTest extends TestCase
         $this->assertSame(10, $data['loyalty_rules'][0]['config']['stamps_required']);
         $this->assertCount(1, $data['customers']);
         $this->assertSame(3000, $data['customers'][0]['wallet_balance_baisas']);
+        // Cached loyalty balances per rule (for offline view/redeem).
+        $this->assertSame(
+            [['rule_id' => 1, 'points' => 50, 'stamps' => 3]],
+            $data['customers'][0]['loyalty'],
+        );
 
         // Taxes: only active company-100 taxes (inactive + company-200 excluded)
         $this->assertCount(2, $data['taxes']);

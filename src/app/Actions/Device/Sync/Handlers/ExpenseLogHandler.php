@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync\Handlers;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Device;
 use App\Models\Expense;
+use App\Models\ExpenseCategory;
 use App\Models\SyncEvent;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
@@ -26,8 +27,21 @@ class ExpenseLogHandler implements SyncEventHandler
     {
         $payload = (array) $event->payload_json;
 
+        // v2 #7: category is validated against the DEVICE COMPANY's active
+        // expense categories (the same set shipped in /device/config). A
+        // brand-new company with none seeded yet falls back to the legacy
+        // fixed set so its device is never blocked.
+        $allowed = ExpenseCategory::query()
+            ->where('company_id', $device->company_id)
+            ->where('is_active', true)
+            ->pluck('key')
+            ->all();
+        if ($allowed === []) {
+            $allowed = Expense::CATEGORIES;
+        }
+
         $validator = Validator::make($payload, [
-            'category' => ['required', 'string', 'in:'.implode(',', Expense::CATEGORIES)],
+            'category' => ['required', 'string', 'in:'.implode(',', $allowed)],
             'amount_baisas' => ['required', 'integer', 'min:0'],
             'note' => ['sometimes', 'nullable', 'string'],
             'receipt_photo_path' => ['sometimes', 'nullable', 'string'],

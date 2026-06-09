@@ -128,6 +128,15 @@ class DeviceConfigTest extends TestCase
             ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Inactive', 'rate_percent' => 9.00, 'is_active' => false, 'sort_order' => 3] + $t,
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoTax', 'rate_percent' => 7.00, 'is_active' => true, 'sort_order' => 1] + $t,
         ]);
+
+        // v2 #7 — custom expense categories: 2 active + 1 inactive for company
+        // 100, 1 for company 200 (isolation), in sort order.
+        DB::table('pos_expense_categories')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Utilities', 'name_ar' => null, 'key' => 'utilities', 'is_active' => true, 'sort_order' => 1] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Marketing', 'name_ar' => null, 'key' => 'marketing', 'is_active' => true, 'sort_order' => 2] + $t,
+            ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Retired', 'name_ar' => null, 'key' => 'retired', 'is_active' => false, 'sort_order' => 3] + $t,
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoCat', 'name_ar' => null, 'key' => 'otherco', 'is_active' => true, 'sort_order' => 1] + $t,
+        ]);
     }
 
     public function test_full_config_includes_delivery_providers_and_per_product_prices(): void
@@ -249,8 +258,16 @@ class DeviceConfigTest extends TestCase
         $this->assertSame('VAT', $vat['name']);
         $this->assertEquals(5.0, $vat['rate_percent']);
 
+        // Expense categories (v2 #7): only active company-100, in sort order;
+        // inactive + company-200 excluded. The device submits `key` back.
+        $this->assertCount(2, $data['expense_categories']);
+        $this->assertSame([1, 2], collect($data['expense_categories'])->pluck('id')->all());
+        $this->assertSame(['utilities', 'marketing'], collect($data['expense_categories'])->pluck('key')->all());
+        $this->assertSame('Utilities', $data['expense_categories'][0]['name']);
+
         // Nothing from company 200 leaked
         $this->assertNotContains(99, collect($data['products'])->pluck('id')->all());
+        $this->assertNotContains('otherco', collect($data['expense_categories'])->pluck('key')->all());
     }
 
     public function test_full_config_excludes_soft_deleted_rows(): void

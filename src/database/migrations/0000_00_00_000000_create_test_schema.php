@@ -340,6 +340,20 @@ return new class extends Migration
             $table->softDeletes();
         });
 
+        // v2 #7 — custom expense categories (company-managed).
+        Schema::create('pos_expense_categories', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('name', 64);
+            $table->string('name_ar', 64)->nullable();
+            $table->string('key', 32);
+            $table->boolean('is_active')->default(true);
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
         Schema::create('pos_customers', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();

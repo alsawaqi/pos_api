@@ -22,8 +22,14 @@ class Expense extends Model
 
     public const STATUS_RECORDED = 'recorded';
 
-    /** @var list<string> */
-    public const CATEGORIES = ['utilities', 'supplies', 'maintenance', 'salaries', 'other'];
+    /**
+     * Legacy fixed set — now only a FALLBACK for a company with no seeded
+     * pos_expense_categories yet (v2 #7 made categories company-managed).
+     * Includes 'ingredients' so it matches the merchant's default set.
+     *
+     * @var list<string>
+     */
+    public const CATEGORIES = ['utilities', 'supplies', 'ingredients', 'maintenance', 'salaries', 'other'];
 
     /**
      * @return array<string, string>

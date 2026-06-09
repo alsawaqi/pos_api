@@ -104,6 +104,26 @@ class DeviceSyncExpenseRestockTest extends TestCase
         $this->assertDatabaseCount('pos_expenses', 0);
     }
 
+    public function test_expense_log_validates_against_company_categories_when_present(): void
+    {
+        $this->device();
+        // v2 #7: once the company has seeded categories, the per-company set
+        // REPLACES the legacy fallback.
+        DB::table('pos_expense_categories')->insert([
+            'id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100,
+            'name' => 'Marketing', 'name_ar' => null, 'key' => 'marketing', 'is_active' => true, 'sort_order' => 1,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        // A seeded company key is accepted.
+        $ok = $this->push('mdev_x', [$this->expenseEvent(['category' => 'marketing'])])->assertOk();
+        $this->assertSame('processed', $ok->json('data.results.0.status'));
+
+        // A legacy key the company did NOT seed is now rejected.
+        $bad = $this->push('mdev_x', [$this->expenseEvent(['category' => 'utilities'])])->assertOk();
+        $this->assertSame('failed', $bad->json('data.results.0.status'));
+    }
+
     public function test_replaying_an_expense_does_not_duplicate(): void
     {
         $this->device();

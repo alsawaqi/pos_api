@@ -11,6 +11,7 @@ use App\Models\BranchStock;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
+use App\Models\ExpenseCategory;
 use App\Models\Floor;
 use App\Models\Ingredient;
 use App\Models\LoyaltyAccount;
@@ -192,6 +193,13 @@ class BuildDeviceConfigAction
             $since
         )->get();
 
+        // ---- Expense categories (active set; the POS expense screen renders
+        // these + expense.log validates the submitted key against them). ----
+        $expenseCategories = $this->changed(
+            ExpenseCategory::query()->where('company_id', $companyId)->where('is_active', true)->orderBy('sort_order'),
+            $since
+        )->get();
+
         $data = [
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
@@ -221,6 +229,7 @@ class BuildDeviceConfigAction
                 $loyaltyAccountsByCustomer->get($c->id),
             ))->all(),
             'taxes' => $taxes->map(fn (Tax $t): array => $this->mapTax($t))->all(),
+            'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
             'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since),
         ];
 
@@ -268,6 +277,7 @@ class BuildDeviceConfigAction
             'floors' => [], 'tables' => [], 'categories' => [], 'products' => [],
             'addon_groups' => [], 'addons' => [], 'ingredients' => [], 'discounts' => [],
             'loyalty_rules' => [], 'customers' => [], 'delivery_providers' => [],
+            'expense_categories' => [],
         ];
 
         if ($since === null) {
@@ -292,6 +302,7 @@ class BuildDeviceConfigAction
                 ->pluck('id')
                 ->map(fn ($id): int => (int) $id)
                 ->all(),
+            'expense_categories' => $this->trashedIds(ExpenseCategory::query()->where('company_id', $companyId), $since),
         ];
     }
 
@@ -417,6 +428,23 @@ class BuildDeviceConfigAction
             'name_ar' => $t->name_ar,
             'rate_percent' => (float) $t->rate_percent,
             'is_active' => (bool) $t->is_active,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mapExpenseCategory(ExpenseCategory $c): array
+    {
+        return [
+            'id' => (int) $c->id,
+            'uuid' => $c->uuid,
+            // The device submits `key` back on expense.log; name/name_ar drive
+            // the UI label.
+            'key' => $c->key,
+            'name' => $c->name,
+            'name_ar' => $c->name_ar,
+            'sort_order' => (int) $c->sort_order,
         ];
     }
 

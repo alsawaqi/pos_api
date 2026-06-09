@@ -6,11 +6,14 @@ namespace Tests\Feature;
 
 use App\Models\BranchStock;
 use App\Models\Device;
+use App\Models\LoyaltyAccount;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Payment;
+use App\Models\RoundupDonation;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -524,5 +527,128 @@ class DeviceSyncOrderTest extends TestCase
 
         // Still null — untracked products aren't decremented.
         $this->assertNull(DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'));
+    }
+
+    /** v2 #14 — seed a customer + a visit_based loyalty rule for company 100. */
+    private function seedLoyaltyRule(): void
+    {
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_customers')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Ali', 'phone' => '+96890000001'] + $t,
+        ]);
+        DB::table('pos_loyalty_rules')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Stamp card', 'type' => 'visit_based', 'config_json' => json_encode(['min_order_value' => '2.000', 'stamps_required' => 5]), 'status' => 'active'] + $t,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function payWithLoyalty(string $orderUuid, int $ruleId): array
+    {
+        $event = $this->payEvent($orderUuid);
+        $event['payload']['loyalty_rule_id'] = $ruleId;
+
+        return $event;
+    }
+
+    public function test_voiding_a_paid_order_reverses_the_loyalty_earn(): void
+    {
+        $this->seedCatalogue();
+        $this->seedLoyaltyRule();
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        $this->push('mdev_ord', [$this->createEvent($uuid, ['customer_id' => 1])])->assertOk();
+        $this->push('mdev_ord', [$this->payWithLoyalty($uuid, 1)])->assertOk();
+
+        $account = LoyaltyAccount::where(['customer_id' => 1, 'loyalty_rule_id' => 1])->firstOrFail();
+        $this->assertSame(1, $account->stamp_count); // 3.000 ≥ 2.000 min → 1 stamp
+
+        $res = $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
+        $this->assertSame('voided', $res->json('data.results.0.result.status'));
+        $this->assertSame(1, $res->json('data.results.0.result.loyalty_reversed'));
+
+        // The stamp is clawed back to zero via an inverse `adjust` ledger row.
+        $this->assertSame(0, $account->fresh()->stamp_count);
+        $order = Order::firstWhere('uuid', $uuid);
+        $this->assertDatabaseHas('pos_loyalty_transactions', [
+            'loyalty_account_id' => $account->id,
+            'type' => 'adjust',
+            'stamps_delta' => -1,
+            'balance_after_stamps' => 0,
+            'order_id' => $order->id,
+            'reason' => 'reversed from void',
+        ]);
+    }
+
+    public function test_voiding_clamps_a_loyalty_clawback_to_the_available_balance(): void
+    {
+        $this->seedCatalogue();
+        $this->seedLoyaltyRule();
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        $this->push('mdev_ord', [$this->createEvent($uuid, ['customer_id' => 1])])->assertOk();
+        $this->push('mdev_ord', [$this->payWithLoyalty($uuid, 1)])->assertOk();
+
+        $account = LoyaltyAccount::where(['customer_id' => 1, 'loyalty_rule_id' => 1])->firstOrFail();
+        // The customer already spent that stamp on a later visit — balance is 0.
+        $account->update(['stamp_count' => 0]);
+
+        $res = $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
+        // Nothing left to claw back: no reversal row, balance never goes negative.
+        $this->assertSame(0, $res->json('data.results.0.result.loyalty_reversed'));
+        $this->assertSame(0, $account->fresh()->stamp_count);
+        $this->assertDatabaseMissing('pos_loyalty_transactions', ['type' => 'adjust']);
+    }
+
+    public function test_voiding_voids_the_roundup_and_removes_the_commission(): void
+    {
+        config(['services.charity.url' => null]); // no charity forward in this unit test
+        Http::fake();
+
+        $this->seedCatalogue();
+        Device::factory()->paired('mdev_ord')->create([
+            'company_id' => 100, 'branch_id' => 10, 'bank_id' => 5, 'terminal_id' => 'TID-9', 'commission_profile_id' => 7,
+        ]);
+
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        $profileId = (int) DB::table('pos_commission_profiles')->insertGetId([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'is_active' => true, 'merchant_percent' => 95,
+        ] + $t);
+        DB::table('pos_commission_shares')->insert([
+            ['commission_profile_id' => $profileId, 'party_type' => 'platform', 'label' => 'Platform', 'percent' => 2, 'sort_order' => 0] + $t,
+            ['commission_profile_id' => $profileId, 'party_type' => 'bank', 'label' => 'Bank', 'percent' => 3, 'sort_order' => 1] + $t,
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk();
+        $this->push('mdev_ord', [$this->payEvent($uuid, [
+            ['method' => 'card', 'amount_baisas' => 3000, 'softpos_reference' => 'TXN1', 'softpos_auth_code' => 'A1'],
+        ])])->assertOk();
+        $this->push('mdev_ord', [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'donation.record',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => ['order_uuid' => $uuid, 'amount_baisas' => 200, 'receipt' => ['status' => 'success']],
+        ]])->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $this->assertSame('success', RoundupDonation::where('order_id', $order->id)->firstOrFail()->status);
+        $this->assertSame(3, DB::table('pos_sale_commissions')->where('order_id', $order->id)->count());
+        $payment = Payment::where(['order_id' => $order->id, 'method' => 'card'])->firstOrFail();
+        $this->assertSame('0.200', $payment->roundup_amount);
+
+        $res = $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
+        $this->assertSame(1, $res->json('data.results.0.result.roundup_voided'));
+        $this->assertSame(3, $res->json('data.results.0.result.commission_removed'));
+
+        // Round-up donation voided + the card payment's breadcrumbs cleared.
+        $this->assertSame('void', RoundupDonation::where('order_id', $order->id)->firstOrFail()->status);
+        $this->assertNull($payment->fresh()->roundup_amount);
+        $this->assertNull($payment->fresh()->charity_transaction_id);
+        // Commission breakdown gone — the voided sale leaves no payout trace.
+        $this->assertSame(0, DB::table('pos_sale_commissions')->where('order_id', $order->id)->count());
     }
 }

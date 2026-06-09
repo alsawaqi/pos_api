@@ -316,4 +316,48 @@ class DeviceSyncLoyaltyTest extends TestCase
         $this->assertStringContainsString('no loyalty account', $res->json('data.results.0.result.error'));
         $this->assertSame('open', Order::firstWhere('uuid', $uuid)->status);
     }
+
+    public function test_multiple_earn_rules_all_accrue_in_one_pay(): void
+    {
+        $this->seedLoyalty();
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        $this->push('mdev_ord', [$this->createEvent($uuid, 1)])->assertOk();
+        // v2 #3 — the device names BOTH active earn programs (stamp card rule 1
+        // + points rule 2) for the customer in one pay; each must accrue.
+        $pay = [
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.pay',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => [
+                'order_uuid' => $uuid,
+                'paid_at' => now()->toIso8601String(),
+                'payments' => [['method' => 'cash', 'amount_baisas' => 3000]],
+                'loyalty_rule_ids' => [1, 2],
+            ],
+        ];
+        $res = $this->push('mdev_ord', [$pay])->assertOk();
+
+        $this->assertCount(2, $res->json('data.results.0.result.loyalty_transaction_ids'));
+        // Visit rule 1 → 1 stamp; spend rule 2 → 30 points (3.000 OMR × 10/OMR).
+        $this->assertSame(1, LoyaltyAccount::where(['customer_id' => 1, 'loyalty_rule_id' => 1])->first()->stamp_count);
+        $this->assertSame(30, LoyaltyAccount::where(['customer_id' => 1, 'loyalty_rule_id' => 2])->first()->point_balance);
+        $this->assertDatabaseCount('pos_loyalty_transactions', 2);
+    }
+
+    public function test_legacy_single_loyalty_rule_id_still_earns(): void
+    {
+        $this->seedLoyalty();
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        $this->push('mdev_ord', [$this->createEvent($uuid, 1)])->assertOk();
+        // Back-compat: a device still sending the singular loyalty_rule_id works.
+        $res = $this->push('mdev_ord', [$this->payEvent($uuid, 1)])->assertOk();
+
+        $this->assertNotNull($res->json('data.results.0.result.loyalty_transaction_id'));
+        $this->assertCount(1, $res->json('data.results.0.result.loyalty_transaction_ids'));
+        $this->assertSame(1, LoyaltyAccount::where(['customer_id' => 1, 'loyalty_rule_id' => 1])->first()->stamp_count);
+    }
 }

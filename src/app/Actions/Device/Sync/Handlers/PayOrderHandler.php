@@ -74,10 +74,10 @@ class PayOrderHandler implements SyncEventHandler
         $this->enforceGeofence($device, $payload);
 
         $capturedAt = isset($payload['paid_at']) ? Carbon::parse((string) $payload['paid_at']) : now();
-        $loyaltyRuleId = isset($payload['loyalty_rule_id']) ? (int) $payload['loyalty_rule_id'] : null;
+        $loyaltyRuleIds = $this->earnRuleIds($payload);
         $loyaltyRedeem = is_array($payload['loyalty_redeem'] ?? null) ? $payload['loyalty_redeem'] : null;
 
-        return DB::transaction(function () use ($order, $device, $event, $payments, $capturedAt, $loyaltyRuleId, $loyaltyRedeem): array {
+        return DB::transaction(function () use ($order, $device, $event, $payments, $capturedAt, $loyaltyRuleIds, $loyaltyRedeem): array {
             $paymentIds = [];
             $tenderedBaisas = 0;
             // Card-paid portion of this sale — drives the acquirer (bank)
@@ -143,9 +143,17 @@ class PayOrderHandler implements SyncEventHandler
                 $event->client_event_id,
             );
 
-            // Loyalty earn (server-authoritative, §9.1.6): only when the
-            // cashier picked a rule for a known customer.
-            $loyaltyTxn = $loyaltyRuleId !== null ? $this->loyalty->apply($order, $loyaltyRuleId) : null;
+            // Loyalty earn (server-authoritative, §9.1.6): accrue under EVERY
+            // rule the cashier named for a known customer. A merchant can run
+            // several earn programs at once (e.g. a stamp card AND points), so
+            // each applicable rule credits — not just the first (v2 #3).
+            $loyaltyTxnIds = [];
+            foreach ($loyaltyRuleIds as $ruleId) {
+                $txn = $this->loyalty->apply($order, $ruleId);
+                if ($txn !== null) {
+                    $loyaltyTxnIds[] = (int) $txn->id;
+                }
+            }
 
             // Loyalty redemption: record the points/stamps SPENT (their value
             // is already on the order as a snapshot discount).
@@ -164,10 +172,35 @@ class PayOrderHandler implements SyncEventHandler
                 'payment_ids' => $paymentIds,
                 'movements' => $movements,
                 'sale_commission_ids' => $saleCommissionIds,
-                'loyalty_transaction_id' => $loyaltyTxn?->id,
+                // First id kept for back-compat; the full set under _ids.
+                'loyalty_transaction_id' => $loyaltyTxnIds[0] ?? null,
+                'loyalty_transaction_ids' => $loyaltyTxnIds,
                 'loyalty_redeem_transaction_id' => $redeemTxn?->id,
             ];
         });
+    }
+
+    /**
+     * The loyalty EARN rule ids named on the pay event. Accepts the v2 #3
+     * `loyalty_rule_ids` (array — earn under several programs at once) or the
+     * legacy single `loyalty_rule_id`. De-duped, positive ints only.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return list<int>
+     */
+    private function earnRuleIds(array $payload): array
+    {
+        $raw = [];
+        if (is_array($payload['loyalty_rule_ids'] ?? null)) {
+            $raw = $payload['loyalty_rule_ids'];
+        } elseif (isset($payload['loyalty_rule_id'])) {
+            $raw = [$payload['loyalty_rule_id']];
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn ($v): int => (int) $v, $raw),
+            static fn (int $v): bool => $v > 0,
+        )));
     }
 
     /**

@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
+use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use Illuminate\Http\Request;
@@ -73,6 +74,7 @@ Route::prefix('v1')->group(function (): void {
         // active orders, customer lookup by phone/plate, register a customer.
         Route::get('device/orders/active', [DeviceOrdersController::class, 'active'])->name('device.orders.active');
         Route::get('device/orders/history', [DeviceOrdersController::class, 'history'])->name('device.orders.history');
+        Route::get('device/shift/current', [DeviceShiftController::class, 'current'])->name('device.shift.current');
         Route::get('device/customers/search', [DeviceCustomersController::class, 'search'])->name('device.customers.search');
         Route::post('device/customers', [DeviceCustomersController::class, 'store'])->name('device.customers.store');
     });

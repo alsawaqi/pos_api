@@ -397,4 +397,49 @@ class DeviceConfigTest extends TestCase
         $this->assertEquals(20.0, $latte['branch_stock_qty']);
         $this->assertNull($tea['branch_stock_qty']);
     }
+
+    public function test_settings_defaults_order_cancel_positions_to_manager(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // company 100, no policy row configured
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame(['manager'], $data['settings']['order_cancel_positions']);
+    }
+
+    public function test_settings_reflects_the_merchant_order_cancel_policy(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100,
+            'key' => 'order_cancel_positions',
+            'value' => json_encode(['manager', 'supervisor']),
+            'created_at' => $this->old,
+            'updated_at' => $this->old,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame(['manager', 'supervisor'], $data['settings']['order_cancel_positions']);
+    }
+
+    public function test_settings_policy_is_scoped_to_the_devices_company(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // company 100
+        // A policy for ANOTHER company must not leak into this device's config.
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 200,
+            'key' => 'order_cancel_positions',
+            'value' => json_encode(['cashier']),
+            'created_at' => $this->old,
+            'updated_at' => $this->old,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame(['manager'], $data['settings']['order_cancel_positions']);
+    }
 }

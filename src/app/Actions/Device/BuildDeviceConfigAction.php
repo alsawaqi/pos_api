@@ -201,6 +201,12 @@ class BuildDeviceConfigAction
         )->get();
 
         $data = [
+            // Company POS policy the device enforces (v2 #14). Always emitted
+            // (full + delta) so a policy change reaches the device promptly — it
+            // is a tiny scalar block, not a delta-tracked collection.
+            'settings' => [
+                'order_cancel_positions' => $this->orderCancelPositions($companyId),
+            ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
             'tables' => $tables->map(fn (Table $t): array => $this->mapTable($t))->all(),
@@ -245,6 +251,34 @@ class BuildDeviceConfigAction
                 'terminal_id' => $device->terminal_id,
             ],
         ];
+    }
+
+    /**
+     * The staff positions allowed to cancel a completed order at the POS (v2
+     * #14), read from the merchant-written pos_company_settings. Falls back to
+     * managers-only when the merchant hasn't set a policy — the safe default
+     * matching the device's legacy "manager approval" gate.
+     *
+     * @return list<string>
+     */
+    private function orderCancelPositions(int $companyId): array
+    {
+        $raw = DB::table('pos_company_settings')
+            ->where('company_id', $companyId)
+            ->where('key', 'order_cancel_positions')
+            ->value('value');
+
+        $positions = is_string($raw) ? json_decode($raw, true) : $raw;
+        if (! is_array($positions)) {
+            $positions = [];
+        }
+
+        $positions = array_values(array_filter(
+            array_map(static fn ($p): string => is_string($p) ? trim($p) : '', $positions),
+            static fn (string $p): bool => $p !== '',
+        ));
+
+        return $positions === [] ? ['manager'] : $positions;
     }
 
     /**

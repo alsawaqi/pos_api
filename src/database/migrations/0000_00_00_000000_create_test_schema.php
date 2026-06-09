@@ -676,10 +676,21 @@ return new class extends Migration
             $table->timestamps();
             $table->unique(['order_id', 'sort_order'], 'pos_sale_commissions_order_sort_unique');
         });
+
+        // v2 #14 — per-company merchant POS policy (e.g. order_cancel_positions).
+        Schema::create('pos_company_settings', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->string('key', 64);
+            $table->json('value')->nullable();
+            $table->timestamps();
+            $table->unique(['company_id', 'key'], 'pos_company_settings_company_key_unique');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_company_settings');
         Schema::dropIfExists('pos_sale_commissions');
         Schema::dropIfExists('pos_commission_shares');
         Schema::dropIfExists('pos_commission_profiles');

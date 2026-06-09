@@ -72,6 +72,7 @@ Route::prefix('v1')->group(function (): void {
         // Live reads/writes the POS UI needs mid-sale (§11.4): the branch's
         // active orders, customer lookup by phone/plate, register a customer.
         Route::get('device/orders/active', [DeviceOrdersController::class, 'active'])->name('device.orders.active');
+        Route::get('device/orders/history', [DeviceOrdersController::class, 'history'])->name('device.orders.history');
         Route::get('device/customers/search', [DeviceCustomersController::class, 'search'])->name('device.customers.search');
         Route::post('device/customers', [DeviceCustomersController::class, 'store'])->name('device.customers.store');
     });

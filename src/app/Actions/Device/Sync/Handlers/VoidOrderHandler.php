@@ -185,11 +185,19 @@ class VoidOrderHandler implements SyncEventHandler
 
     /**
      * Drop the per-party commission breakdown so the voided sale leaves no trace
-     * in any settlement/payout total. Returns the number of rows removed.
+     * in any settlement total. Returns the number of rows removed.
+     *
+     * v2 #17 guard: rows already CLAIMED by a payout (payout_id set) are NEVER
+     * deleted — a created/paid payout's snapshot must stay backed by real rows
+     * (the merchant's settlement is a frozen fact; voiding the sale afterwards
+     * can't erase it). Only unsettled rows are reversed.
      */
     private function reverseCommission(Order $order): int
     {
-        return SaleCommission::query()->where('order_id', $order->id)->delete();
+        return SaleCommission::query()
+            ->where('order_id', $order->id)
+            ->whereNull('payout_id')
+            ->delete();
     }
 
     private function appendReason(?string $note, ?string $reason): ?string

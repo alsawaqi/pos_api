@@ -665,6 +665,7 @@ return new class extends Migration
             $table->unsignedBigInteger('order_id');
             $table->unsignedBigInteger('payment_id')->nullable();
             $table->unsignedBigInteger('commission_profile_id')->nullable();
+            $table->unsignedBigInteger('payout_id')->nullable();
             $table->string('party_type', 20);
             $table->string('party_label', 120);
             $table->decimal('percent', 5, 2);

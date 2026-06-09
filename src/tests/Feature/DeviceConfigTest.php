@@ -180,6 +180,30 @@ class DeviceConfigTest extends TestCase
         $this->assertSame([], $tea['delivery_prices']);
     }
 
+    public function test_config_emits_the_branch_receipt_template(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        DB::table('pos_branches')->where('id', 10)->update([
+            'receipt_template' => json_encode([
+                'business_name' => 'Aroma Cafe',
+                'cr_number' => 'CR-12345',
+                'vat_number' => 'OM100200300',
+                'footer_lines' => ['Thank you'],
+                'show_qr' => true,
+            ]),
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame('Aroma Cafe', $data['branch']['receipt_template']['business_name']);
+        $this->assertSame('CR-12345', $data['branch']['receipt_template']['cr_number']);
+        $this->assertSame('OM100200300', $data['branch']['receipt_template']['vat_number']);
+        $this->assertSame(['Thank you'], $data['branch']['receipt_template']['footer_lines']);
+        $this->assertTrue($data['branch']['receipt_template']['show_qr']);
+    }
+
     public function test_full_config_returns_the_scoped_catalogue(): void
     {
         $this->seedCatalogue();

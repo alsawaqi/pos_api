@@ -388,6 +388,9 @@ class BuildDeviceConfigAction
             'default_order_type' => $b->default_order_type,
             'opening_hours' => $b->opening_hours_json,
             'settings' => $b->settings,
+            // Per-branch merchant-authored receipt template (header/CR/VAT/
+            // footer); null = device prints its built-in default receipt.
+            'receipt_template' => $b->receipt_template,
             'status' => $b->status,
         ];
     }

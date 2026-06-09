@@ -104,6 +104,7 @@ return new class extends Migration
             $table->json('opening_hours_json')->nullable();
             $table->string('default_order_type', 16)->default('dine_in');
             $table->json('settings')->nullable();
+            $table->json('receipt_template')->nullable();
             $table->string('status', 32)->default('active');
             $table->timestamps();
             $table->softDeletes();

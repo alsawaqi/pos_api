@@ -185,6 +185,7 @@ class DeviceConfigTest extends TestCase
         $this->seedCatalogue();
         $this->pairedDevice();
 
+        $logo = base64_encode("\x89PNG\r\n\x1a\nfake-png");
         DB::table('pos_branches')->where('id', 10)->update([
             'receipt_template' => json_encode([
                 'business_name' => 'Aroma Cafe',
@@ -192,6 +193,7 @@ class DeviceConfigTest extends TestCase
                 'vat_number' => 'OM100200300',
                 'footer_lines' => ['Thank you'],
                 'show_qr' => true,
+                'logo_base64' => $logo,
             ]),
         ]);
 
@@ -202,6 +204,8 @@ class DeviceConfigTest extends TestCase
         $this->assertSame('OM100200300', $data['branch']['receipt_template']['vat_number']);
         $this->assertSame(['Thank you'], $data['branch']['receipt_template']['footer_lines']);
         $this->assertTrue($data['branch']['receipt_template']['show_qr']);
+        // The logo rides inside the same JSON map — no pos_api change needed.
+        $this->assertSame($logo, $data['branch']['receipt_template']['logo_base64']);
     }
 
     public function test_full_config_returns_the_scoped_catalogue(): void

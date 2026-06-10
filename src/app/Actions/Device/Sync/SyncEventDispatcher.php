@@ -9,6 +9,7 @@ use App\Actions\Device\Sync\Handlers\CloseShiftHandler;
 use App\Actions\Device\Sync\Handlers\CreateOrderHandler;
 use App\Actions\Device\Sync\Handlers\DonationRecordHandler;
 use App\Actions\Device\Sync\Handlers\ExpenseLogHandler;
+use App\Actions\Device\Sync\Handlers\HoldOrderHandler;
 use App\Actions\Device\Sync\Handlers\OpenShiftHandler;
 use App\Actions\Device\Sync\Handlers\PayOrderHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
@@ -35,6 +36,7 @@ class SyncEventDispatcher
 {
     public function __construct(
         private readonly CreateOrderHandler $createOrder,
+        private readonly HoldOrderHandler $holdOrder,
         private readonly PayOrderHandler $payOrder,
         private readonly VoidOrderHandler $voidOrder,
         private readonly OpenShiftHandler $openShift,
@@ -49,6 +51,7 @@ class SyncEventDispatcher
     {
         $handler = match ($event->event_type) {
             'order.create' => $this->createOrder,
+            'order.hold' => $this->holdOrder,
             'order.pay' => $this->payOrder,
             'order.void' => $this->voidOrder,
             'shift.open' => $this->openShift,

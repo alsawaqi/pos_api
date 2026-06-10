@@ -47,17 +47,46 @@ class CreateOrderHandler implements SyncEventHandler
 
     public function handle(SyncEvent $event, Device $device): array
     {
+        return $this->writeOrder($event, $device, Order::STATUS_OPEN, enforceGeofence: true);
+    }
+
+    /**
+     * Phase C2 — the shared write path for order.create (status=open,
+     * geofenced) and order.hold (status=held, NO geofence: a hold moves no
+     * money or stock and must mirror even when queued offline without a GPS
+     * fix; order.pay re-checks the fence).
+     *
+     * UPSERT-BY-UUID: a same-uuid NON-terminal row is replaced in place — a
+     * re-hold refreshes the mirror, and the finalize order.create flips a held
+     * mirror to open (the device cannot know offline whether its earlier
+     * order.hold reached the server). A terminal row (paid/void/refunded)
+     * fails the event instead.
+     */
+    public function writeOrder(SyncEvent $event, Device $device, string $status, bool $enforceGeofence): array
+    {
         $order = (array) ($event->payload_json['order'] ?? null);
-        $this->validate($order);
+        $this->validate($order, $event->event_type);
         $this->assertMoneyInvariant($order);
         $this->assertReferencesInTenant($order, $device);
-        $this->enforceGeofence($order, $device);
+        if ($enforceGeofence) {
+            $this->enforceGeofence($order, $device);
+        }
 
-        return DB::transaction(function () use ($order, $device, $event): array {
-            $model = Order::create([
-                'uuid' => $order['uuid'],
-                'company_id' => $device->company_id,
-                'branch_id' => $device->branch_id,
+        return DB::transaction(function () use ($order, $device, $event, $status): array {
+            $existing = Order::query()->where('uuid', $order['uuid'])->lockForUpdate()->first();
+            if ($existing !== null
+                && ((int) $existing->company_id !== (int) $device->company_id
+                    || (int) $existing->branch_id !== (int) $device->branch_id)) {
+                // §9.11 — a uuid squatted by another tenant/branch can neither
+                // be read nor overwritten; fail without leaking its contents.
+                throw new RuntimeException('order uuid already exists outside the device tenant');
+            }
+            if ($existing !== null
+                && in_array($existing->status, [Order::STATUS_PAID, Order::STATUS_VOID, Order::STATUS_REFUNDED], true)) {
+                throw new RuntimeException(sprintf('order %s already exists in terminal status %s', $order['uuid'], $existing->status));
+            }
+
+            $columns = [
                 'device_id' => $device->getKey(),
                 // The device's GPS at order time (also used for the
                 // geofence check above). Persisted so reports + support
@@ -68,7 +97,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'customer_id' => $order['customer_id'] ?? null,
                 'table_id' => $order['table_id'] ?? null,
                 'order_type' => $order['order_type'],
-                'status' => Order::STATUS_OPEN,
+                'status' => $status,
                 'source' => $order['source'],
                 'plate_number' => $order['plate_number'] ?? null,
                 'subtotal' => Money::toOmr((int) $order['subtotal_baisas']),
@@ -80,7 +109,19 @@ class CreateOrderHandler implements SyncEventHandler
                 'opened_at' => Carbon::parse((string) $order['opened_at']),
                 'client_event_id' => $event->client_event_id,
                 'note' => $order['note'] ?? null,
-            ]);
+            ];
+
+            if ($existing !== null) {
+                $this->purgeOrderChildren($existing);
+                $existing->update($columns);
+                $model = $existing;
+            } else {
+                $model = Order::create([
+                    'uuid' => $order['uuid'],
+                    'company_id' => $device->company_id,
+                    'branch_id' => $device->branch_id,
+                ] + $columns);
+            }
 
             $itemIds = [];
             foreach ($order['lines'] as $index => $line) {
@@ -117,8 +158,31 @@ class CreateOrderHandler implements SyncEventHandler
             $discountCount = $this->writeDiscounts($order, $model, $device, $itemIds);
             $compCount = $this->writeComps($order, $model, $device, $itemIds);
 
-            return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created', 'discounts' => $discountCount, 'comps' => $compCount];
+            return [
+                'order_id' => (int) $model->id,
+                'order_uuid' => $model->uuid,
+                'status' => $model->wasRecentlyCreated ? 'created' : 'updated',
+                'order_status' => $status,
+                'discounts' => $discountCount,
+                'comps' => $compCount,
+            ];
         });
+    }
+
+    /**
+     * Phase C2 — drop an upserted order's child rows before the rewrite. The
+     * payload is snapshot-authoritative, so replacement (not diffing) is the
+     * correct semantics for a re-held / finalized mirror.
+     */
+    private function purgeOrderChildren(Order $order): void
+    {
+        $itemIds = OrderItem::query()->where('order_id', $order->id)->pluck('id');
+        if ($itemIds->isNotEmpty()) {
+            OrderItemAddon::query()->whereIn('order_item_id', $itemIds)->delete();
+            OrderItem::query()->whereIn('id', $itemIds)->delete();
+        }
+        OrderDiscount::query()->where('order_id', $order->id)->delete();
+        OrderComp::query()->where('order_id', $order->id)->delete();
     }
 
     /**
@@ -315,7 +379,7 @@ class CreateOrderHandler implements SyncEventHandler
     /**
      * @param  array<string, mixed>  $order
      */
-    private function validate(array $order): void
+    private function validate(array $order, string $eventType): void
     {
         $validator = Validator::make($order, [
             'uuid' => ['required', 'uuid'],
@@ -350,7 +414,7 @@ class CreateOrderHandler implements SyncEventHandler
         ]);
 
         if ($validator->fails()) {
-            throw new RuntimeException('invalid order.create payload: '.implode('; ', $validator->errors()->all()));
+            throw new RuntimeException(sprintf('invalid %s payload: %s', $eventType, implode('; ', $validator->errors()->all())));
         }
     }
 

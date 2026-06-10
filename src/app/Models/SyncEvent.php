@@ -63,6 +63,9 @@ class SyncEvent extends Model
      */
     public const EVENT_TYPES = [
         'order.create',
+        // Phase C2 — mirror a held (parked) order server-side so it survives
+        // a device wipe and is visible to the branch's other terminals.
+        'order.hold',
         'order.pay',
         'order.void',
         'donation.record',

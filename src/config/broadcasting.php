@@ -34,6 +34,17 @@ return [
             'client_options' => [
                 // Guzzle options for the server → Reverb HTTP publish call.
             ],
+            // Phase C3 — what the DEVICE dials (often different from the
+            // publish host above, which is the in-compose service DNS). A
+            // null host means "use the API host you already talk to" — right
+            // for dev where only the device knows the LAN IP; prod sets
+            // REVERB_PUBLIC_HOST to the public wss hostname. Served to
+            // devices in /device/config meta.websocket.
+            'public' => [
+                'host' => env('REVERB_PUBLIC_HOST'),
+                'port' => env('REVERB_PUBLIC_PORT', env('REVERB_PORT', 8080)),
+                'scheme' => env('REVERB_PUBLIC_SCHEME', env('REVERB_SCHEME', 'http')),
+            ],
         ],
 
         'pusher' => [

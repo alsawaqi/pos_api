@@ -276,7 +276,37 @@ class BuildDeviceConfigAction
                 'company_id' => $companyId,
                 'branch_id' => $branchId,
                 'terminal_id' => $device->terminal_id,
+                // Phase C3 (§9.3/§11.5) — where the device should dial its
+                // Reverb WebSocket. Null when broadcasting isn't configured.
+                'websocket' => $this->websocketMeta(),
             ],
+        ];
+    }
+
+    /**
+     * The device-facing Reverb endpoint (Phase C3). `host` null = "dial the
+     * same host you already reach the API on" — in dev the LAN IP only the
+     * device knows; in prod set REVERB_PUBLIC_HOST to the wss hostname.
+     * Returns null unless the reverb broadcaster is active and has an app key,
+     * so devices skip the WebSocket entirely on un-configured installs.
+     *
+     * @return array{app_key: string, host: string|null, port: int, scheme: string}|null
+     */
+    private function websocketMeta(): ?array
+    {
+        if (config('broadcasting.default') !== 'reverb') {
+            return null;
+        }
+        $key = (string) config('broadcasting.connections.reverb.key', '');
+        if ($key === '') {
+            return null;
+        }
+
+        return [
+            'app_key' => $key,
+            'host' => config('broadcasting.connections.reverb.public.host'),
+            'port' => (int) config('broadcasting.connections.reverb.public.port', 8080),
+            'scheme' => (string) config('broadcasting.connections.reverb.public.scheme', 'http'),
         ];
     }
 

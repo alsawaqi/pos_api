@@ -35,6 +35,27 @@ services:
       - pos_api
       - pos_api_redis
 
+  # Phase C3 (§9.3/§11.5) — the Reverb WebSocket server devices subscribe to
+  # for live config/order push. Dev twin of docker-compose.prod.yml's
+  # profile-gated `reverb` service. The Laravel app publishes to it via
+  # REVERB_HOST=reverb (service DNS) :8080; devices on the LAN dial the
+  # docker HOST on 8085 (REVERB_PUBLIC_PORT) — 8080 is left free since other
+  # stacks on this machine commonly bind it.
+  reverb:
+    build:
+      context: .
+      dockerfile: docker/dev/php/php.dockerfile
+    volumes:
+      - ./src:/var/www/html
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    depends_on:
+      - pos_api
+    networks:
+      - charity_net
+
   # NOTE: this is a JSON-only device API — no Vue frontend — so the vite
   # service isn't needed and can be deleted. Port bumped 5175 -> 5176 only
   # to avoid colliding with pos_admin's vite (5175) if you keep it running.

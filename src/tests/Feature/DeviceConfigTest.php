@@ -208,6 +208,37 @@ class DeviceConfigTest extends TestCase
         $this->assertSame($logo, $data['branch']['receipt_template']['logo_base64']);
     }
 
+    /**
+     * Phase C3 — meta.websocket tells the device where to dial Reverb. Null
+     * under the test suite's null broadcaster (and any un-configured install);
+     * populated when the reverb connection is active with an app key. A null
+     * host means "reuse the API host you already talk to".
+     */
+    public function test_meta_websocket_reflects_the_reverb_configuration(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        // phpunit.xml pins the null broadcaster — no websocket block.
+        $this->assertNull(
+            $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->json('meta.websocket'),
+        );
+
+        config([
+            'broadcasting.default' => 'reverb',
+            'broadcasting.connections.reverb.key' => 'app-key-1',
+            'broadcasting.connections.reverb.public.host' => null,
+            'broadcasting.connections.reverb.public.port' => 8085,
+            'broadcasting.connections.reverb.public.scheme' => 'http',
+        ]);
+
+        $ws = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->json('meta.websocket');
+        $this->assertSame(
+            ['app_key' => 'app-key-1', 'host' => null, 'port' => 8085, 'scheme' => 'http'],
+            $ws,
+        );
+    }
+
     public function test_full_config_returns_the_scoped_catalogue(): void
     {
         $this->seedCatalogue();

@@ -12,6 +12,7 @@ use App\Actions\Device\Sync\Handlers\ExpenseLogHandler;
 use App\Actions\Device\Sync\Handlers\OpenShiftHandler;
 use App\Actions\Device\Sync\Handlers\PayOrderHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
+use App\Actions\Device\Sync\Handlers\StockCountHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
@@ -41,6 +42,7 @@ class SyncEventDispatcher
         private readonly ExpenseLogHandler $expenseLog,
         private readonly RestockRequestHandler $restockRequest,
         private readonly DonationRecordHandler $donationRecord,
+        private readonly StockCountHandler $stockCount,
     ) {}
 
     public function dispatch(SyncEvent $event, Device $device): void
@@ -54,6 +56,7 @@ class SyncEventDispatcher
             'expense.log' => $this->expenseLog,
             'restock.request' => $this->restockRequest,
             'donation.record' => $this->donationRecord,
+            'stock.count' => $this->stockCount,
             default => null,
         };
 

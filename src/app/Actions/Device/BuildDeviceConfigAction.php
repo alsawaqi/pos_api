@@ -605,6 +605,12 @@ class BuildDeviceConfigAction
             'name' => $i->name,
             'name_ar' => $i->name_ar,
             'unit' => $i->unit,
+            // Phase A (Additions §2.3) — the piece model, so the device can
+            // render day-end counts in physical pieces ("5 bottles").
+            'piece_unit_label' => $i->piece_unit_label,
+            'piece_unit_label_ar' => $i->piece_unit_label_ar,
+            'units_per_piece' => $this->num($i->units_per_piece),
+            'allow_fractional_pieces' => (bool) ($i->allow_fractional_pieces ?? true),
             'default_unit_cost_baisas' => $this->baisas($i->default_unit_cost),
             'min_stock_threshold' => $this->num($i->min_stock_threshold),
             'status' => $i->status,

@@ -68,6 +68,8 @@ class SyncEvent extends Model
         'donation.record',
         'expense.log',
         'restock.request',
+        // Phase A (Additions §2.8) — day-end physical stock count.
+        'stock.count',
         'shift.open',
         'shift.close',
         // Reserved no-op: ingested + ACKed but has NO domain handler, so it

@@ -25,6 +25,8 @@ class Ingredient extends Model
     protected function casts(): array
     {
         return [
+            'units_per_piece' => 'decimal:4',
+            'allow_fractional_pieces' => 'boolean',
             'default_unit_cost' => 'decimal:3',
             'min_stock_threshold' => 'decimal:3',
         ];

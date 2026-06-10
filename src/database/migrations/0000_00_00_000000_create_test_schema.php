@@ -248,6 +248,11 @@ return new class extends Migration
             $table->string('name');
             $table->string('name_ar')->nullable();
             $table->string('unit', 16)->default('piece');
+            // Phase A (Additions §2.3) — the piece model.
+            $table->string('piece_unit_label', 32)->nullable();
+            $table->string('piece_unit_label_ar', 32)->nullable();
+            $table->decimal('units_per_piece', 14, 4)->nullable();
+            $table->boolean('allow_fractional_pieces')->default(true);
             $table->decimal('default_unit_cost', 12, 3)->default(0);
             $table->decimal('min_stock_threshold', 12, 3)->nullable();
             $table->unsignedBigInteger('primary_supplier_id')->nullable();
@@ -473,6 +478,50 @@ return new class extends Migration
             $table->text('note')->nullable();
             $table->timestamp('occurred_at')->useCurrent();
             $table->timestamp('created_at')->useCurrent();
+        });
+
+        // ---- Phase A (Additions §2.8) — day-end stock counts ----
+
+        // Written by the stock.count handler on a shortfall (reason =
+        // reconciliation_variance); the merchant portal owns manual waste.
+        Schema::create('pos_waste_records', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->decimal('quantity', 12, 3);
+            $table->string('reason', 32);
+            $table->string('unit_at_set', 16);
+            $table->decimal('unit_cost_at_time', 12, 3)->default(0);
+            $table->text('notes')->nullable();
+            $table->unsignedBigInteger('recorded_by_user_id')->nullable();
+            $table->timestamp('occurred_at')->useCurrent();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_stock_counts', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->text('note')->nullable();
+            $table->unsignedBigInteger('recorded_by_user_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_pos_staff_id')->nullable();
+            $table->timestamp('counted_at')->useCurrent();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_stock_count_lines', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('stock_count_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->decimal('counted_pieces', 12, 3)->nullable();
+            $table->decimal('counted_units', 12, 3);
+            $table->decimal('expected_units', 12, 3);
+            $table->decimal('variance_units', 12, 3);
+            $table->decimal('unit_cost_at_time', 12, 3)->default(0);
+            $table->unsignedBigInteger('stock_movement_id')->nullable();
+            $table->unique(['stock_count_id', 'ingredient_id'], 'pos_stock_count_lines_count_ingredient_unique');
         });
 
         // ---- Phase 8.4 loyalty slice (earn-at-sale writes) ----
@@ -705,6 +754,9 @@ return new class extends Migration
         Schema::dropIfExists('pos_shifts');
         Schema::dropIfExists('pos_loyalty_transactions');
         Schema::dropIfExists('pos_loyalty_accounts');
+        Schema::dropIfExists('pos_stock_count_lines');
+        Schema::dropIfExists('pos_stock_counts');
+        Schema::dropIfExists('pos_waste_records');
         Schema::dropIfExists('pos_stock_movements');
         Schema::dropIfExists('pos_payments');
         Schema::dropIfExists('pos_order_discounts');

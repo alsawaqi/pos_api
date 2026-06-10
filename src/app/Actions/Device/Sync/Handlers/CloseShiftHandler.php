@@ -6,6 +6,7 @@ namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Device;
+use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Shift;
 use App\Models\SyncEvent;
@@ -79,7 +80,92 @@ class CloseShiftHandler implements SyncEventHandler
                 'status' => 'closed',
                 'expected_cash_baisas' => $expectedBaisas,
                 'variance_baisas' => $varianceBaisas,
+                // Phase C6 — the printed shift-summary (Z-report) numbers,
+                // server-authoritative, piggybacked on the close the device
+                // already awaits. Optional fields: old clients ignore them.
+                'summary' => $this->salesSummary($shift, $closedAt),
             ];
         });
+    }
+
+    /**
+     * Phase C6 — the shift's sales summary (blueprint Phase 9 #88 "Daily
+     * sales summary"; Additions §1.2 Shift Report fields), computed inside
+     * the close transaction over the same window + attribution the
+     * expected-cash math uses: orders on THIS device, temporally between
+     * opened_at and closed_at. Money = integer baisas on the wire.
+     *
+     * Expenses are BRANCH-scoped (pos_expenses carries no device_id) and
+     * informational only — they do not enter the drawer math, matching
+     * the merchant ShiftReportAction.
+     *
+     * @return array<string, mixed>
+     */
+    private function salesSummary(Shift $shift, Carbon $closedAt): array
+    {
+        $window = [$shift->opened_at, $closedAt];
+
+        $orders = DB::table('pos_orders')
+            ->where('device_id', $shift->device_id)
+            ->where('status', Order::STATUS_PAID)
+            ->whereBetween('opened_at', $window)
+            ->selectRaw(
+                'COUNT(*) as cnt,'
+                .' COALESCE(SUM(subtotal), 0) as sub,'
+                .' COALESCE(SUM(discount_total), 0) as disc,'
+                .' COALESCE(SUM(comp_total), 0) as comp,'
+                .' COALESCE(SUM(tax_total), 0) as tax,'
+                .' COALESCE(SUM(grand_total), 0) as grand'
+            )
+            ->first();
+
+        $tenders = Payment::query()
+            ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
+            ->where('pos_payments.status', Payment::STATUS_SUCCESS)
+            ->where('pos_orders.device_id', $shift->device_id)
+            ->whereBetween('pos_payments.captured_at', $window)
+            ->groupBy('pos_payments.method')
+            ->orderBy('pos_payments.method')
+            ->selectRaw(
+                'pos_payments.method,'
+                .' COALESCE(SUM(pos_payments.amount - COALESCE(pos_payments.change_given, 0)), 0) as amt,'
+                .' COUNT(*) as cnt'
+            )
+            ->get();
+
+        $voids = DB::table('pos_orders')
+            ->where('device_id', $shift->device_id)
+            ->where('status', Order::STATUS_VOID)
+            ->whereBetween('opened_at', $window)
+            ->selectRaw('COUNT(*) as cnt, COALESCE(SUM(grand_total), 0) as amt')
+            ->first();
+
+        $roundUp = DB::table('pos_roundup_donations')
+            ->where('device_id', $shift->device_id)
+            ->whereBetween('created_at', $window)
+            ->sum('amount');
+
+        $expenses = DB::table('pos_expenses')
+            ->where('branch_id', $shift->branch_id)
+            ->whereBetween('logged_at', $window)
+            ->sum('amount');
+
+        return [
+            'order_count' => (int) ($orders->cnt ?? 0),
+            'gross_sales_baisas' => Money::toBaisas($orders->sub ?? 0),
+            'discount_total_baisas' => Money::toBaisas($orders->disc ?? 0),
+            'comp_total_baisas' => Money::toBaisas($orders->comp ?? 0),
+            'tax_total_baisas' => Money::toBaisas($orders->tax ?? 0),
+            'grand_total_baisas' => Money::toBaisas($orders->grand ?? 0),
+            'tenders' => $tenders->map(fn ($t): array => [
+                'method' => (string) $t->method,
+                'amount_baisas' => Money::toBaisas($t->amt),
+                'count' => (int) $t->cnt,
+            ])->values()->all(),
+            'void_count' => (int) ($voids->cnt ?? 0),
+            'void_total_baisas' => Money::toBaisas($voids->amt ?? 0),
+            'round_up_baisas' => Money::toBaisas($roundUp),
+            'branch_expenses_baisas' => Money::toBaisas($expenses),
+        ];
     }
 }

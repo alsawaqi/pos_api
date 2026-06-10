@@ -186,6 +186,47 @@ class DeviceSyncShiftTest extends TestCase
         $this->assertSame(1, Shift::count());
     }
 
+    /**
+     * Phase C6 — the close result carries the printed Z-report numbers,
+     * attributed exactly like expected_cash (this device, temporal window).
+     */
+    public function test_close_returns_the_shift_sales_summary(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000)])->assertOk();
+        $this->ringCashSale('mdev_a', 3000);
+        $this->ringCashSale('mdev_a', 2000);
+
+        // A voided order in the window shows in the voids line, not in sales.
+        $voidUuid = (string) Str::uuid();
+        $this->push('mdev_a', [$this->createEvent($voidUuid, 1500)])->assertOk();
+        $this->push('mdev_a', [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.void',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => ['order_uuid' => $voidUuid, 'voided_at' => now()->toIso8601String(), 'reason' => 'test'],
+        ]])->assertOk();
+
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftUuid, 15000)])->assertOk();
+        $summary = $res->json('data.results.0.result.summary');
+
+        $this->assertSame(2, $summary['order_count']);
+        $this->assertSame(5000, $summary['gross_sales_baisas']);
+        $this->assertSame(0, $summary['discount_total_baisas']);
+        $this->assertSame(0, $summary['comp_total_baisas']);
+        $this->assertSame(5000, $summary['grand_total_baisas']);
+        $this->assertSame(1, $summary['void_count']);
+        $this->assertSame(1500, $summary['void_total_baisas']);
+        $this->assertSame(0, $summary['round_up_baisas']);
+        $this->assertSame(0, $summary['branch_expenses_baisas']);
+        $tenders = collect($summary['tenders']);
+        $this->assertSame(5000, $tenders->firstWhere('method', 'cash')['amount_baisas']);
+        $this->assertSame(2, $tenders->firstWhere('method', 'cash')['count']);
+    }
+
     public function test_close_excludes_cash_taken_on_another_device(): void
     {
         $this->seedProduct();

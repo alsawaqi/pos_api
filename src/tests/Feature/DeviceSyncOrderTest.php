@@ -493,6 +493,20 @@ class DeviceSyncOrderTest extends TestCase
 
         // Decremented at pay: 20 - 2 = 18.
         $this->assertEqualsWithDelta(18.0, (float) DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'), 1e-9);
+
+        // Phase D1 — the move also lands in the PRODUCT ledger so the
+        // merchant Stock dialog's history shows the device sale. branch
+        // side only: the central pool stays untouched.
+        $this->assertDatabaseCount('pos_product_stock_movements', 1);
+        $this->assertDatabaseHas('pos_product_stock_movements', [
+            'company_id' => 100,
+            'product_id' => 1,
+            'branch_id' => 10,
+            'movement_type' => 'sale_consumption',
+            'reference_type' => 'pos_orders',
+        ]);
+        $this->assertEqualsWithDelta(-2.0, (float) DB::table('pos_product_stock_movements')->value('quantity'), 1e-9);
+        $this->assertDatabaseCount('pos_product_stock', 0);
     }
 
     public function test_voiding_a_paid_order_restores_branch_product_stock(): void
@@ -510,6 +524,15 @@ class DeviceSyncOrderTest extends TestCase
 
         // Net zero: back to 20.
         $this->assertEqualsWithDelta(20.0, (float) DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'), 1e-9);
+
+        // Phase D1 — pay + void = two signed sale_consumption ledger rows
+        // summing to zero (the reversal convention the ingredient ledger uses).
+        $this->assertDatabaseCount('pos_product_stock_movements', 2);
+        $this->assertSame(
+            2,
+            DB::table('pos_product_stock_movements')->where('movement_type', 'sale_consumption')->count(),
+        );
+        $this->assertEqualsWithDelta(0.0, (float) DB::table('pos_product_stock_movements')->sum('quantity'), 1e-9);
     }
 
     public function test_an_untracked_product_is_unaffected_by_sales(): void
@@ -527,6 +550,9 @@ class DeviceSyncOrderTest extends TestCase
 
         // Still null — untracked products aren't decremented.
         $this->assertNull(DB::table('pos_branch_product')->where(['branch_id' => 10, 'product_id' => 1])->value('stock_qty'));
+
+        // Phase D1 — and no product-ledger row either (untracked = no-op).
+        $this->assertDatabaseCount('pos_product_stock_movements', 0);
     }
 
     /** v2 #14 — seed a customer + a visit_based loyalty rule for company 100. */

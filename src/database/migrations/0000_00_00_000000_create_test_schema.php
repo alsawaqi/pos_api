@@ -303,6 +303,36 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        // Phase D1 — central product-unit pool + its signed append-only
+        // ledger (schema owned by pos_admin 2026_06_25_0101/0200). pos_api
+        // only appends sale_consumption rows (branch side); the central
+        // balance sums branch_id-NULL rows only and must stay untouched.
+        Schema::create('pos_product_stock', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('product_id');
+            $table->decimal('quantity', 12, 3)->default(0);
+            $table->timestamp('last_movement_at')->nullable();
+            $table->timestamps();
+            $table->unique(['company_id', 'product_id']);
+        });
+
+        Schema::create('pos_product_stock_movements', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('product_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
+            $table->string('movement_type', 32);
+            $table->decimal('quantity', 12, 3);
+            $table->string('reference_type')->nullable();
+            $table->unsignedBigInteger('reference_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_user_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_pos_staff_id')->nullable();
+            $table->text('note')->nullable();
+            $table->timestamp('occurred_at')->useCurrent();
+            $table->timestamp('created_at')->useCurrent();
+        });
+
         Schema::create('pos_discounts', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();
@@ -836,6 +866,8 @@ return new class extends Migration
         Schema::dropIfExists('pos_discount_targets');
         Schema::dropIfExists('pos_discounts');
         Schema::dropIfExists('pos_branch_stock');
+        Schema::dropIfExists('pos_product_stock_movements');
+        Schema::dropIfExists('pos_product_stock');
         Schema::dropIfExists('pos_product_recipes');
         Schema::dropIfExists('pos_ingredients');
         Schema::dropIfExists('pos_addon_group_products');

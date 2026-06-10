@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\AttachSentryDeviceContext;
 use App\Http\Middleware\ForceJsonResponse;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -27,9 +28,23 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(prepend: [
             ForceJsonResponse::class,
         ]);
+
+        // Phase D1 — Sentry device context (device/company/branch/request-id
+        // tags). No-op when SENTRY_LARAVEL_DSN is unset; runs before the
+        // route-level auth:pos_device but resolves the device via the lazy
+        // viaRequest guard explicitly.
+        $middleware->api(append: [
+            AttachSentryDeviceContext::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );
+
+        // Phase D1 — report unhandled exceptions to Sentry (blueprint §9.12
+        // "errors from each surface… Laravel, …"). A complete no-op when
+        // SENTRY_LARAVEL_DSN is unset, so local dev + the test suite are
+        // unaffected.
+        \Sentry\Laravel\Integration::handles($exceptions);
     })->create();

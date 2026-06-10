@@ -250,7 +250,11 @@ class BuildDeviceConfigAction
             // (full + delta) so a policy change reaches the device promptly — it
             // is a tiny scalar block, not a delta-tracked collection.
             'settings' => [
-                'order_cancel_positions' => $this->orderCancelPositions($companyId),
+                'order_cancel_positions' => $this->positionListSetting($companyId, 'order_cancel_positions'),
+                // P-F1 — staff positions whose PIN authorizes sensitive POS
+                // actions (comps, cancellations, gifts) as the fingerprint
+                // fallback. Verified server-side by /device/auth/verify-manager-pin.
+                'manager_approval_positions' => $this->positionListSetting($companyId, 'manager_approval_positions'),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
@@ -336,18 +340,19 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * The staff positions allowed to cancel a completed order at the POS (v2
-     * #14), read from the merchant-written pos_company_settings. Falls back to
-     * managers-only when the merchant hasn't set a policy — the safe default
-     * matching the device's legacy "manager approval" gate.
+     * A staff-position-list policy read from the merchant-written
+     * pos_company_settings (v2 #14 order_cancel_positions, P-F1
+     * manager_approval_positions). Falls back to managers-only when the
+     * merchant hasn't set a policy — the safe default matching the device's
+     * legacy "manager approval" gate.
      *
      * @return list<string>
      */
-    private function orderCancelPositions(int $companyId): array
+    private function positionListSetting(int $companyId, string $key): array
     {
         $raw = DB::table('pos_company_settings')
             ->where('company_id', $companyId)
-            ->where('key', 'order_cancel_positions')
+            ->where('key', $key)
             ->value('value');
 
         $positions = is_string($raw) ? json_decode($raw, true) : $raw;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Auth\DeviceActivateController;
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
+use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
@@ -53,6 +54,14 @@ Route::prefix('v1')->group(function (): void {
         Route::post('auth/pos/login', StaffPosLoginController::class)
             ->middleware('throttle:pos-login')
             ->name('pos.login');
+
+        // P-F1 — manager PIN fallback for the device's approval gates (comps,
+        // cancellations, gifts). Shares the hard per-device `pos-login`
+        // limiter bucket, so the combined PIN brute-force surface stays at
+        // 10/min per device across login + approval.
+        Route::post('device/auth/verify-manager-pin', VerifyManagerPinController::class)
+            ->middleware('throttle:pos-login')
+            ->name('device.verify-manager-pin');
 
         // §11.5 — broadcast channel authorization, on-contract at
         // /api/v1/broadcasting/auth. Broadcast::auth() runs the channel

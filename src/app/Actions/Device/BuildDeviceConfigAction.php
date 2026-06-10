@@ -10,6 +10,7 @@ use App\Models\Branch;
 use App\Models\BranchStock;
 use App\Models\Customer;
 use App\Models\Device;
+use App\Models\CompReason;
 use App\Models\Discount;
 use App\Models\ExpenseCategory;
 use App\Models\Floor;
@@ -20,6 +21,7 @@ use App\Models\Product;
 use App\Models\ProductCategory;
 use App\Models\Table;
 use App\Models\Tax;
+use App\Models\VoidReason;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -200,6 +202,26 @@ class BuildDeviceConfigAction
             $since
         )->get();
 
+        // ---- Phase B — void + comp reason code lists (active sets; the POS
+        // cancel dialog and comp flow render these; order.void / order.create
+        // resolve the picked reason server-side). ----
+        $voidReasons = $this->changed(
+            VoidReason::query()->where('company_id', $companyId)->where('is_active', true)->orderBy('sort_order'),
+            $since
+        )->get();
+        $compReasons = $this->changed(
+            CompReason::query()->where('company_id', $companyId)->where('is_active', true)->orderBy('sort_order'),
+            $since
+        )->get();
+
+        // ---- Phase B — category-level add-on group bindings: the device
+        // unions a product's own group ids with its category's, so a group
+        // bound to "Drinks" applies to every drink without per-product pivots.
+        $groupIdsByCategory = DB::table('pos_addon_group_categories')
+            ->whereIn('category_id', $categories->pluck('id')->all() ?: [0])
+            ->get()
+            ->groupBy('category_id');
+
         $data = [
             // Company POS policy the device enforces (v2 #14). Always emitted
             // (full + delta) so a policy change reaches the device promptly — it
@@ -210,7 +232,10 @@ class BuildDeviceConfigAction
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
             'tables' => $tables->map(fn (Table $t): array => $this->mapTable($t))->all(),
-            'categories' => $categories->map(fn (ProductCategory $c): array => $this->mapCategory($c))->all(),
+            'categories' => $categories->map(fn (ProductCategory $c): array => $this->mapCategory(
+                $c,
+                $groupIdsByCategory->get($c->id),
+            ))->all(),
             'products' => $products->map(fn (Product $p): array => $this->mapProduct(
                 $p,
                 $recipesByProduct->get($p->id),
@@ -236,6 +261,8 @@ class BuildDeviceConfigAction
             ))->all(),
             'taxes' => $taxes->map(fn (Tax $t): array => $this->mapTax($t))->all(),
             'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
+            'void_reasons' => $voidReasons->map(fn (VoidReason $r): array => $this->mapVoidReason($r))->all(),
+            'comp_reasons' => $compReasons->map(fn (CompReason $r): array => $this->mapCompReason($r))->all(),
             'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since),
         ];
 
@@ -439,7 +466,10 @@ class BuildDeviceConfigAction
     /**
      * @return array<string, mixed>
      */
-    private function mapCategory(ProductCategory $c): array
+    /**
+     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $groupRows
+     */
+    private function mapCategory(ProductCategory $c, $groupRows = null): array
     {
         return [
             'id' => (int) $c->id,
@@ -450,6 +480,11 @@ class BuildDeviceConfigAction
             'image_url' => $c->image_url,
             'display_order' => (int) $c->display_order,
             'status' => $c->status,
+            // Phase B — groups bound at the CATEGORY level; the device unions
+            // these with each product's own addon_group_ids.
+            'addon_group_ids' => $groupRows
+                ? $groupRows->pluck('add_on_group_id')->map(fn ($id): int => (int) $id)->values()->all()
+                : [],
         ];
     }
 
@@ -482,6 +517,43 @@ class BuildDeviceConfigAction
             'name' => $c->name,
             'name_ar' => $c->name_ar,
             'sort_order' => (int) $c->sort_order,
+        ];
+    }
+
+    /**
+     * Phase B — a void reason code (order.void sends the id back).
+     *
+     * @return array<string, mixed>
+     */
+    private function mapVoidReason(VoidReason $r): array
+    {
+        return [
+            'id' => (int) $r->id,
+            'uuid' => $r->uuid,
+            'code' => $r->code,
+            'name' => $r->name,
+            'name_ar' => $r->name_ar,
+            'affects_inventory' => (bool) $r->affects_inventory,
+            'requires_manager' => (bool) $r->requires_manager,
+            'sort_order' => (int) $r->sort_order,
+        ];
+    }
+
+    /**
+     * Phase B — a comp reason (order.create comps send the id back).
+     *
+     * @return array<string, mixed>
+     */
+    private function mapCompReason(CompReason $r): array
+    {
+        return [
+            'id' => (int) $r->id,
+            'uuid' => $r->uuid,
+            'code' => $r->code,
+            'name' => $r->name,
+            'name_ar' => $r->name_ar,
+            'max_amount_baisas' => $r->max_amount !== null ? $this->baisas($r->max_amount) : null,
+            'sort_order' => (int) $r->sort_order,
         ];
     }
 
@@ -565,6 +637,10 @@ class BuildDeviceConfigAction
             'name' => $g->name,
             'name_ar' => $g->name_ar,
             'selection_mode' => $g->selection_mode,
+            // Phase B — selection constraints the customize sheet enforces
+            // (NULL = unbounded; min >= 1 makes the group required).
+            'min_selections' => $g->min_selections !== null ? (int) $g->min_selections : null,
+            'max_selections' => $g->max_selections !== null ? (int) $g->max_selections : null,
             'is_global' => (bool) $g->is_global,
             'display_order' => (int) $g->display_order,
             'status' => $g->status,
@@ -586,6 +662,8 @@ class BuildDeviceConfigAction
             'name' => $a->name,
             'name_ar' => $a->name_ar,
             'price_delta_baisas' => $this->baisas($a->price_delta),
+            // Phase B — pre-selected in the customize sheet.
+            'is_default' => (bool) ($a->is_default ?? false),
             'ingredient_id' => $a->ingredient_id !== null ? (int) $a->ingredient_id : null,
             'ingredient_qty' => $this->num($a->ingredient_qty),
             'ingredient_unit' => $a->ingredient_unit,

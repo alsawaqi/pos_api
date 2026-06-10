@@ -188,6 +188,9 @@ return new class extends Migration
             $table->string('name');
             $table->string('name_ar')->nullable();
             $table->string('selection_mode', 16)->default('single');
+            // Phase B — selection constraints (NULL = unbounded).
+            $table->unsignedSmallInteger('min_selections')->nullable();
+            $table->unsignedSmallInteger('max_selections')->nullable();
             $table->boolean('is_global')->default(false);
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->string('status', 32)->default('active');
@@ -203,6 +206,8 @@ return new class extends Migration
             $table->string('name');
             $table->string('name_ar')->nullable();
             $table->decimal('price_delta', 12, 3)->default(0);
+            // Phase B — pre-selected option in the POS customize sheet.
+            $table->boolean('is_default')->default(false);
             $table->unsignedBigInteger('ingredient_id')->nullable();
             $table->decimal('ingredient_qty', 10, 3)->nullable();
             $table->string('ingredient_unit', 16)->nullable();
@@ -218,6 +223,14 @@ return new class extends Migration
             $table->unsignedBigInteger('product_id');
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->timestamps();
+        });
+
+        // Phase B — category-level group binding.
+        Schema::create('pos_addon_group_categories', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('add_on_group_id');
+            $table->unsignedBigInteger('category_id');
+            $table->unique(['add_on_group_id', 'category_id'], 'pos_addon_group_categories_unique');
         });
 
         Schema::create('pos_delivery_providers', function (Blueprint $table): void {
@@ -386,10 +399,15 @@ return new class extends Migration
             $table->unsignedBigInteger('table_id')->nullable();
             $table->string('order_type', 32);
             $table->string('status', 32)->default('open');
+            // Phase B — void reason snapshot.
+            $table->unsignedBigInteger('void_reason_id')->nullable();
+            $table->string('void_reason_label', 64)->nullable();
             $table->string('source', 32);
             $table->string('plate_number', 32)->nullable();
             $table->decimal('subtotal', 12, 3)->default(0);
             $table->decimal('discount_total', 12, 3)->default(0);
+            // Phase B — cached sum of pos_order_comps.
+            $table->decimal('comp_total', 12, 3)->default(0);
             $table->decimal('tax_total', 12, 3)->default(0);
             $table->decimal('grand_total', 12, 3)->default(0);
             $table->timestamp('opened_at')->useCurrent();
@@ -435,6 +453,52 @@ return new class extends Migration
             $table->string('name_snapshot');
             $table->string('amount_type_snapshot', 32)->nullable();
             $table->decimal('amount', 12, 3)->default(0);
+            $table->timestamp('applied_at')->nullable();
+            $table->timestamps();
+        });
+
+        // ---- Phase B — void/comp reason masters + order comps ----
+        Schema::create('pos_void_reasons', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('code', 32);
+            $table->string('name', 64);
+            $table->string('name_ar', 64)->nullable();
+            $table->boolean('affects_inventory')->default(false);
+            $table->boolean('requires_manager')->default(true);
+            $table->boolean('is_active')->default(true);
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
+        Schema::create('pos_comp_reasons', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('code', 32);
+            $table->string('name', 64);
+            $table->string('name_ar', 64)->nullable();
+            $table->decimal('max_amount', 12, 3)->nullable();
+            $table->boolean('is_active')->default(true);
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
+        Schema::create('pos_order_comps', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('order_item_id')->nullable(); // null = whole-order comp
+            $table->unsignedBigInteger('comp_reason_id')->nullable();
+            $table->string('reason_code_snapshot', 32);
+            $table->string('reason_name_snapshot', 64);
+            $table->decimal('amount', 12, 3)->default(0);
+            $table->unsignedBigInteger('approved_by_pos_staff_id')->nullable();
+            $table->text('note')->nullable();
             $table->timestamp('applied_at')->nullable();
             $table->timestamps();
         });
@@ -754,6 +818,10 @@ return new class extends Migration
         Schema::dropIfExists('pos_shifts');
         Schema::dropIfExists('pos_loyalty_transactions');
         Schema::dropIfExists('pos_loyalty_accounts');
+        Schema::dropIfExists('pos_order_comps');
+        Schema::dropIfExists('pos_comp_reasons');
+        Schema::dropIfExists('pos_void_reasons');
+        Schema::dropIfExists('pos_addon_group_categories');
         Schema::dropIfExists('pos_stock_count_lines');
         Schema::dropIfExists('pos_stock_counts');
         Schema::dropIfExists('pos_waste_records');

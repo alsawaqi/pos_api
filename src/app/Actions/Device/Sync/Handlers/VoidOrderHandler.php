@@ -16,6 +16,7 @@ use App\Models\Payment;
 use App\Models\RoundupDonation;
 use App\Models\SaleCommission;
 use App\Models\SyncEvent;
+use App\Models\VoidReason;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -82,18 +83,37 @@ class VoidOrderHandler implements SyncEventHandler
         $wasPaid = $order->status === Order::STATUS_PAID;
         $reason = isset($payload['reason']) ? (string) $payload['reason'] : null;
 
-        return DB::transaction(function () use ($order, $voidedAt, $wasPaid, $reason): array {
+        // Phase B (Additions §1.2) — resolve the picked void reason code,
+        // tenant-scoped. affects_inventory = TRUE means the food was actually
+        // made: the recipe ingredients STAY consumed (no inventory reverse)
+        // and the loss surfaces in the Loss/Waste voids breakdown. No / an
+        // unknown reason keeps the legacy behaviour (full reverse).
+        $voidReason = null;
+        if (isset($payload['void_reason_id'])) {
+            $voidReason = VoidReason::query()
+                ->where('company_id', $device->company_id)
+                ->find((int) $payload['void_reason_id']);
+            if ($voidReason === null) {
+                throw new RuntimeException('void reason not found for this company: '.$payload['void_reason_id']);
+            }
+        }
+        $keepInventoryConsumed = $voidReason !== null && $voidReason->affects_inventory;
+
+        return DB::transaction(function () use ($order, $voidedAt, $wasPaid, $reason, $voidReason, $keepInventoryConsumed): array {
             $order->update([
                 'status' => Order::STATUS_VOID,
                 'closed_at' => $voidedAt,
-                'note' => $this->appendReason($order->note, $reason),
+                'void_reason_id' => $voidReason?->id,
+                'void_reason_label' => $voidReason?->name,
+                'note' => $this->appendReason($order->note, $reason ?? $voidReason?->name),
             ]);
 
             OrderItem::query()->where('order_id', $order->id)->update(['status' => OrderItem::STATUS_VOID]);
 
             // Only a PAID sale has settled side effects to unwind. An open
             // (never-paid) order moved no stock, loyalty, charity, or money.
-            $reversed = $wasPaid ? $this->inventory->reverse($order) : 0;
+            // Inventory: skipped when the reason says the food was made.
+            $reversed = ($wasPaid && ! $keepInventoryConsumed) ? $this->inventory->reverse($order) : 0;
             $loyaltyReversed = $wasPaid ? $this->reverseLoyalty($order, $voidedAt) : 0;
             $roundupVoided = $wasPaid ? $this->reverseRoundup($order) : 0;
             $commissionRemoved = $wasPaid ? $this->reverseCommission($order) : 0;
@@ -101,6 +121,8 @@ class VoidOrderHandler implements SyncEventHandler
             return [
                 'order_id' => (int) $order->id,
                 'status' => 'voided',
+                'void_reason' => $voidReason?->code,
+                'inventory_kept' => $wasPaid && $keepInventoryConsumed,
                 'reversed' => $reversed,
                 'loyalty_reversed' => $loyaltyReversed,
                 'roundup_voided' => $roundupVoided,

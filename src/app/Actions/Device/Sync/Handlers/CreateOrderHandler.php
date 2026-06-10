@@ -8,11 +8,13 @@ use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\AddOn;
 use App\Models\Branch;
+use App\Models\CompReason;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Ingredient;
 use App\Models\Order;
+use App\Models\OrderComp;
 use App\Models\OrderDiscount;
 use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
@@ -71,6 +73,8 @@ class CreateOrderHandler implements SyncEventHandler
                 'plate_number' => $order['plate_number'] ?? null,
                 'subtotal' => Money::toOmr((int) $order['subtotal_baisas']),
                 'discount_total' => Money::toOmr((int) $order['discount_total_baisas']),
+                // Phase B — comp write-offs (0 for devices that don't comp).
+                'comp_total' => Money::toOmr((int) ($order['comp_total_baisas'] ?? 0)),
                 'tax_total' => Money::toOmr((int) $order['tax_total_baisas']),
                 'grand_total' => Money::toOmr((int) $order['grand_total_baisas']),
                 'opened_at' => Carbon::parse((string) $order['opened_at']),
@@ -111,8 +115,9 @@ class CreateOrderHandler implements SyncEventHandler
             }
 
             $discountCount = $this->writeDiscounts($order, $model, $device, $itemIds);
+            $compCount = $this->writeComps($order, $model, $device, $itemIds);
 
-            return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created', 'discounts' => $discountCount];
+            return ['order_id' => (int) $model->id, 'order_uuid' => $model->uuid, 'status' => 'created', 'discounts' => $discountCount, 'comps' => $compCount];
         });
     }
 
@@ -215,6 +220,73 @@ class CreateOrderHandler implements SyncEventHandler
     }
 
     /**
+     * Phase B — persist the comp write-offs (Additions §1.2). A comp ALWAYS
+     * carries a valid company comp reason (unlike a discount it can never be
+     * ad-hoc) and is capped by the reason's max_amount when set. The food was
+     * made and given away, so inventory deducts normally at pay; only the
+     * money is written off. line_index ties a comp to one line; absent →
+     * whole-order comp.
+     *
+     * @param  array<string, mixed>  $order
+     * @param  array<int, int>  $itemIds  line index → created order_item id
+     */
+    private function writeComps(array $order, Order $model, Device $device, array $itemIds): int
+    {
+        $comps = $order['comps'] ?? [];
+        if (! is_array($comps) || $comps === []) {
+            if ((int) ($order['comp_total_baisas'] ?? 0) !== 0) {
+                throw new RuntimeException('comp_total_baisas set without comp rows');
+            }
+
+            return 0;
+        }
+
+        $sum = 0;
+        $count = 0;
+        foreach ($comps as $c) {
+            $reason = CompReason::query()
+                ->where('company_id', $device->company_id)
+                ->find((int) $c['comp_reason_id']);
+            if ($reason === null) {
+                throw new RuntimeException('order references a comp reason outside the device tenant: '.$c['comp_reason_id']);
+            }
+
+            $amountBaisas = (int) $c['amount_baisas'];
+            if ($reason->max_amount !== null && $amountBaisas > (int) round(((float) $reason->max_amount) * 1000)) {
+                throw new RuntimeException(sprintf(
+                    'comp exceeds the "%s" cap of %s OMR',
+                    $reason->name,
+                    (string) $reason->max_amount,
+                ));
+            }
+
+            $lineIndex = isset($c['line_index']) ? (int) $c['line_index'] : null;
+            OrderComp::create([
+                'company_id' => $device->company_id,
+                'branch_id' => $device->branch_id,
+                'order_id' => $model->id,
+                'order_item_id' => $lineIndex !== null ? ($itemIds[$lineIndex] ?? null) : null,
+                'comp_reason_id' => $reason->id,
+                'reason_code_snapshot' => $reason->code,
+                'reason_name_snapshot' => $reason->name,
+                'amount' => Money::toOmr($amountBaisas),
+                'approved_by_pos_staff_id' => $c['staff_id'] ?? null,
+                'note' => $c['note'] ?? null,
+                'applied_at' => $model->opened_at,
+            ]);
+            $sum += $amountBaisas;
+            $count++;
+        }
+
+        // The cached order.comp_total must equal the row sum exactly.
+        if ($sum !== (int) ($order['comp_total_baisas'] ?? 0)) {
+            throw new RuntimeException('comp rows do not sum to comp_total_baisas');
+        }
+
+        return $count;
+    }
+
+    /**
      * Reject the order if the device's reported GPS (stamped at order time) is
      * outside the branch geofence. Skipped when no GPS is supplied (the
      * device-layer guard is primary) or the branch has no coordinates.
@@ -265,6 +337,16 @@ class CreateOrderHandler implements SyncEventHandler
             'discounts.*.amount_type' => ['nullable', 'string'],
             'discounts.*.amount_baisas' => ['required', 'integer', 'min:0'],
             'discounts.*.line_index' => ['nullable', 'integer', 'min:0'],
+            // Phase B — comp write-offs. Unlike a discount a comp always
+            // carries a valid comp_reason_id (resolved tenant-scoped in
+            // writeComps) and a positive amount.
+            'comp_total_baisas' => ['sometimes', 'integer', 'min:0'],
+            'comps' => ['sometimes', 'array'],
+            'comps.*.comp_reason_id' => ['required', 'integer'],
+            'comps.*.amount_baisas' => ['required', 'integer', 'min:1'],
+            'comps.*.line_index' => ['nullable', 'integer', 'min:0'],
+            'comps.*.staff_id' => ['nullable', 'integer'],
+            'comps.*.note' => ['nullable', 'string'],
         ]);
 
         if ($validator->fails()) {
@@ -277,9 +359,14 @@ class CreateOrderHandler implements SyncEventHandler
      */
     private function assertMoneyInvariant(array $order): void
     {
-        $expected = (int) $order['subtotal_baisas'] - (int) $order['discount_total_baisas'] + (int) $order['tax_total_baisas'];
+        // Phase B — comps reduce what the customer pays alongside discounts
+        // (comp_total_baisas defaults 0 for devices that never comp).
+        $expected = (int) $order['subtotal_baisas']
+            - (int) $order['discount_total_baisas']
+            - (int) ($order['comp_total_baisas'] ?? 0)
+            + (int) $order['tax_total_baisas'];
         if (abs($expected - (int) $order['grand_total_baisas']) > 1) {
-            throw new RuntimeException('order money invariant violated: subtotal − discount + tax != grand_total');
+            throw new RuntimeException('order money invariant violated: subtotal − discount − comp + tax != grand_total');
         }
     }
 

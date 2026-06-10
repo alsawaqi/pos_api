@@ -501,4 +501,130 @@ class DeviceConfigTest extends TestCase
 
         $this->assertSame(['manager'], $data['settings']['order_cancel_positions']);
     }
+
+    // =================== PHASE D2 — catalogue flags ===================
+
+    public function test_phase_d2_catalogue_flags_default_correctly(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        // Products: tax-exclusive, tablet-visible, no badge by default.
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $this->assertFalse($latte['tax_inclusive']);
+        $this->assertTrue($latte['show_on_customer_tablet']);
+        $this->assertNull($latte['low_stock_threshold']);
+        $this->assertFalse($latte['low_stock']);
+
+        // Categories: null = available at every branch.
+        $this->assertNull($data['categories'][0]['branch_ids']);
+    }
+
+    public function test_phase_d2_product_flags_are_emitted_when_set(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        DB::table('pos_products')->where('id', 1)->update([
+            'tax_inclusive' => true,
+            'show_on_customer_tablet' => false,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $this->assertTrue($latte['tax_inclusive']);
+        $this->assertFalse($latte['show_on_customer_tablet']);
+        // tax_inclusive is informational — money mapping is unchanged.
+        $this->assertSame(1500, $latte['base_price_baisas']);
+    }
+
+    /**
+     * A category narrowed to ANOTHER branch is still emitted (with its
+     * branch_ids) — the DEVICE hides it from the strip. Server-side
+     * filtering would strand it forever on delta devices, because a
+     * category dropped from a branch is not soft-deleted and never
+     * surfaces in the `deleted` purge map.
+     */
+    public function test_category_branch_ids_are_emitted_but_never_server_filtered(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // branch 10
+
+        DB::table('pos_product_categories')->where('id', 1)->update([
+            'branch_availability_json' => json_encode([11]),
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertCount(1, $data['categories']);
+        $this->assertSame(1, $data['categories'][0]['id']);
+        $this->assertSame([11], $data['categories'][0]['branch_ids']);
+    }
+
+    public function test_unit_mode_low_stock_compares_branch_stock_to_the_threshold(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Tea (id 2) is unit-mode with a threshold of 5 and 4 units left
+        // at branch 10 → LOW. Branch 11 holds plenty — must not bleed in.
+        DB::table('pos_products')->where('id', 2)->update(['low_stock_threshold' => 5.000]);
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 2, 'is_available' => true, 'stock_qty' => 4.000] + $t,
+            ['branch_id' => 11, 'product_id' => 2, 'is_available' => true, 'stock_qty' => 100.000] + $t,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $tea = collect($data['products'])->firstWhere('id', 2);
+        $this->assertTrue($tea['low_stock']);
+        $this->assertEquals(5.0, $tea['low_stock_threshold']);
+
+        // Above the threshold → not low.
+        DB::table('pos_branch_product')->where('branch_id', 10)->where('product_id', 2)->update(['stock_qty' => 6.000]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertFalse(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+
+        // Sold out (0) is the stronger state — not "low".
+        DB::table('pos_branch_product')->where('branch_id', 10)->where('product_id', 2)->update(['stock_qty' => 0.000]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertFalse(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+    }
+
+    public function test_unit_mode_low_stock_is_false_without_a_threshold(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // 1 unit left but NO threshold configured → no badge.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 2, 'is_available' => true, 'stock_qty' => 1.000] + $t,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertFalse(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+    }
+
+    public function test_ingredient_mode_low_stock_derives_from_ingredient_min_thresholds(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        // Latte (id 1, ingredient-mode) uses ingredient 1; branch 10 holds
+        // 5.000 of it. A min_stock_threshold of 6 puts it below → LOW.
+        DB::table('pos_ingredients')->where('id', 1)->update(['min_stock_threshold' => 6.000]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $this->assertTrue($latte['low_stock']);
+
+        // Balance (5.000) at/above the minimum (4.000) → not low.
+        DB::table('pos_ingredients')->where('id', 1)->update(['min_stock_threshold' => 4.000]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertFalse(collect($data['products'])->firstWhere('id', 1)['low_stock']);
+    }
 }

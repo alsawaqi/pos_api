@@ -32,6 +32,10 @@ class Product extends Model
             'cost_price' => 'decimal:3',
             'tax_rate' => 'decimal:2',
             'display_order' => 'integer',
+            // Phase D2 — catalogue flags.
+            'low_stock_threshold' => 'decimal:3',
+            'tax_inclusive' => 'boolean',
+            'show_on_customer_tablet' => 'boolean',
         ];
     }
 }

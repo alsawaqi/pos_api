@@ -26,6 +26,9 @@ class ProductCategory extends Model
     {
         return [
             'display_order' => 'integer',
+            // Phase D2 — §5.5.1 branch availability: NULL = all branches,
+            // else an array of pos_branches ids.
+            'branch_availability_json' => 'array',
         ];
     }
 }

@@ -154,6 +154,9 @@ return new class extends Migration
             $table->text('description')->nullable();
             $table->string('image_url', 500)->nullable();
             $table->unsignedSmallInteger('display_order')->default(0);
+            // Phase D2 — §5.5.1 branch availability: NULL = all branches,
+            // else a JSON array of pos_branches ids.
+            $table->json('branch_availability_json')->nullable();
             $table->string('status', 32)->default('active');
             $table->timestamps();
             $table->softDeletes();
@@ -173,10 +176,16 @@ return new class extends Migration
             $table->decimal('base_price', 12, 3);
             $table->decimal('delivery_price', 12, 3)->nullable();
             $table->string('stock_mode', 16)->default('untracked');
+            // Phase D2 — unit-mode LOW STOCK badge threshold (NULL = no badge).
+            $table->decimal('low_stock_threshold', 12, 3)->nullable();
             $table->decimal('cost_price', 12, 3)->nullable();
             $table->decimal('tax_rate', 5, 2)->nullable();
+            // Phase D2 — §5.5.3 tax-inclusive flag (display-only for now).
+            $table->boolean('tax_inclusive')->default(false);
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->string('status', 32)->default('active');
+            // Phase D2 — §5.5.3 "Show on Customer Tablet menu yes/no".
+            $table->boolean('show_on_customer_tablet')->default(true);
             $table->timestamps();
             $table->softDeletes();
         });

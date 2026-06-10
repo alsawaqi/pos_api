@@ -114,6 +114,29 @@ class BuildDeviceConfigAction
             ->get()
             ->groupBy('product_id');
 
+        // ---- Phase D2 — LOW STOCK badge inputs. A unit-mode product is low
+        // when its branch unit stock is at/below its own low_stock_threshold;
+        // an ingredient-mode product is low when ANY recipe ingredient's
+        // branch balance is below that ingredient's min_stock_threshold
+        // (the same semantics as the merchant dashboard's low-stock count).
+        // Queried directly — NOT from the delta-filtered $ingredients /
+        // $branchStock collections — so delta responses compute correctly.
+        $recipeIngredientIds = $recipesByProduct
+            ->flatten(1)
+            ->pluck('ingredient_id')
+            ->unique()
+            ->values()
+            ->all();
+        $minThresholdByIngredient = DB::table('pos_ingredients')
+            ->whereIn('id', $recipeIngredientIds ?: [0])
+            ->whereNull('deleted_at')
+            ->whereNotNull('min_stock_threshold')
+            ->pluck('min_stock_threshold', 'id');
+        $branchBalanceByIngredient = DB::table('pos_branch_stock')
+            ->where('branch_id', $branchId)
+            ->whereIn('ingredient_id', $recipeIngredientIds ?: [0])
+            ->pluck('quantity', 'ingredient_id');
+
         $groupIdsByProduct = DB::table('pos_addon_group_products')
             ->whereIn('product_id', $productIds ?: [0])
             ->orderBy('display_order')
@@ -242,6 +265,8 @@ class BuildDeviceConfigAction
                 $groupIdsByProduct->get($p->id),
                 $branchProductByProduct->get($p->id),
                 $deliveryPricesByProduct->get($p->id),
+                $minThresholdByIngredient,
+                $branchBalanceByIngredient,
             ))->all(),
             'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
@@ -509,6 +534,15 @@ class BuildDeviceConfigAction
             'description' => $c->description,
             'image_url' => $c->image_url,
             'display_order' => (int) $c->display_order,
+            // Phase D2 — §5.5.1 branch availability. null = all branches;
+            // else the branch ids that may show this category. The DEVICE
+            // filters its category strip — the server keeps emitting every
+            // category, because one newly excluded from a branch is not
+            // soft-deleted and would never reach delta devices via the
+            // `deleted` purge map.
+            'branch_ids' => $c->branch_availability_json !== null
+                ? array_values(array_map('intval', $c->branch_availability_json))
+                : null,
             'status' => $c->status,
             // Phase B — groups bound at the CATEGORY level; the device unions
             // these with each product's own addon_group_ids.
@@ -590,9 +624,11 @@ class BuildDeviceConfigAction
     /**
      * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $recipeRows
      * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $groupRows
+     * @param  \Illuminate\Support\Collection<int|string, mixed>  $minThresholdByIngredient
+     * @param  \Illuminate\Support\Collection<int|string, mixed>  $branchBalanceByIngredient
      * @return array<string, mixed>
      */
-    private function mapProduct(Product $p, $recipeRows, $groupRows, $branchProduct = null, $deliveryPriceRows = null): array
+    private function mapProduct(Product $p, $recipeRows, $groupRows, $branchProduct = null, $deliveryPriceRows = null, $minThresholdByIngredient = null, $branchBalanceByIngredient = null): array
     {
         return [
             'id' => (int) $p->id,
@@ -608,11 +644,27 @@ class BuildDeviceConfigAction
             'delivery_price_baisas' => $this->baisas($p->delivery_price),
             'cost_price_baisas' => $this->baisas($p->cost_price),
             'tax_rate_percent' => $this->num($p->tax_rate),
+            // Phase D2 — §5.5.3 tax-inclusive flag. INFORMATIONAL ONLY for
+            // now: the device's tax engine stays exclusive (taxes added on
+            // top of the subtotal) so the sync money invariant (subtotal −
+            // discount − comp + tax == grand ±1 baisa) is untouched. A later
+            // per-line tax-engine phase consumes this.
+            'tax_inclusive' => (bool) $p->tax_inclusive,
+            // Phase D2 — §5.5.3 "Show on Customer Tablet menu yes/no". The
+            // future customer tablet consumes it; the MAIN POS must ignore
+            // it (it does not gate the staff product grid).
+            'show_on_customer_tablet' => (bool) $p->show_on_customer_tablet,
             'display_order' => (int) $p->display_order,
             'status' => $p->status,
             // Phase 7 — stock mode: unit (piece-counted) | ingredient
             // (recipe-driven) | untracked. Drives device sold-out enforcement.
             'stock_mode' => $p->stock_mode,
+            // Phase D2 — LOW STOCK badge (§5.5.3 / §6.3). `low_stock` is the
+            // server-computed boolean as of this sync (same staleness window
+            // as branch_stock_qty); the threshold rides along for a future
+            // device-side recompute after offline sales.
+            'low_stock' => $this->isLowStock($p, $recipeRows, $branchProduct, $minThresholdByIngredient, $branchBalanceByIngredient),
+            'low_stock_threshold' => $this->num($p->low_stock_threshold),
             'addon_group_ids' => $groupRows
                 ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all()
                 : [],
@@ -639,6 +691,49 @@ class BuildDeviceConfigAction
                 ])->values()->all()
                 : [],
         ];
+    }
+
+    /**
+     * Phase D2 — LOW STOCK badge per stock mode:
+     *
+     *   unit       → this branch's unit stock is at/below the product's own
+     *                low_stock_threshold. Stock <= 0 returns false — that is
+     *                the (stronger) SOLD OUT state, not "low".
+     *   ingredient → ANY recipe ingredient with a min_stock_threshold whose
+     *                branch balance sits below it (blueprint §5.5.3 "when
+     *                stock of the product's primary ingredient falls below
+     *                X"; mirrors the merchant dashboard low-stock count).
+     *   untracked  → never.
+     *
+     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $recipeRows
+     * @param  \Illuminate\Support\Collection<int|string, mixed>|null  $minThresholdByIngredient
+     * @param  \Illuminate\Support\Collection<int|string, mixed>|null  $branchBalanceByIngredient
+     */
+    private function isLowStock(Product $p, $recipeRows, $branchProduct, $minThresholdByIngredient, $branchBalanceByIngredient): bool
+    {
+        if ($p->stock_mode === 'unit') {
+            if ($p->low_stock_threshold === null || $branchProduct === null || $branchProduct->stock_qty === null) {
+                return false;
+            }
+            $qty = (float) $branchProduct->stock_qty;
+
+            return $qty > 0 && $qty <= (float) $p->low_stock_threshold;
+        }
+
+        if ($p->stock_mode === 'ingredient' && $recipeRows !== null) {
+            foreach ($recipeRows as $line) {
+                $threshold = $minThresholdByIngredient?->get($line->ingredient_id);
+                if ($threshold === null) {
+                    continue;
+                }
+                $balance = (float) ($branchBalanceByIngredient?->get($line->ingredient_id) ?? 0);
+                if ($balance < (float) $threshold) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

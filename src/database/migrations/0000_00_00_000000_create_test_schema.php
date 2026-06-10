@@ -186,6 +186,10 @@ return new class extends Migration
             $table->string('status', 32)->default('active');
             // Phase D2 — §5.5.3 "Show on Customer Tablet menu yes/no".
             $table->boolean('show_on_customer_tablet')->default(true);
+            // G1 — menu time-window ('HH:MM:SS', both NULL = always
+            // available, start > end wraps midnight).
+            $table->string('available_from', 8)->nullable();
+            $table->string('available_until', 8)->nullable();
             $table->timestamps();
             $table->softDeletes();
         });

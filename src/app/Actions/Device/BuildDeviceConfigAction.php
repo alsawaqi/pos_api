@@ -659,6 +659,13 @@ class BuildDeviceConfigAction
             // Phase 7 — stock mode: unit (piece-counted) | ingredient
             // (recipe-driven) | untracked. Drives device sold-out enforcement.
             'stock_mode' => $p->stock_mode,
+            // G1 — menu time-window. Raw 'HH:MM:SS' strings passed through
+            // verbatim (the mapDiscount time_start/time_end convention): both
+            // NULL = always available; start > end wraps midnight. The DEVICE
+            // evaluates the predicate against its local clock — same as the
+            // discount window evaluator.
+            'available_from' => $p->available_from,
+            'available_until' => $p->available_until,
             // Phase D2 — LOW STOCK badge (§5.5.3 / §6.3). `low_stock` is the
             // server-computed boolean as of this sync (same staleness window
             // as branch_stock_qty); the threshold rides along for a future

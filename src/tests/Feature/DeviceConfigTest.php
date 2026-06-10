@@ -541,6 +541,42 @@ class DeviceConfigTest extends TestCase
         $this->assertSame(1500, $latte['base_price_baisas']);
     }
 
+    // =================== G1 — menu time-window ===================
+
+    public function test_availability_window_defaults_to_null_always_available(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $this->assertArrayHasKey('available_from', $latte);
+        $this->assertArrayHasKey('available_until', $latte);
+        $this->assertNull($latte['available_from']);
+        $this->assertNull($latte['available_until']);
+    }
+
+    public function test_availability_window_is_emitted_verbatim_when_set(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        DB::table('pos_products')->where('id', 1)->update([
+            'available_from' => '06:00:00',
+            'available_until' => '11:00:00',
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        // Raw 'HH:MM:SS' string pass-through — the DEVICE evaluates the
+        // window against its local clock (the discount-window convention;
+        // start > end wraps midnight).
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $this->assertSame('06:00:00', $latte['available_from']);
+        $this->assertSame('11:00:00', $latte['available_until']);
+    }
+
     /**
      * A category narrowed to ANOTHER branch is still emitted (with its
      * branch_ids) — the DEVICE hides it from the strip. Server-side

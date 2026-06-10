@@ -1,0 +1,40 @@
+# Phase D9 — CI for pos_api (JSON-only device API; Laravel app lives in src/).
+#
+# Plain PHPUnit (no pest), sqlite :memory: pinned by src/phpunit.xml —
+# the device contract tests ARE the contract, so this job gates it.
+# phpunit.xml also blanks CHARITY_API_URL (no outbound HTTP in tests).
+# No frontend job: the repo has no package-lock.json / typecheck script.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: src
+
+jobs:
+  php-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: ctype, curl, dom, fileinfo, filter, iconv, mbstring, openssl, pcntl, pdo_sqlite, sqlite3, simplexml, tokenizer, xml, xmlreader, xmlwriter, zlib
+          ini-values: memory_limit=1G
+          coverage: none
+      - name: Composer cache dir
+        id: cc
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.cc.outputs.dir }}
+          key: ${{ runner.os }}-composer-api-${{ hashFiles('src/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-api-
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - run: cp .env.example .env && php artisan key:generate
+      - run: php artisan config:clear && php artisan test

@@ -409,6 +409,11 @@ return new class extends Migration
             $table->unsignedBigInteger('company_id');
             $table->string('name');
             $table->string('phone', 32);
+            // Phase D3 — merchant CRM profile fields; mirrored here so
+            // the test schema tracks the live table. The device config
+            // slice deliberately does NOT emit them.
+            $table->date('date_of_birth')->nullable();
+            $table->json('tags_json')->nullable();
             $table->decimal('wallet_balance', 12, 3)->default(0);
             $table->timestamps();
             $table->softDeletes();

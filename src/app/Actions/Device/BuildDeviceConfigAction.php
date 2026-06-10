@@ -9,6 +9,7 @@ use App\Models\AddOnGroup;
 use App\Models\Branch;
 use App\Models\BranchStock;
 use App\Models\Customer;
+use App\Models\CustomerVehiclePlate;
 use App\Models\Device;
 use App\Models\CompReason;
 use App\Models\Discount;
@@ -210,6 +211,13 @@ class BuildDeviceConfigAction
             ->whereIn('customer_id', $customers->pluck('id')->all() ?: [0])
             ->get()
             ->groupBy('customer_id');
+        // P-F2 — each cached customer's vehicle plates so the device can
+        // resolve "plate → customer" OFFLINE (drive-thru). Same one-bulk-
+        // query grouping as the loyalty accounts above — never per-customer.
+        $platesByCustomer = CustomerVehiclePlate::query()
+            ->whereIn('customer_id', $customers->pluck('id')->all() ?: [0])
+            ->get()
+            ->groupBy('customer_id');
 
         // ---- Company taxes (active set; the POS adds each, as its own line,
         // on top of the order total — exclusive). ----
@@ -287,6 +295,7 @@ class BuildDeviceConfigAction
             'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer(
                 $c,
                 $loyaltyAccountsByCustomer->get($c->id),
+                $platesByCustomer->get($c->id),
             ))->all(),
             'taxes' => $taxes->map(fn (Tax $t): array => $this->mapTax($t))->all(),
             'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
@@ -894,13 +903,11 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @return array<string, mixed>
-     */
-    /**
      * @param  \Illuminate\Support\Collection<int, LoyaltyAccount>|null  $accounts
+     * @param  \Illuminate\Support\Collection<int, CustomerVehiclePlate>|null  $plates
      * @return array<string, mixed>
      */
-    private function mapCustomer(Customer $c, $accounts = null): array
+    private function mapCustomer(Customer $c, $accounts = null, $plates = null): array
     {
         return [
             'id' => (int) $c->id,
@@ -908,6 +915,13 @@ class BuildDeviceConfigAction
             'name' => $c->name,
             'phone' => $c->phone,
             'wallet_balance_baisas' => $this->baisas($c->wallet_balance),
+            // P-F2 — the customer's vehicle plates (uppercased strings) so the
+            // device can resolve drive-thru plate lookups offline. Many-to-
+            // many: the same plate can appear under several customers.
+            'plates' => collect($plates ?? [])
+                ->map(fn ($p): string => (string) $p->plate_number)
+                ->values()
+                ->all(),
             // CURRENT loyalty balances per rule. Volatile — refreshed on each
             // full sync; the device uses them for OFFLINE view/redeem, while the
             // server still re-checks the balance authoritatively on order.pay.

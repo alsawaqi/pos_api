@@ -85,6 +85,11 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/orders/history', [DeviceOrdersController::class, 'history'])->name('device.orders.history');
         Route::get('device/shift/current', [DeviceShiftController::class, 'current'])->name('device.shift.current');
         Route::get('device/customers/search', [DeviceCustomersController::class, 'search'])->name('device.customers.search');
+        // P-F2 — customer details fetch ({id} numeric so it can never
+        // shadow the literal /search segment above).
+        Route::get('device/customers/{id}', [DeviceCustomersController::class, 'show'])
+            ->whereNumber('id')
+            ->name('device.customers.show');
         Route::post('device/customers', [DeviceCustomersController::class, 'store'])->name('device.customers.store');
     });
 });

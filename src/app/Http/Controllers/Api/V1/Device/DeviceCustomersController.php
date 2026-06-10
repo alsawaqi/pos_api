@@ -20,9 +20,10 @@ use Illuminate\Support\Str;
  * Device customer lookup + registration — blueprint §11.4 / §5.7.3.
  *
  *   GET  /api/v1/device/customers/search?q=  live search by phone, name, plate
+ *   GET  /api/v1/device/customers/{id}       customer details (plates + loyalty)
  *   POST /api/v1/device/customers            register (find-or-create on phone)
  *
- * Both scoped to the device's company. Search covers the full customer book
+ * All scoped to the device's company. Search covers the full customer book
  * (beyond the device's cached slice — §9.1.3 "searching beyond the local
  * cache requires network"). Money is integer baisas.
  */
@@ -80,6 +81,41 @@ class DeviceCustomersController
         ]);
     }
 
+    /**
+     * GET /api/v1/device/customers/{id} — the device's "customer details"
+     * fetch (P-F2). Same envelope + shape as search's mapCustomer; 404 with
+     * the standard errors[] envelope when the id isn't in the device's
+     * company (tenant scope — never leaks another company's book).
+     */
+    public function show(Request $request, int $id): JsonResponse
+    {
+        $device = $this->device($request);
+        if (! $device->isAssigned()) {
+            return $this->unassigned();
+        }
+
+        $customer = Customer::query()
+            ->where('company_id', $device->company_id)
+            ->whereKey($id)
+            ->first();
+
+        if ($customer === null) {
+            return response()->json([
+                'data' => null,
+                'errors' => [['code' => 'customer_not_found', 'message' => 'No such customer in this company.']],
+            ], 404);
+        }
+
+        $plates = CustomerVehiclePlate::query()->where('customer_id', $customer->id)->get();
+        $accounts = LoyaltyAccount::query()->where('customer_id', $customer->id)->get();
+
+        return response()->json([
+            'data' => ['customer' => $this->mapCustomer($customer, $plates, $accounts)],
+            'meta' => ['money_unit' => 'baisas'],
+            'errors' => [],
+        ]);
+    }
+
     public function store(CreateCustomerRequest $request): JsonResponse
     {
         $device = $this->device($request);
@@ -108,10 +144,27 @@ class DeviceCustomersController
             }
 
             if (! empty($data['plate_number'])) {
-                CustomerVehiclePlate::firstOrCreate(
-                    ['company_id' => $companyId, 'plate_number' => strtoupper(trim((string) $data['plate_number']))],
-                    ['uuid' => (string) Str::uuid(), 'customer_id' => $customer->id],
+                // P-F2 — plates are many-to-many: keyed on (company,
+                // CUSTOMER, plate) the plate ATTACHES TO THIS CUSTOMER as
+                // an additional link even when it already belongs to
+                // someone else (family car, several loyalty members).
+                // Re-posting the same customer+plate is a no-op.
+                $plate = CustomerVehiclePlate::firstOrCreate(
+                    [
+                        'company_id' => $companyId,
+                        'customer_id' => $customer->id,
+                        'plate_number' => strtoupper(trim((string) $data['plate_number'])),
+                    ],
+                    ['uuid' => (string) Str::uuid()],
                 );
+
+                // Delta-freshness: /device/config/delta filters customers
+                // by updated_at — without this touch a newly attached
+                // plate would never reach OTHER devices until something
+                // else edited the customer row.
+                if ($plate->wasRecentlyCreated) {
+                    $customer->touch();
+                }
             }
 
             return $customer;

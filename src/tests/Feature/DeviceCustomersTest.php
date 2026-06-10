@@ -15,7 +15,11 @@ use Tests\TestCase;
 /**
  * Phase 8.7 — device customer lookup + registration.
  *   GET  /api/v1/device/customers/search?q=
+ *   GET  /api/v1/device/customers/{id}      (P-F2 details fetch)
  *   POST /api/v1/device/customers
+ *
+ * P-F2 — plates are many-to-many: one customer ↔ many plates AND one
+ * plate ↔ many customers (family car shared by several loyalty members).
  */
 class DeviceCustomersTest extends TestCase
 {
@@ -145,6 +149,130 @@ class DeviceCustomersTest extends TestCase
 
         // Stored uppercased.
         $this->assertDatabaseHas('pos_customer_vehicle_plates', ['company_id' => 100, 'plate_number' => '99 XYZ']);
+    }
+
+    public function test_store_attaches_an_already_owned_plate_to_the_new_customer_too(): void
+    {
+        // P-F2 many-to-many: the plate already belongs to ANOTHER customer —
+        // registering a second customer with the same plate ADDS a link
+        // instead of silently leaving the plate with the first owner.
+        $this->device();
+        $first = $this->customer(['phone' => '+96890001234']);
+        CustomerVehiclePlate::create(['uuid' => (string) Str::uuid(), 'customer_id' => $first->id, 'company_id' => 100, 'plate_number' => '12345 A']);
+
+        $res = $this->withToken('mdev_cust')->postJson('/api/v1/device/customers', [
+            'name' => 'Second Driver', 'phone' => '+96890005678', 'plate_number' => '12345 a',
+        ])->assertOk();
+
+        // The new customer's mapped response carries the plate...
+        $this->assertSame(['12345 A'], $res->json('data.customer.plates'));
+
+        // ...and BOTH links exist (the original owner kept theirs).
+        $secondId = $res->json('data.customer.id');
+        $this->assertDatabaseHas('pos_customer_vehicle_plates', ['company_id' => 100, 'customer_id' => $first->id, 'plate_number' => '12345 A']);
+        $this->assertDatabaseHas('pos_customer_vehicle_plates', ['company_id' => 100, 'customer_id' => $secondId, 'plate_number' => '12345 A']);
+        $this->assertSame(2, DB::table('pos_customer_vehicle_plates')->where('plate_number', '12345 A')->count());
+    }
+
+    public function test_store_reposting_the_same_customer_plate_does_not_duplicate_the_link(): void
+    {
+        $this->device();
+
+        foreach (['99 XYZ', '99 xyz'] as $variant) {
+            $this->withToken('mdev_cust')->postJson('/api/v1/device/customers', [
+                'name' => 'Driver', 'phone' => '+96890007777', 'plate_number' => $variant,
+            ])->assertOk();
+        }
+
+        // One customer, ONE link — firstOrCreate on (company, customer,
+        // plate) makes the re-post idempotent.
+        $this->assertSame(1, DB::table('pos_customer_vehicle_plates')->where('plate_number', '99 XYZ')->count());
+    }
+
+    public function test_store_plate_attach_touches_the_customer_so_the_delta_sync_sees_it(): void
+    {
+        $this->device();
+        $old = now()->subDay();
+        $c = $this->customer(['phone' => '+96890001234']);
+        DB::table('pos_customers')->where('id', $c->id)->update([
+            'created_at' => $old->toDateTimeString(), 'updated_at' => $old->toDateTimeString(),
+        ]);
+
+        $this->withToken('mdev_cust')->postJson('/api/v1/device/customers', [
+            'name' => 'Ali', 'phone' => '+96890001234', 'plate_number' => '777 T',
+        ])->assertOk();
+
+        // The customer row was touched (updated_at moved past the old stamp)...
+        $this->assertTrue(
+            Customer::query()->findOrFail($c->id)->updated_at->greaterThan($old->addHours(12)),
+        );
+
+        // ...so a /device/config/delta from before the attach picks the
+        // customer up — plates included — and OTHER devices learn the plate.
+        $since = now()->subHour()->toIso8601String();
+        $delta = $this->withToken('mdev_cust')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($since))
+            ->assertOk()->json('data');
+        $this->assertSame([$c->id], collect($delta['customers'])->pluck('id')->all());
+        $this->assertSame(['777 T'], $delta['customers'][0]['plates']);
+    }
+
+    public function test_show_returns_the_mapped_customer_with_plates_and_loyalty(): void
+    {
+        $this->device();
+        $c = $this->customer(['phone' => '+96890001234']);
+        CustomerVehiclePlate::create(['uuid' => (string) Str::uuid(), 'customer_id' => $c->id, 'company_id' => 100, 'plate_number' => '12345 A']);
+        DB::table('pos_loyalty_rules')->insert([
+            'id' => 7, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Points',
+            'type' => 'spend_based', 'config_json' => json_encode(['points_per_omr' => 10]),
+            'status' => 'active', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('pos_loyalty_accounts')->insert([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'customer_id' => $c->id,
+            'loyalty_rule_id' => 7, 'point_balance' => 240, 'stamp_count' => 3,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $res = $this->withToken('mdev_cust')->getJson('/api/v1/device/customers/'.$c->id)->assertOk();
+
+        // Same envelope + shape as search's mapCustomer.
+        $this->assertSame('baisas', $res->json('meta.money_unit'));
+        $this->assertSame([], $res->json('errors'));
+        $customer = $res->json('data.customer');
+        $this->assertSame($c->id, $customer['id']);
+        $this->assertSame($c->uuid, $customer['uuid']);
+        $this->assertSame('Ali Said', $customer['name']);
+        $this->assertSame('+96890001234', $customer['phone']);
+        $this->assertSame(3000, $customer['wallet_balance_baisas']);
+        $this->assertSame(['12345 A'], $customer['plates']);
+        $this->assertSame([['rule_id' => 7, 'points' => 240, 'stamps' => 3]], $customer['loyalty']);
+    }
+
+    public function test_show_404s_on_another_companys_customer(): void
+    {
+        $this->device(); // company 100
+        $foreign = $this->customer(['company_id' => 200, 'phone' => '+96899999999']);
+
+        $res = $this->withToken('mdev_cust')
+            ->getJson('/api/v1/device/customers/'.$foreign->id)
+            ->assertStatus(404);
+        $this->assertSame('customer_not_found', $res->json('errors.0.code'));
+        $this->assertNull($res->json('data'));
+    }
+
+    public function test_show_requires_a_device_token(): void
+    {
+        $this->device();
+        $c = $this->customer();
+        $this->getJson('/api/v1/device/customers/'.$c->id)->assertStatus(401);
+    }
+
+    public function test_show_rejects_a_blocked_device_token(): void
+    {
+        // Lifecycle revocation — same contract as the sibling endpoints.
+        Device::factory()->paired('mdev_blocked')->create(['company_id' => 100, 'branch_id' => 10, 'status' => 'blocked']);
+        $c = $this->customer();
+        $this->withToken('mdev_blocked')->getJson('/api/v1/device/customers/'.$c->id)->assertStatus(401);
     }
 
     public function test_store_requires_name_and_phone(): void

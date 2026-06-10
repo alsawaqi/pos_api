@@ -122,6 +122,13 @@ class DeviceConfigTest extends TestCase
             ['uuid' => (string) Str::uuid(), 'company_id' => 100, 'customer_id' => 1, 'loyalty_rule_id' => 1, 'point_balance' => 50, 'stamp_count' => 3] + $t,
         ]);
 
+        // P-F2 — customer 1 also holds a vehicle plate (offline drive-thru
+        // lookup), plus an other-company plate to prove it never leaks.
+        DB::table('pos_customer_vehicle_plates')->insert([
+            ['uuid' => (string) Str::uuid(), 'company_id' => 100, 'customer_id' => 1, 'plate_number' => '12345 A'] + $t,
+            ['uuid' => (string) Str::uuid(), 'company_id' => 200, 'customer_id' => 99, 'plate_number' => '99999 Z'] + $t,
+        ]);
+
         DB::table('pos_taxes')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'VAT', 'rate_percent' => 5.00, 'is_active' => true, 'sort_order' => 1] + $t,
             ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Municipality', 'rate_percent' => 2.00, 'is_active' => true, 'sort_order' => 2] + $t,
@@ -304,6 +311,9 @@ class DeviceConfigTest extends TestCase
         $this->assertSame(10, $data['loyalty_rules'][0]['config']['stamps_required']);
         $this->assertCount(1, $data['customers']);
         $this->assertSame(3000, $data['customers'][0]['wallet_balance_baisas']);
+        // P-F2 — cached vehicle plates (uppercased strings) for the offline
+        // drive-thru lookup; the other company's plate must not leak in.
+        $this->assertSame(['12345 A'], $data['customers'][0]['plates']);
         // Cached loyalty balances per rule (for offline view/redeem).
         $this->assertSame(
             [['rule_id' => 1, 'points' => 50, 'stamps' => 3]],

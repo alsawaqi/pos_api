@@ -718,7 +718,11 @@ return new class extends Migration
             $table->unsignedBigInteger('company_id');
             $table->string('plate_number', 32);
             $table->timestamps();
-            $table->unique(['company_id', 'plate_number'], 'pos_cvp_company_plate_unique');
+            // P-F2 — many-to-many: one row per customer↔plate LINK
+            // (a family car shared by several loyalty members), plus a
+            // plain index serving the "plate → customer(s)" hot path.
+            $table->unique(['company_id', 'customer_id', 'plate_number'], 'pos_cvp_company_customer_plate_unique');
+            $table->index(['company_id', 'plate_number'], 'pos_cvp_company_plate_index');
         });
 
         // ---- Phase 8.8 expense.log + restock.request sync targets ----

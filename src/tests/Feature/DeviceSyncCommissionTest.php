@@ -250,6 +250,66 @@ class DeviceSyncCommissionTest extends TestCase
         $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
     }
 
+    /**
+     * Phase D4 (blueprint §6.8 Gift — "zero charged to customer"): a fully
+     * gifted sale collects nothing, so even with an active profile NO
+     * commission rows are recorded — there is nothing to share.
+     */
+    public function test_a_fully_gifted_sale_records_no_breakdown(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        $res = $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'gift', 'amount_baisas' => 3000],
+        ])])->assertOk();
+
+        $this->assertSame('paid', $res->json('data.results.0.result.status'));
+        $this->assertSame([], $res->json('data.results.0.result.sale_commission_ids'));
+        $this->assertCount(0, $this->breakdownFor($uuid));
+    }
+
+    /**
+     * Phase D4 — a PARTIAL gift (split card + gift): the bank cut applies to
+     * the card portion only, platform to the COLLECTED amount (gross − gift),
+     * and the rows sum to collected, not grand_total.
+     */
+    public function test_gifted_portion_is_excluded_from_the_commission_base(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        // 1.000 card + 2.000 gifted on a 3.000 sale → collected = 1.000.
+        $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'card', 'amount_baisas' => 1000, 'softpos_reference' => 'TXN1'],
+            ['method' => 'gift', 'amount_baisas' => 2000],
+        ])])->assertOk();
+
+        $rows = $this->breakdownFor($uuid);
+        $this->assertCount(3, $rows);
+
+        // Platform 2% of the 1.000 collected = 0.020; bank 3% of the 1.000
+        // card part = 0.030; merchant remainder = 1.000 − 0.050 = 0.950.
+        $this->assertEqualsWithDelta(0.020, (float) $rows[0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.030, (float) $rows[1]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.950, (float) $rows[2]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(1.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+        // gross_amount still snapshots the full sale.
+        $this->assertEqualsWithDelta(3.0, (float) $rows[0]->gross_amount, 1e-9);
+    }
+
     public function test_no_profile_records_no_breakdown(): void
     {
         $this->seedProduct();

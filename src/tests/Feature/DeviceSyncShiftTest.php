@@ -227,6 +227,47 @@ class DeviceSyncShiftTest extends TestCase
         $this->assertSame(2, $tenders->firstWhere('method', 'cash')['count']);
     }
 
+    /**
+     * Phase D4 — a gifted sale never enters the drawer math (expected cash
+     * sums METHOD_CASH only) but DOES surface as its own Z-report tender row.
+     */
+    public function test_close_excludes_gift_tenders_from_expected_cash(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000)])->assertOk();
+        $this->ringCashSale('mdev_a', 3000);
+
+        // A fully gifted order during the shift: zero collected.
+        $giftUuid = (string) Str::uuid();
+        $this->push('mdev_a', [$this->createEvent($giftUuid, 2000)])->assertOk();
+        $this->push('mdev_a', [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.pay',
+            'client_timestamp' => now()->subHour()->toIso8601String(),
+            'payload' => [
+                'order_uuid' => $giftUuid,
+                'paid_at' => now()->subHour()->toIso8601String(),
+                'payments' => [['method' => 'gift', 'amount_baisas' => 2000]],
+            ],
+        ]])->assertOk();
+
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftUuid, 13000)])->assertOk();
+
+        // Drawer: opening 10.000 + 3.000 cash only — the gift adds nothing.
+        $this->assertSame(13000, $res->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+
+        // Z-report: the gifted order counts as a sale and its tender shows.
+        $summary = $res->json('data.results.0.result.summary');
+        $this->assertSame(2, $summary['order_count']);
+        $gift = collect($summary['tenders'])->firstWhere('method', 'gift');
+        $this->assertSame(2000, $gift['amount_baisas']);
+        $this->assertSame(1, $gift['count']);
+    }
+
     public function test_close_excludes_cash_taken_on_another_device(): void
     {
         $this->seedProduct();

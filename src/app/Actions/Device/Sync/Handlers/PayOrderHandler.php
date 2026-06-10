@@ -83,6 +83,11 @@ class PayOrderHandler implements SyncEventHandler
             // Card-paid portion of this sale — drives the acquirer (bank)
             // commission slice, which is charged on card money only.
             $cardBaisas = 0;
+            // Phase D4 — gifted portion (blueprint §6.8: "zero charged to
+            // customer"). Money never collected: excluded from the
+            // commission base and, when the WHOLE order is gifted, from
+            // loyalty earn.
+            $giftBaisas = 0;
 
             foreach ($payments as $tender) {
                 if (! isset($tender['method'], $tender['amount_baisas']) || ! in_array($tender['method'], Payment::METHODS, true)) {
@@ -117,6 +122,9 @@ class PayOrderHandler implements SyncEventHandler
                 if ($tender['method'] === Payment::METHOD_CARD && $status !== Payment::STATUS_FAILED) {
                     $cardBaisas += (int) $tender['amount_baisas'];
                 }
+                if ($tender['method'] === Payment::METHOD_GIFT && $status !== Payment::STATUS_FAILED) {
+                    $giftBaisas += (int) $tender['amount_baisas'];
+                }
             }
 
             $grandBaisas = Money::toBaisas($order->grand_total);
@@ -139,6 +147,7 @@ class PayOrderHandler implements SyncEventHandler
                 $order,
                 $device,
                 $cardBaisas,
+                $giftBaisas,
                 $paymentIds[0] ?? null,
                 $event->client_event_id,
             );
@@ -147,6 +156,11 @@ class PayOrderHandler implements SyncEventHandler
             // rule the cashier named for a known customer. A merchant can run
             // several earn programs at once (e.g. a stamp card AND points), so
             // each applicable rule credits — not just the first (v2 #3).
+            // Phase D4 — a fully GIFTED order earns nothing (no spend ⇒ no
+            // points), even if the device named earn rules.
+            if ($giftBaisas >= $grandBaisas && $grandBaisas > 0) {
+                $loyaltyRuleIds = [];
+            }
             $loyaltyTxnIds = [];
             foreach ($loyaltyRuleIds as $ruleId) {
                 $txn = $this->loyalty->apply($order, $ruleId);

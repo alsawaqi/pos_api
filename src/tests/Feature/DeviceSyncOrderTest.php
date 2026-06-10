@@ -578,6 +578,42 @@ class DeviceSyncOrderTest extends TestCase
         return $event;
     }
 
+    /**
+     * Phase D4 (blueprint §6.8): "Gift — Marks the order as gifted (zero
+     * charged to customer). Inventory still deducts." A gift tender of the
+     * full grand_total pays the order, deducts stock, records a 'gift'
+     * payment row — and a fully gifted order earns NO loyalty (no spend ⇒
+     * no points), even when the device names an earn rule.
+     */
+    public function test_a_gift_tender_pays_the_order_consumes_stock_and_earns_no_loyalty(): void
+    {
+        $this->seedCatalogue();
+        $this->seedLoyaltyRule();
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        $this->push('mdev_ord', [$this->createEvent($uuid, ['customer_id' => 1])])->assertOk();
+
+        $pay = $this->payEvent($uuid, [['method' => 'gift', 'amount_baisas' => 3000]]);
+        $pay['payload']['loyalty_rule_id'] = 1;
+        $res = $this->push('mdev_ord', [$pay])->assertOk();
+
+        $this->assertSame('paid', $res->json('data.results.0.result.status'));
+        $this->assertSame('paid', Order::firstWhere('uuid', $uuid)->status);
+        $this->assertDatabaseHas('pos_payments', ['method' => 'gift', 'status' => 'success']);
+
+        // Inventory still deducts: 2 Lattes × 0.25 L milk → 5.000 − 0.500.
+        $this->assertEqualsWithDelta(
+            4.5,
+            (float) DB::table('pos_branch_stock')->where(['branch_id' => 10, 'ingredient_id' => 1])->value('quantity'),
+            1e-9,
+        );
+
+        // No loyalty earn on a fully gifted order.
+        $this->assertSame([], $res->json('data.results.0.result.loyalty_transaction_ids'));
+        $this->assertNull(LoyaltyAccount::where(['customer_id' => 1, 'loyalty_rule_id' => 1])->first());
+    }
+
     public function test_voiding_a_paid_order_reverses_the_loyalty_earn(): void
     {
         $this->seedCatalogue();

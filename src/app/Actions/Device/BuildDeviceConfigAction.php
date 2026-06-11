@@ -263,6 +263,10 @@ class BuildDeviceConfigAction
                 // actions (comps, cancellations, gifts) as the fingerprint
                 // fallback. Verified server-side by /device/auth/verify-manager-pin.
                 'manager_approval_positions' => $this->positionListSetting($companyId, 'manager_approval_positions'),
+                // P-F6 — staff positions allowed to open the device's branch
+                // Reports dashboard (GET /device/reports/branch). The DEVICE
+                // gates its Reports screen on this list.
+                'reports_positions' => $this->positionListSetting($companyId, 'reports_positions'),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
@@ -351,9 +355,9 @@ class BuildDeviceConfigAction
     /**
      * A staff-position-list policy read from the merchant-written
      * pos_company_settings (v2 #14 order_cancel_positions, P-F1
-     * manager_approval_positions). Falls back to managers-only when the
-     * merchant hasn't set a policy — the safe default matching the device's
-     * legacy "manager approval" gate.
+     * manager_approval_positions, P-F6 reports_positions). Falls back to
+     * managers-only when the merchant hasn't set a policy — the safe
+     * default matching the device's legacy "manager approval" gate.
      *
      * @return list<string>
      */

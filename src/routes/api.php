@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\Auth\DeviceActivateController;
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
+use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
@@ -91,5 +92,11 @@ Route::prefix('v1')->group(function (): void {
             ->whereNumber('id')
             ->name('device.customers.show');
         Route::post('device/customers', [DeviceCustomersController::class, 'store'])->name('device.customers.store');
+
+        // P-F6 — the device's branch Reports dashboard: date-windowed,
+        // branch-scoped sales/tender/product/discount/loyalty/consumption
+        // aggregates. Who may OPEN it is the merchant's reports_positions
+        // setting, enforced device-side from /device/config.
+        Route::get('device/reports/branch', DeviceBranchReportController::class)->name('device.reports.branch');
     });
 });

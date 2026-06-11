@@ -575,6 +575,60 @@ class DeviceConfigTest extends TestCase
         $this->assertSame(['manager'], $data['settings']['manager_approval_positions']);
     }
 
+    public function test_settings_defaults_reports_positions_to_manager(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // company 100, no policy row configured
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame(['manager'], $data['settings']['reports_positions']);
+    }
+
+    public function test_settings_reflects_the_merchant_reports_positions_policy_in_full_and_delta(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100,
+            'key' => 'reports_positions',
+            'value' => json_encode(['manager', 'supervisor']),
+            'created_at' => $this->old,
+            'updated_at' => $this->old,
+        ]);
+
+        // FULL config carries the policy…
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertSame(['manager', 'supervisor'], $data['settings']['reports_positions']);
+
+        // …and so does every DELTA (settings are always emitted, not
+        // delta-tracked) — even when nothing else changed since.
+        $since = now()->subMinute();
+        $delta = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))
+            ->assertOk()
+            ->json('data');
+        $this->assertSame(['manager', 'supervisor'], $delta['settings']['reports_positions']);
+        $this->assertSame(['manager'], $delta['settings']['manager_approval_positions']);
+    }
+
+    public function test_settings_reports_positions_policy_is_scoped_to_the_devices_company(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // company 100
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 200,
+            'key' => 'reports_positions',
+            'value' => json_encode(['cashier']),
+            'created_at' => $this->old,
+            'updated_at' => $this->old,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertSame(['manager'], $data['settings']['reports_positions']);
+    }
+
     // =================== PHASE D2 — catalogue flags ===================
 
     public function test_phase_d2_catalogue_flags_default_correctly(): void

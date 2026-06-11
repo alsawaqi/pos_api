@@ -809,6 +809,10 @@ return new class extends Migration
             $table->decimal('longitude', 10, 7)->nullable();
             $table->string('client_event_id', 64)->nullable()->unique();
             $table->timestamp('occurred_at')->nullable();
+            // P-F7 — when the round-up was actually forwarded to the charity
+            // app (NULL = pending reconciliation approval / forward failed).
+            // Mirrors pos_admin's 2026_07_11_010000 migration.
+            $table->timestamp('forwarded_at')->nullable();
             $table->timestamps();
         });
 

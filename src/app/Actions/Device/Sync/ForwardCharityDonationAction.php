@@ -25,22 +25,28 @@ use Illuminate\Support\Facades\Log;
  * BEST-EFFORT: never throws, never fails the donation.record event — a
  * charity-side outage must not roll back the POS round-up. Skipped entirely
  * when CHARITY_API_URL is unset (e.g. in tests).
+ *
+ * P-F7 — returns TRUE only when the charity app actually accepted the
+ * forward, so the caller can stamp pos_roundup_donations.forwarded_at (the
+ * "already forwarded" marker). A FALSE (unset URL / non-2xx / exception)
+ * leaves the marker NULL and the admin reconciliation paths retry later.
  */
 class ForwardCharityDonationAction
 {
     /**
      * @param  string  $amountOmr  the round-up amount as a decimal OMR string
      * @param  array<string, mixed>|null  $receipt  the bank receipt (bank_response)
+     * @return bool true when the charity app accepted the forward
      */
     public function forward(
         Device $device,
         ?Branch $branch,
         string $amountOmr,
         ?array $receipt,
-    ): void {
+    ): bool {
         $baseUrl = rtrim((string) config('services.charity.url'), '/');
         if ($baseUrl === '') {
-            return; // not configured → nothing to forward
+            return false; // not configured → nothing to forward
         }
 
         try {
@@ -73,11 +79,17 @@ class ForwardCharityDonationAction
                     'status' => $response->status(),
                     'body' => $response->json('message') ?? $response->body(),
                 ]);
+
+                return false;
             }
+
+            return true;
         } catch (\Throwable $e) {
             Log::warning('charity roundup forward failed: '.$e->getMessage(), [
                 'pos_device_id' => $device->getKey(),
             ]);
+
+            return false;
         }
     }
 }

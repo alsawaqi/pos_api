@@ -74,6 +74,19 @@ class DonationRecordHandler implements SyncEventHandler
             throw new RuntimeException('no card payment to attach the round-up to for order: '.$payload['order_uuid']);
         }
 
+        // P-F7 — when the round-up rides a force-recorded (ambiguous) card
+        // charge, the money is not confirmed yet: the linked payment — or any
+        // other tender on the order — sits pending_reconciliation. The
+        // pos_roundup_donations row is still created below, but the charity
+        // forwarding is DEFERRED (forwarded_at stays NULL) until the platform
+        // admin approves the order against the bank file (pos_admin
+        // ApprovePendingReconciliationAction — the twin that forwards it).
+        $orderHasPendingTender = (bool) $payment->pending_reconciliation
+            || Payment::query()
+                ->where('order_id', $order->id)
+                ->where('pending_reconciliation', true)
+                ->exists();
+
         $branch = Branch::query()->find($device->branch_id);
 
         $receipt = is_array($payload['receipt'] ?? null) ? $payload['receipt'] : null;
@@ -123,8 +136,21 @@ class DonationRecordHandler implements SyncEventHandler
         // After the POS round-up has durably committed, forward it to the
         // charity app (best-effort — never fails the round-up) so a real
         // charity_transaction + shares are created, linked to this POS device +
-        // branch with the branch's geo copied across.
-        $this->charityForwarder->forward($device, $branch, $amount, $receipt);
+        // branch with the branch's geo copied across. A successful forward
+        // stamps forwarded_at so the admin reconciliation paths never forward
+        // the same round-up twice.
+        //
+        // P-F7 — SKIPPED when the order has a pending_reconciliation tender:
+        // money not confirmed ⇒ nothing goes to charity yet. forwarded_at
+        // stays NULL and pos_admin forwards it on reconciliation approval.
+        if (! $orderHasPendingTender) {
+            $forwarded = $this->charityForwarder->forward($device, $branch, $amount, $receipt);
+            if ($forwarded) {
+                RoundupDonation::query()
+                    ->whereKey($result['roundup_donation_id'])
+                    ->update(['forwarded_at' => now()]);
+            }
+        }
 
         return $result;
     }

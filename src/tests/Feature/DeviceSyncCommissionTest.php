@@ -426,6 +426,56 @@ class DeviceSyncCommissionTest extends TestCase
         $this->assertDatabaseCount('pos_sale_commissions', 3);
     }
 
+    /**
+     * P-F7 — a force-recorded (ambiguous) card tender arrives
+     * pending_reconciliation: the money is NOT confirmed, so the commission
+     * split is DEFERRED — no pos_sale_commissions rows at pay time. The
+     * pos_admin approval queue records the split once the bank file
+     * confirms the money (ApprovePendingReconciliationAction).
+     */
+    public function test_a_pending_reconciliation_tender_defers_the_commission_split(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        $res = $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'card', 'amount_baisas' => 3000, 'status' => 'pending_reconciliation', 'softpos_reference' => 'NFC-T1'],
+        ])])->assertOk();
+
+        // The order still pays (goods left the shop) but records NO split.
+        $this->assertSame('paid', $res->json('data.results.0.result.status'));
+        $this->assertSame([], $res->json('data.results.0.result.sale_commission_ids'));
+        $this->assertDatabaseCount('pos_sale_commissions', 0);
+        $this->assertDatabaseHas('pos_payments', [
+            'status' => 'pending_reconciliation', 'pending_reconciliation' => true,
+        ]);
+    }
+
+    /** P-F7 — ONE pending tender in a split defers the WHOLE order's split. */
+    public function test_a_split_with_one_pending_tender_defers_the_whole_commission_split(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'cash', 'amount_baisas' => 2000, 'change_given_baisas' => 0],
+            ['method' => 'card', 'amount_baisas' => 1000, 'status' => 'pending_reconciliation', 'softpos_reference' => 'NFC-T2'],
+        ])])->assertOk();
+
+        $this->assertDatabaseCount('pos_sale_commissions', 0);
+    }
+
     public function test_rounding_leaves_the_exact_remainder_to_the_merchant(): void
     {
         $this->seedProduct();

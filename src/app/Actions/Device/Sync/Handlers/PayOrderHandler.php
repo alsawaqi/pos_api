@@ -88,6 +88,11 @@ class PayOrderHandler implements SyncEventHandler
             // commission base and, when the WHOLE order is gifted, from
             // loyalty earn.
             $giftBaisas = 0;
+            // P-F7 — any tender the cashier force-recorded on an ambiguous
+            // Soft POS charge (NFC timeout) lands pending_reconciliation:
+            // the money is NOT yet confirmed, so the sale's downstream
+            // money effects must wait for the admin's approval.
+            $hasPendingTender = false;
 
             foreach ($payments as $tender) {
                 if (! isset($tender['method'], $tender['amount_baisas']) || ! in_array($tender['method'], Payment::METHODS, true)) {
@@ -119,6 +124,10 @@ class PayOrderHandler implements SyncEventHandler
                 $paymentIds[] = (int) $payment->id;
                 $tenderedBaisas += (int) $tender['amount_baisas'];
 
+                if ($status === Payment::STATUS_PENDING_RECONCILIATION) {
+                    $hasPendingTender = true;
+                }
+
                 // P-F5 — ONLY the 'card' method (our Soft POS) accumulates
                 // into the bank-commission base. A 'bank_pos' tender is money
                 // taken on the BANK'S OWN standalone terminal: the bank
@@ -149,14 +158,26 @@ class PayOrderHandler implements SyncEventHandler
             // record the platform/bank/other/merchant breakdown. No active
             // profile ⇒ no rows (merchant keeps 100%). Snapshots the
             // percents so later profile edits never rewrite this sale.
-            $saleCommissionIds = $this->saleCommission->record(
-                $order,
-                $device,
-                $cardBaisas,
-                $giftBaisas,
-                $paymentIds[0] ?? null,
-                $event->client_event_id,
-            );
+            //
+            // P-F7 — DEFERRED when any tender is pending_reconciliation:
+            // the money is not confirmed until the platform admin matches
+            // it against the bank file, so the split is NOT recorded here.
+            // The admin's approval records it once the money is confirmed
+            // (pos_admin ApprovePendingReconciliationAction — the twin of
+            // this call). Inventory consumption and loyalty earn (below)
+            // deliberately KEEP firing at pay time: the goods left the
+            // shop regardless, and points are clawed back by voids.
+            $saleCommissionIds = [];
+            if (! $hasPendingTender) {
+                $saleCommissionIds = $this->saleCommission->record(
+                    $order,
+                    $device,
+                    $cardBaisas,
+                    $giftBaisas,
+                    $paymentIds[0] ?? null,
+                    $event->client_event_id,
+                );
+            }
 
             // Loyalty earn (server-authoritative, §9.1.6): accrue under EVERY
             // rule the cashier named for a known customer. A merchant can run

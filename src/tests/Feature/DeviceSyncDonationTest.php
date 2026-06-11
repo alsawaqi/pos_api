@@ -50,7 +50,7 @@ class DeviceSyncDonationTest extends TestCase
     /**
      * @return array{0:int,1:int}
      */
-    private function seedOrderAndCard(string $orderUuid = 'order-uuid-1'): array
+    private function seedOrderAndCard(string $orderUuid = 'order-uuid-1', bool $pending = false): array
     {
         $orderId = DB::table('pos_orders')->insertGetId([
             'uuid' => $orderUuid, 'company_id' => 100, 'branch_id' => 10,
@@ -60,7 +60,9 @@ class DeviceSyncDonationTest extends TestCase
         ]);
         $paymentId = DB::table('pos_payments')->insertGetId([
             'uuid' => (string) Str::uuid(), 'order_id' => $orderId, 'method' => 'card',
-            'amount' => '5.000', 'status' => 'success', 'pending_reconciliation' => false,
+            'amount' => '5.000',
+            'status' => $pending ? 'pending_reconciliation' : 'success',
+            'pending_reconciliation' => $pending,
             'captured_at' => now(), 'created_at' => now(), 'updated_at' => now(),
         ]);
 
@@ -188,8 +190,38 @@ class DeviceSyncDonationTest extends TestCase
                 && ($request['receipt']['status'] ?? null) === 'success';
         });
 
-        // The POS round-up still records normally.
+        // The POS round-up still records normally, stamped as forwarded so
+        // the admin reconciliation paths never forward it twice (P-F7).
         $this->assertDatabaseCount('pos_roundup_donations', 1);
+        $this->assertNotNull(RoundupDonation::firstOrFail()->forwarded_at);
+    }
+
+    /**
+     * P-F7 — the round-up rides a force-recorded (pending_reconciliation)
+     * card charge: the donation row is still created, but the charity
+     * forwarding is DEFERRED (forwarded_at stays NULL) until the platform
+     * admin approves the order (pos_admin ApprovePendingReconciliationAction).
+     */
+    public function test_a_pending_reconciliation_order_records_but_does_not_forward_the_roundup(): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $this->device();
+        $this->seedBranch();
+        [$orderId, $paymentId] = $this->seedOrderAndCard(pending: true);
+
+        $res = $this->push('mdev_x', [$this->donationEvent()])->assertOk();
+
+        // Recorded as usual — payment linked, amount snapshotted…
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertDatabaseHas('pos_roundup_donations', [
+            'order_id' => $orderId, 'payment_id' => $paymentId,
+        ]);
+
+        // …but nothing went to charity: money not confirmed yet.
+        Http::assertNothingSent();
+        $this->assertNull(RoundupDonation::firstOrFail()->forwarded_at);
     }
 
     public function test_a_charity_forward_failure_never_breaks_the_roundup(): void
@@ -208,6 +240,9 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertSame('processed', $res->json('data.results.0.status'));
         $this->assertSame('success', $res->json('data.results.0.result.status'));
         $this->assertDatabaseCount('pos_roundup_donations', 1);
+        // P-F7 — a failed forward leaves the marker NULL so the admin
+        // reconciliation paths can retry it later.
+        $this->assertNull(RoundupDonation::firstOrFail()->forwarded_at);
     }
 
     public function test_no_charity_forward_when_the_url_is_unset(): void

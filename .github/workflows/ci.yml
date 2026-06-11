@@ -35,8 +35,14 @@ jobs:
           path: ${{ steps.cc.outputs.dir }}
           key: ${{ runner.os }}-composer-api-${{ hashFiles('src/composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-api-
+      # .env must exist BEFORE composer install: its package:discover boots
+      # the app, and without .env the broadcasting config tried to build the
+      # reverb driver with no key. key:generate needs vendor/, so it stays
+      # after. The storage skeleton is untracked — create it.
+      - run: mkdir -p storage/framework/cache storage/framework/sessions storage/framework/testing storage/framework/views storage/logs bootstrap/cache
+      - run: cp .env.example .env
       - run: composer install --prefer-dist --no-interaction --no-progress
-      - run: cp .env.example .env && php artisan key:generate
+      - run: php artisan key:generate
       - run: php artisan config:clear && php artisan test
 
   # ---- CD: auto-deploy to the production VPS ----

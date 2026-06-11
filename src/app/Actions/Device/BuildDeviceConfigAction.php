@@ -23,6 +23,7 @@ use App\Models\ProductCategory;
 use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
+use App\Support\OrderNumbering;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -267,6 +268,13 @@ class BuildDeviceConfigAction
                 // Reports dashboard (GET /device/reports/branch). The DEVICE
                 // gates its Reports screen on this list.
                 'reports_positions' => $this->positionListSetting($companyId, 'reports_positions'),
+                // P-F8 — merchant-defined order numbering policy. Always the
+                // full normalised five-key shape ({enabled:false, prefix:'',
+                // pad:4, scope:'branch', daily_reset:false} when unset). The
+                // device requests the actual number from
+                // POST /device/orders/next-number at payment time and uses
+                // prefix/pad to format its OFFLINE local-counter fallback.
+                'order_numbering' => OrderNumbering::forCompany($companyId),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),

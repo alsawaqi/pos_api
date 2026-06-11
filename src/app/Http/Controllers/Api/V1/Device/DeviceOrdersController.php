@@ -140,6 +140,8 @@ class DeviceOrdersController
             'customer_id' => $order->customer_id !== null ? (int) $order->customer_id : null,
             'staff_id' => $order->staff_id !== null ? (int) $order->staff_id : null,
             'plate_number' => $order->plate_number,
+            // P-F8 — the printed receipt number; null for unnumbered orders.
+            'receipt_number' => $order->receipt_number,
             'opened_at' => $order->opened_at?->toIso8601String(),
             'subtotal_baisas' => Money::toBaisas($order->subtotal),
             'discount_total_baisas' => Money::toBaisas($order->discount_total),

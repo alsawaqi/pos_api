@@ -109,6 +109,11 @@ class CreateOrderHandler implements SyncEventHandler
                 'opened_at' => Carbon::parse((string) $order['opened_at']),
                 'client_event_id' => $event->client_event_id,
                 'note' => $order['note'] ?? null,
+                // P-F8 — the printed receipt number (server-allocated via
+                // /device/orders/next-number, or the device's offline local
+                // fallback). OPTIONAL: orders queued offline / with
+                // numbering disabled carry none. Trimmed; empty → NULL.
+                'receipt_number' => $this->receiptNumber($order),
             ];
 
             if ($existing !== null) {
@@ -167,6 +172,19 @@ class CreateOrderHandler implements SyncEventHandler
                 'comps' => $compCount,
             ];
         });
+    }
+
+    /**
+     * P-F8 — the optional printed receipt number, trimmed; absent/empty →
+     * NULL (validation already capped it at 24 chars).
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function receiptNumber(array $order): ?string
+    {
+        $value = trim((string) ($order['receipt_number'] ?? ''));
+
+        return $value !== '' ? $value : null;
     }
 
     /**
@@ -417,6 +435,9 @@ class CreateOrderHandler implements SyncEventHandler
             'tax_total_baisas' => ['required', 'integer', 'min:0'],
             'grand_total_baisas' => ['required', 'integer', 'min:0'],
             'opened_at' => ['required', 'date'],
+            // P-F8 — optional printed receipt number (server-allocated or
+            // the device's offline fallback); column is varchar(24).
+            'receipt_number' => ['nullable', 'string', 'max:24'],
             'lines' => ['required', 'array', 'min:1'],
             'lines.*.product_id' => ['required', 'integer'],
             'lines.*.qty' => ['required', 'numeric', 'gt:0'],

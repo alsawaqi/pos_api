@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
+use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
@@ -84,6 +85,10 @@ Route::prefix('v1')->group(function (): void {
         // active orders, customer lookup by phone/plate, register a customer.
         Route::get('device/orders/active', [DeviceOrdersController::class, 'active'])->name('device.orders.active');
         Route::get('device/orders/history', [DeviceOrdersController::class, 'history'])->name('device.orders.history');
+        // P-F8 — atomically allocate the next merchant-defined order
+        // number (prefix + zero-padded counter) at payment time. 409
+        // numbering_disabled when the merchant hasn't enabled the policy.
+        Route::post('device/orders/next-number', DeviceOrderNumberController::class)->name('device.orders.next-number');
         Route::get('device/shift/current', [DeviceShiftController::class, 'current'])->name('device.shift.current');
         Route::get('device/customers/search', [DeviceCustomersController::class, 'search'])->name('device.customers.search');
         // P-F2 — customer details fetch ({id} numeric so it can never

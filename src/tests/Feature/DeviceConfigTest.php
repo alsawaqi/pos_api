@@ -629,6 +629,80 @@ class DeviceConfigTest extends TestCase
         $this->assertSame(['manager'], $data['settings']['reports_positions']);
     }
 
+    public function test_settings_defaults_order_numbering_to_disabled(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // company 100, no policy row configured
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        // P-F8 — always the full normalised five-key shape.
+        $this->assertSame([
+            'enabled' => false,
+            'prefix' => '',
+            'pad' => 4,
+            'scope' => 'branch',
+            'daily_reset' => false,
+        ], $data['settings']['order_numbering']);
+    }
+
+    public function test_settings_reflects_the_merchant_order_numbering_policy_in_full_and_delta(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100,
+            'key' => 'order_numbering',
+            'value' => json_encode([
+                'enabled' => true,
+                'prefix' => 'KLD-',
+                'pad' => 4,
+                'scope' => 'company',
+                'daily_reset' => true,
+            ]),
+            'created_at' => $this->old,
+            'updated_at' => $this->old,
+        ]);
+
+        $expected = [
+            'enabled' => true,
+            'prefix' => 'KLD-',
+            'pad' => 4,
+            'scope' => 'company',
+            'daily_reset' => true,
+        ];
+
+        // FULL config carries the policy…
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertSame($expected, $data['settings']['order_numbering']);
+
+        // …and so does every DELTA (settings are always emitted, not
+        // delta-tracked) — even when nothing else changed since.
+        $since = now()->subMinute();
+        $delta = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))
+            ->assertOk()
+            ->json('data');
+        $this->assertSame($expected, $delta['settings']['order_numbering']);
+    }
+
+    public function test_settings_order_numbering_policy_is_scoped_to_the_devices_company(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // company 100
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 200,
+            'key' => 'order_numbering',
+            'value' => json_encode(['enabled' => true, 'prefix' => 'X-', 'pad' => 5, 'scope' => 'company', 'daily_reset' => false]),
+            'created_at' => $this->old,
+            'updated_at' => $this->old,
+        ]);
+
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+
+        $this->assertFalse($data['settings']['order_numbering']['enabled']);
+    }
+
     // =================== PHASE D2 — catalogue flags ===================
 
     public function test_phase_d2_catalogue_flags_default_correctly(): void

@@ -266,6 +266,12 @@ class CreateOrderHandler implements SyncEventHandler
                 : null;
             $lineIndex = isset($d['line_index']) ? (int) $d['line_index'] : null;
 
+            // P-F4 — optional cashier free-text reason for a manual /
+            // custom discount. Trimmed + capped to the column's 160 chars
+            // rather than rejected: an offline order batch must not fail
+            // because a cashier typed a long note. Empty/absent → NULL.
+            $reason = isset($d['reason']) ? mb_substr(trim((string) $d['reason']), 0, 160) : '';
+
             OrderDiscount::create([
                 'company_id' => $device->company_id,
                 'branch_id' => $device->branch_id,
@@ -275,6 +281,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'name_snapshot' => $rule?->name ?? (string) $d['name'],
                 'amount_type_snapshot' => $rule?->amount_type ?? ($d['amount_type'] ?? null),
                 'amount' => Money::toOmr((int) $d['amount_baisas']),
+                'reason' => $reason !== '' ? $reason : null,
                 'applied_at' => $model->opened_at,
             ]);
             $count++;
@@ -401,6 +408,10 @@ class CreateOrderHandler implements SyncEventHandler
             'discounts.*.amount_type' => ['nullable', 'string'],
             'discounts.*.amount_baisas' => ['required', 'integer', 'min:0'],
             'discounts.*.line_index' => ['nullable', 'integer', 'min:0'],
+            // P-F4 — cashier's free-text reason for a manual discount. No
+            // max rule here: writeDiscounts trims + caps to 160 instead of
+            // failing the whole offline order over a long note.
+            'discounts.*.reason' => ['nullable', 'string'],
             // Phase B — comp write-offs. Unlike a discount a comp always
             // carries a valid comp_reason_id (resolved tenant-scoped in
             // writeComps) and a positive amount.

@@ -85,9 +85,11 @@ class DeviceOrderDiscountTest extends TestCase
 
         $event = $this->createEvent($uuid, [
             // Known rule, line-level — the catalogue name/type wins over the sent label.
+            // No reason sent → NULL persists.
             ['discount_id' => 7, 'name' => 'Lunch (sent label)', 'amount_type' => 'percent', 'amount_baisas' => 500, 'line_index' => 0],
-            // Manual / ad-hoc, order-level — no rule behind it.
-            ['name' => 'Manager comp', 'amount_baisas' => 300],
+            // Manual / ad-hoc, order-level — no rule behind it. P-F4: carries
+            // the cashier's free-text reason (persisted trimmed).
+            ['name' => 'Manager comp', 'amount_baisas' => 300, 'reason' => '  Regular customer  '],
         ]);
 
         $res = $this->push($event)->assertOk();
@@ -106,6 +108,7 @@ class DeviceOrderDiscountTest extends TestCase
         $this->assertSame('percent', $rule->amount_type_snapshot);
         $this->assertSame('0.500', $rule->amount);
         $this->assertEquals($item->id, $rule->order_item_id);          // line-level
+        $this->assertNull($rule->reason);                              // reason absent → NULL
 
         $manual = $rows->firstWhere('name_snapshot', 'Manager comp');
         $this->assertNotNull($manual);
@@ -113,6 +116,24 @@ class DeviceOrderDiscountTest extends TestCase
         $this->assertNull($manual->order_item_id);                     // order-level
         $this->assertNull($manual->amount_type_snapshot);
         $this->assertSame('0.300', $manual->amount);
+        // P-F4: the cashier's free-text reason persists trimmed.
+        $this->assertSame('Regular customer', $manual->reason);
+    }
+
+    public function test_a_long_reason_is_capped_to_160_chars_instead_of_rejecting_the_order(): void
+    {
+        // The whole offline batch must not fail over a long note — the
+        // handler truncates to the column's 160 chars.
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        $res = $this->push($this->createEvent($uuid, [
+            ['name' => 'Manual', 'amount_baisas' => 300, 'reason' => str_repeat('x', 200)],
+        ]))->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $row = OrderDiscount::firstOrFail();
+        $this->assertSame(str_repeat('x', 160), $row->reason);
     }
 
     public function test_an_order_without_discounts_writes_no_application_rows(): void

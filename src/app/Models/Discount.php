@@ -34,6 +34,9 @@ class Discount extends Model
             'branch_scope_json' => 'array',
             'stackable' => 'boolean',
             'requires_manager_approval' => 'boolean',
+            // P-F4: order-scope auto-application (always true for
+            // product/category scopes — forced merchant-side).
+            'auto_apply' => 'boolean',
         ];
     }
 }

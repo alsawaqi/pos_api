@@ -875,6 +875,14 @@ class BuildDeviceConfigAction
             'branch_scope_json' => $d->branch_scope_json,
             'stackable' => (bool) $d->stackable,
             'requires_manager_approval' => (bool) $d->requires_manager_approval,
+            // P-F4 — merchant control over ORDER-scope auto-application:
+            // true = the device applies the rule by itself to every
+            // qualifying order (the existing 6-axis predicate); false =
+            // cashier picks it manually. The device IGNORES this flag for
+            // product/category scopes — targeted rules already auto-apply
+            // per matching cart line and stay automatic (their stored
+            // value is forced true merchant-side).
+            'auto_apply' => (bool) $d->auto_apply,
             'status' => $d->status,
             'targets' => $targetRows
                 ? $targetRows->map(fn ($r): array => [

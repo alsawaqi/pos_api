@@ -97,10 +97,13 @@ class DeviceConfigTest extends TestCase
             ['branch_id' => 20, 'ingredient_id' => 2, 'quantity' => 7.000] + $t,
         ]);
 
+        // P-F4 auto_apply: order-scope rule 1 stays manual (false); the
+        // product-scope rule 2 carries true per the backfill/write-action
+        // invariant (targeted rules are always automatic on the device).
         DB::table('pos_discounts')->insert([
-            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'OMR1 off', 'scope' => 'order', 'amount_type' => 'fixed', 'amount' => 1.000, 'stackable' => false, 'requires_manager_approval' => false, 'status' => 'active'] + $t,
-            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => '10% off', 'scope' => 'product', 'amount_type' => 'percent', 'amount' => 10.000, 'stackable' => false, 'requires_manager_approval' => false, 'status' => 'active'] + $t,
-            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoDisc', 'scope' => 'order', 'amount_type' => 'fixed', 'amount' => 2.000, 'stackable' => false, 'requires_manager_approval' => false, 'status' => 'active'] + $t,
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'OMR1 off', 'scope' => 'order', 'amount_type' => 'fixed', 'amount' => 1.000, 'stackable' => false, 'requires_manager_approval' => false, 'auto_apply' => false, 'status' => 'active'] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => '10% off', 'scope' => 'product', 'amount_type' => 'percent', 'amount' => 10.000, 'stackable' => false, 'requires_manager_approval' => false, 'auto_apply' => true, 'status' => 'active'] + $t,
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'OtherCoDisc', 'scope' => 'order', 'amount_type' => 'fixed', 'amount' => 2.000, 'stackable' => false, 'requires_manager_approval' => false, 'auto_apply' => false, 'status' => 'active'] + $t,
         ]);
 
         DB::table('pos_discount_targets')->insert([
@@ -305,6 +308,12 @@ class DeviceConfigTest extends TestCase
         $this->assertEquals(10.0, $percent['percent']);
         $this->assertCount(1, $percent['targets']);
         $this->assertSame(1, $percent['targets'][0]['target_id']);
+        // P-F4 auto_apply: emitted as a strict bool so the device can cache
+        // it. Order-scope rule 1 = manual picker (false); product-scope
+        // rule 2 = true (targeted rules are always automatic — the device
+        // ignores the flag for them but the value still mirrors storage).
+        $this->assertFalse($fixed['auto_apply']);
+        $this->assertTrue($percent['auto_apply']);
 
         // Loyalty + customers
         $this->assertCount(1, $data['loyalty_rules']);

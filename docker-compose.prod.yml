@@ -65,13 +65,17 @@ services:
       - storage-data:/var/www/html/storage
       - cache-data:/var/www/html/bootstrap/cache
     entrypoint: ["sh", "-lc"]
-    command: |
-      set -e
-      mkdir -p /var/www/html/storage/framework/{cache,sessions,views} \
-               /var/www/html/storage/logs \
-               /var/www/html/bootstrap/cache
-      chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
-      chmod -R ug+rwX /var/www/html/storage /var/www/html/bootstrap/cache
+    # LIST form — see the deploy service note (string commands get shell-lexed).
+    command:
+      - |
+        set -e
+        mkdir -p /var/www/html/storage/framework/cache \
+                 /var/www/html/storage/framework/sessions \
+                 /var/www/html/storage/framework/views \
+                 /var/www/html/storage/logs \
+                 /var/www/html/bootstrap/cache
+        chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+        chmod -R ug+rwX /var/www/html/storage /var/www/html/bootstrap/cache
     restart: "no"
     networks:
       - charity_net
@@ -126,13 +130,19 @@ services:
     # caches that crash it. package:discover then rebuilds the package/service
     # manifests against the freshly-installed vendor/. (bootstrap/cache is the
     # writable cache-data volume even though ./src is mounted :ro.)
-    command: |
-      rm -f bootstrap/cache/*.php
-      php artisan optimize:clear
-      php artisan package:discover --ansi
-      php artisan config:cache
-      php artisan route:cache
-      php artisan view:cache
+    # LIST form is load-bearing: a STRING command gets shell-lexed by compose
+    # into tokens, so with the sh -lc entrypoint only the first word would run
+    # (a bare `php` waiting on stdin forever — observed as a one-shot stuck
+    # "Up 12 hours" in production).
+    command:
+      - |
+        set -e
+        rm -f bootstrap/cache/*.php
+        php artisan optimize:clear
+        php artisan package:discover --ansi
+        php artisan config:cache
+        php artisan route:cache
+        php artisan view:cache
     restart: "no"
     networks:
       - charity_net

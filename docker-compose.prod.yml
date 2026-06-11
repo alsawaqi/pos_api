@@ -80,9 +80,13 @@ services:
   # NOTE: pos_api owns NO database schema (pos_admin owns the shared pos_*
   # tables), so there is intentionally NO `migrate` step here. Never run
   # `php artisan migrate` against the shared charity_db from this stack.
+  # Runs in the APP image (composer is baked into it) so the platform check
+  # validates against the REAL runtime extensions — the official composer:2
+  # image lacks several and fails hard ext-* requires (e.g. ext-gd in the
+  # pos_admin sibling). Build the image first (docker compose build).
   composer:
     profiles: ["build"]
-    image: composer:2
+    image: pos_api-app
     working_dir: /var/www/html
     volumes:
       - ./src:/var/www/html

@@ -291,12 +291,18 @@ class CreateOrderHandler implements SyncEventHandler
     }
 
     /**
-     * Phase B — persist the comp write-offs (Additions §1.2). A comp ALWAYS
+     * Phase B — persist the comp write-offs (Additions §1.2). A MANAGER COMP
      * carries a valid company comp reason (unlike a discount it can never be
      * ad-hoc) and is capped by the reason's max_amount when set. The food was
      * made and given away, so inventory deducts normally at pay; only the
      * money is written off. line_index ties a comp to one line; absent →
      * whole-order comp.
+     *
+     * P-F5 — PER-ITEM GIFTS ride the same table: an entry with
+     * is_gift === true is a 100% line write-off given away whole, so it
+     * carries NO comp_reason_id (must be absent/null) and NO cap. Every
+     * other entry still requires a tenant-valid reason. Gift rows snapshot
+     * the fixed 'gift'/'Gift' labels so history reads without a master row.
      *
      * @param  array<string, mixed>  $order
      * @param  array<int, int>  $itemIds  line index → created order_item id
@@ -315,20 +321,33 @@ class CreateOrderHandler implements SyncEventHandler
         $sum = 0;
         $count = 0;
         foreach ($comps as $c) {
-            $reason = CompReason::query()
-                ->where('company_id', $device->company_id)
-                ->find((int) $c['comp_reason_id']);
-            if ($reason === null) {
-                throw new RuntimeException('order references a comp reason outside the device tenant: '.$c['comp_reason_id']);
+            $isGift = ($c['is_gift'] ?? false) === true;
+            $reasonId = isset($c['comp_reason_id']) ? (int) $c['comp_reason_id'] : null;
+            $amountBaisas = (int) $c['amount_baisas'];
+
+            if ($isGift && $reasonId !== null) {
+                throw new RuntimeException('a gift comp must not carry a comp_reason_id');
+            }
+            if (! $isGift && $reasonId === null) {
+                throw new RuntimeException('a comp entry requires a comp_reason_id unless is_gift is true');
             }
 
-            $amountBaisas = (int) $c['amount_baisas'];
-            if ($reason->max_amount !== null && $amountBaisas > (int) round(((float) $reason->max_amount) * 1000)) {
-                throw new RuntimeException(sprintf(
-                    'comp exceeds the "%s" cap of %s OMR',
-                    $reason->name,
-                    (string) $reason->max_amount,
-                ));
+            $reason = null;
+            if (! $isGift) {
+                $reason = CompReason::query()
+                    ->where('company_id', $device->company_id)
+                    ->find($reasonId);
+                if ($reason === null) {
+                    throw new RuntimeException('order references a comp reason outside the device tenant: '.$reasonId);
+                }
+
+                if ($reason->max_amount !== null && $amountBaisas > (int) round(((float) $reason->max_amount) * 1000)) {
+                    throw new RuntimeException(sprintf(
+                        'comp exceeds the "%s" cap of %s OMR',
+                        $reason->name,
+                        (string) $reason->max_amount,
+                    ));
+                }
             }
 
             $lineIndex = isset($c['line_index']) ? (int) $c['line_index'] : null;
@@ -337,9 +356,10 @@ class CreateOrderHandler implements SyncEventHandler
                 'branch_id' => $device->branch_id,
                 'order_id' => $model->id,
                 'order_item_id' => $lineIndex !== null ? ($itemIds[$lineIndex] ?? null) : null,
-                'comp_reason_id' => $reason->id,
-                'reason_code_snapshot' => $reason->code,
-                'reason_name_snapshot' => $reason->name,
+                'comp_reason_id' => $reason?->id,
+                'reason_code_snapshot' => $reason->code ?? 'gift',
+                'reason_name_snapshot' => $reason->name ?? 'Gift',
+                'is_gift' => $isGift,
                 'amount' => Money::toOmr($amountBaisas),
                 'approved_by_pos_staff_id' => $c['staff_id'] ?? null,
                 'note' => $c['note'] ?? null,
@@ -412,12 +432,15 @@ class CreateOrderHandler implements SyncEventHandler
             // max rule here: writeDiscounts trims + caps to 160 instead of
             // failing the whole offline order over a long note.
             'discounts.*.reason' => ['nullable', 'string'],
-            // Phase B — comp write-offs. Unlike a discount a comp always
-            // carries a valid comp_reason_id (resolved tenant-scoped in
-            // writeComps) and a positive amount.
+            // Phase B — comp write-offs. A manager comp carries a valid
+            // comp_reason_id (resolved tenant-scoped in writeComps) and a
+            // positive amount. P-F5 — a GIFT entry (is_gift: true) instead
+            // carries NO reason and bypasses any cap; the reason-or-gift
+            // exclusivity is enforced in writeComps.
             'comp_total_baisas' => ['sometimes', 'integer', 'min:0'],
             'comps' => ['sometimes', 'array'],
-            'comps.*.comp_reason_id' => ['required', 'integer'],
+            'comps.*.comp_reason_id' => ['nullable', 'integer'],
+            'comps.*.is_gift' => ['sometimes', 'boolean'],
             'comps.*.amount_baisas' => ['required', 'integer', 'min:1'],
             'comps.*.line_index' => ['nullable', 'integer', 'min:0'],
             'comps.*.staff_id' => ['nullable', 'integer'],

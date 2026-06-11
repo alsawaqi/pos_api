@@ -31,8 +31,17 @@ class Payment extends Model
 
     public const METHOD_GIFT = 'gift';
 
+    /**
+     * P-F5 — paid on the BANK'S OWN standalone card terminal sitting next
+     * to the device (no integration; the cashier records the tender after
+     * the bank terminal approves). NOT card money for commission purposes:
+     * the acquirer fee was levied by the bank on its own rails, so OUR
+     * bank-party commission slice never applies to it.
+     */
+    public const METHOD_BANK_POS = 'bank_pos';
+
     /** @var list<string> */
-    public const METHODS = ['cash', 'card', 'split_part', 'loyalty', 'gift'];
+    public const METHODS = ['cash', 'card', 'split_part', 'loyalty', 'gift', 'bank_pos'];
 
     public const STATUS_SUCCESS = 'success';
 

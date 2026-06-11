@@ -225,6 +225,130 @@ class DeviceSyncCompVoidReasonTest extends TestCase
         $this->assertStringContainsString('sum', $res->json('data.results.0.result.error'));
     }
 
+    // =================== P-F5 GIFT COMPS ===================
+
+    public function test_gift_comp_persists_with_null_reason_and_is_gift_true(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+
+        // Line 0 (1.500) gifted whole: no reason, is_gift carries it.
+        $uuid = (string) Str::uuid();
+        $res = $this->push('mdev_cv', [$this->createEvent($uuid, [
+            'comp_total_baisas' => 1500,
+            'grand_total_baisas' => 1500,
+            'comps' => [[
+                'is_gift' => true,
+                'amount_baisas' => 1500,
+                'line_index' => 0,
+                'staff_id' => 9,
+            ]],
+        ])])->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertSame(1, $res->json('data.results.0.result.comps'));
+        $this->assertDatabaseHas('pos_orders', ['uuid' => $uuid, 'comp_total' => '1.500', 'grand_total' => '1.500']);
+
+        $row = DB::table('pos_order_comps')->first();
+        $this->assertNull($row->comp_reason_id);
+        $this->assertSame(1, (int) $row->is_gift);
+        $this->assertSame('gift', $row->reason_code_snapshot);
+        $this->assertSame('Gift', $row->reason_name_snapshot);
+        $this->assertEqualsWithDelta(1.500, (float) $row->amount, 1e-9);
+        $this->assertNotNull($row->order_item_id);
+    }
+
+    public function test_gift_comp_bypasses_every_reason_cap(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+
+        // 2.500 gifted — above the 2.000 Long Wait cap, but gifts carry no
+        // reason and therefore no cap.
+        $uuid = (string) Str::uuid();
+        $res = $this->push('mdev_cv', [$this->createEvent($uuid, [
+            'comp_total_baisas' => 2500,
+            'grand_total_baisas' => 500,
+            'comps' => [['is_gift' => true, 'amount_baisas' => 2500, 'line_index' => 0]],
+        ])])->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertDatabaseHas('pos_order_comps', ['is_gift' => true, 'amount' => '2.500']);
+    }
+
+    public function test_gift_comp_must_not_carry_a_comp_reason_id(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+
+        $res = $this->push('mdev_cv', [$this->createEvent((string) Str::uuid(), [
+            'comp_total_baisas' => 1500,
+            'grand_total_baisas' => 1500,
+            'comps' => [['is_gift' => true, 'comp_reason_id' => 2, 'amount_baisas' => 1500]],
+        ])])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('must not carry a comp_reason_id', $res->json('data.results.0.result.error'));
+        $this->assertDatabaseCount('pos_order_comps', 0);
+    }
+
+    public function test_reasonless_non_gift_comp_still_rejects(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+
+        $res = $this->push('mdev_cv', [$this->createEvent((string) Str::uuid(), [
+            'comp_total_baisas' => 1000,
+            'grand_total_baisas' => 2000,
+            'comps' => [['amount_baisas' => 1000]],
+        ])])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('requires a comp_reason_id', $res->json('data.results.0.result.error'));
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_mixed_manager_comp_and_gift_sum_to_comp_total(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+
+        // 1.000 Staff Meal comp + 1.500 gift = 2.500 comp_total on a 3.000
+        // order → 0.500 due.
+        $uuid = (string) Str::uuid();
+        $res = $this->push('mdev_cv', [$this->createEvent($uuid, [
+            'comp_total_baisas' => 2500,
+            'grand_total_baisas' => 500,
+            'comps' => [
+                ['comp_reason_id' => 2, 'amount_baisas' => 1000, 'staff_id' => 9],
+                ['is_gift' => true, 'amount_baisas' => 1500, 'line_index' => 0],
+            ],
+        ])])->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertSame(2, $res->json('data.results.0.result.comps'));
+        $this->assertDatabaseHas('pos_orders', ['uuid' => $uuid, 'comp_total' => '2.500', 'grand_total' => '0.500']);
+        $this->assertDatabaseHas('pos_order_comps', ['comp_reason_id' => 2, 'is_gift' => false, 'amount' => '1.000']);
+        $this->assertDatabaseHas('pos_order_comps', ['comp_reason_id' => null, 'is_gift' => true, 'amount' => '1.500']);
+
+        // And a WRONG total still fails even when a gift row is in the mix.
+        $bad = $this->push('mdev_cv', [$this->createEvent((string) Str::uuid(), [
+            'comp_total_baisas' => 2000,
+            'grand_total_baisas' => 1000,
+            'comps' => [
+                ['comp_reason_id' => 2, 'amount_baisas' => 1000],
+                ['is_gift' => true, 'amount_baisas' => 1500],
+            ],
+        ])])->assertOk();
+        $this->assertSame('failed', $bad->json('data.results.0.status'));
+        $this->assertStringContainsString('sum', $bad->json('data.results.0.result.error'));
+    }
+
     // =================== REASONED VOIDS ===================
 
     public function test_void_with_food_made_reason_keeps_inventory_consumed(): void

@@ -552,6 +552,8 @@ return new class extends Migration
             $table->unsignedBigInteger('comp_reason_id')->nullable();
             $table->string('reason_code_snapshot', 32);
             $table->string('reason_name_snapshot', 64);
+            // P-F5 — a gifted line: 100% write-off, NO reason, NO cap.
+            $table->boolean('is_gift')->default(false);
             $table->decimal('amount', 12, 3)->default(0);
             $table->unsignedBigInteger('approved_by_pos_staff_id')->nullable();
             $table->text('note')->nullable();

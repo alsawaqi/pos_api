@@ -310,6 +310,73 @@ class DeviceSyncCommissionTest extends TestCase
         $this->assertEqualsWithDelta(3.0, (float) $rows[0]->gross_amount, 1e-9);
     }
 
+    /**
+     * P-F5 — bank_pos (paid on the bank's own standalone terminal) is NOT
+     * card money: the bank already took its acquirer fee on its own rails,
+     * so the bank-party slice stays 0 and the merchant keeps it — exactly
+     * the cash-only outcome.
+     */
+    public function test_bank_pos_tender_carries_no_bank_cut_like_cash(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        $res = $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'bank_pos', 'amount_baisas' => 3000],
+        ])])->assertOk();
+
+        $this->assertSame('paid', $res->json('data.results.0.result.status'));
+        $this->assertDatabaseHas('pos_payments', ['method' => 'bank_pos', 'amount' => '3.000', 'status' => 'success']);
+
+        $rows = $this->breakdownFor($uuid);
+        $this->assertCount(3, $rows);
+
+        // Identical to the cash-only split: platform 0.060, bank 0.000,
+        // merchant keeps the bank's would-be slice (2.940).
+        $this->assertEqualsWithDelta(0.060, (float) $rows[0]->commission_amount, 1e-9);
+        $this->assertSame('bank', $rows[1]->party_type);
+        $this->assertEqualsWithDelta(0.0, (float) $rows[1]->commission_amount, 1e-9);
+        $this->assertSame('merchant', $rows[2]->party_type);
+        $this->assertEqualsWithDelta(2.940, (float) $rows[2]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+    }
+
+    /** P-F5 — a mixed cash + bank_pos pay: both flow like cash, sum == grand. */
+    public function test_mixed_cash_and_bank_pos_split_pays_and_skips_the_bank_cut(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid)])->assertOk();
+        $res = $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'cash', 'amount_baisas' => 2000, 'change_given_baisas' => 0],
+            ['method' => 'bank_pos', 'amount_baisas' => 1000],
+        ])])->assertOk();
+
+        $this->assertSame('paid', $res->json('data.results.0.result.status'));
+        $this->assertCount(2, $res->json('data.results.0.result.payment_ids'));
+        $this->assertDatabaseHas('pos_payments', ['method' => 'bank_pos', 'amount' => '1.000']);
+
+        $rows = $this->breakdownFor($uuid);
+
+        // No card tender anywhere → bank 0.000; platform 2% of 3.000.
+        $this->assertEqualsWithDelta(0.060, (float) $rows[0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.0, (float) $rows[1]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(2.940, (float) $rows[2]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+    }
+
     public function test_no_profile_records_no_breakdown(): void
     {
         $this->seedProduct();

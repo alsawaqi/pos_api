@@ -119,6 +119,12 @@ class PayOrderHandler implements SyncEventHandler
                 $paymentIds[] = (int) $payment->id;
                 $tenderedBaisas += (int) $tender['amount_baisas'];
 
+                // P-F5 — ONLY the 'card' method (our Soft POS) accumulates
+                // into the bank-commission base. A 'bank_pos' tender is money
+                // taken on the BANK'S OWN standalone terminal: the bank
+                // already earned its acquirer fee on its own rails, so it
+                // gets NO slice here and the merchant keeps that share
+                // (bank_pos otherwise flows exactly like cash).
                 if ($tender['method'] === Payment::METHOD_CARD && $status !== Payment::STATUS_FAILED) {
                     $cardBaisas += (int) $tender['amount_baisas'];
                 }

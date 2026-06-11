@@ -120,8 +120,16 @@ services:
       - storage-data:/var/www/html/storage
       - cache-data:/var/www/html/bootstrap/cache
     entrypoint: ["sh", "-lc"]
+    # The bare `rm` runs BEFORE any PHP boots: stale bootstrap caches in the
+    # cache-data volume (written by the PREVIOUS release) can fatal artisan
+    # itself, so `optimize:clear` alone can deadlock — it cannot clear the
+    # caches that crash it. package:discover then rebuilds the package/service
+    # manifests against the freshly-installed vendor/. (bootstrap/cache is the
+    # writable cache-data volume even though ./src is mounted :ro.)
     command: |
+      rm -f bootstrap/cache/*.php
       php artisan optimize:clear
+      php artisan package:discover --ansi
       php artisan config:cache
       php artisan route:cache
       php artisan view:cache

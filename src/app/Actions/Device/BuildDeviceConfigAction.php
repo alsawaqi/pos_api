@@ -18,6 +18,7 @@ use App\Models\Floor;
 use App\Models\Ingredient;
 use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyRule;
+use App\Models\Offer;
 use App\Models\Product;
 use App\Models\ProductCategory;
 use App\Models\Table;
@@ -195,6 +196,14 @@ class BuildDeviceConfigAction
             ->get()
             ->groupBy('discount_id');
 
+        // ---- P-F9 — offers / promotions. Same delta tracking as
+        // discounts (changed by updated_at; soft-deleted ids surface in
+        // deleted.offers). The DEVICE evaluates them; config rides verbatim.
+        $offers = $this->changed(
+            Offer::query()->where('company_id', $companyId),
+            $since
+        )->get();
+
         // ---- Loyalty rules ----
         $loyaltyRules = $this->changed(
             LoyaltyRule::query()->where('company_id', $companyId),
@@ -303,6 +312,7 @@ class BuildDeviceConfigAction
                 $d,
                 $targetsByDiscount->get($d->id),
             ))->all(),
+            'offers' => $offers->map(fn (Offer $o): array => $this->mapOffer($o))->all(),
             'loyalty_rules' => $loyaltyRules->map(fn (LoyaltyRule $r): array => $this->mapLoyaltyRule($r))->all(),
             'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer(
                 $c,
@@ -418,8 +428,8 @@ class BuildDeviceConfigAction
         $empty = [
             'floors' => [], 'tables' => [], 'categories' => [], 'products' => [],
             'addon_groups' => [], 'addons' => [], 'ingredients' => [], 'discounts' => [],
-            'loyalty_rules' => [], 'customers' => [], 'delivery_providers' => [],
-            'expense_categories' => [],
+            'offers' => [], 'loyalty_rules' => [], 'customers' => [],
+            'delivery_providers' => [], 'expense_categories' => [],
         ];
 
         if ($since === null) {
@@ -435,6 +445,7 @@ class BuildDeviceConfigAction
             'addons' => $this->trashedIds(AddOn::query()->where('company_id', $companyId), $since),
             'ingredients' => $this->trashedIds(Ingredient::query()->where('company_id', $companyId), $since),
             'discounts' => $this->trashedIds(Discount::query()->where('company_id', $companyId), $since),
+            'offers' => $this->trashedIds(Offer::query()->where('company_id', $companyId), $since),
             'loyalty_rules' => $this->trashedIds(LoyaltyRule::query()->where('company_id', $companyId), $since),
             'customers' => $this->trashedIds(Customer::query()->where('company_id', $companyId), $since),
             'delivery_providers' => DB::table('pos_delivery_providers')
@@ -902,6 +913,39 @@ class BuildDeviceConfigAction
                     'target_id' => (int) $r->target_id,
                 ])->values()->all()
                 : [],
+        ];
+    }
+
+    /**
+     * P-F9 — an offer / promotion in THE canonical device shape. The
+     * device's pure offers engine is built against EXACTLY these keys:
+     * `config` is the type-specific JSON passed through verbatim (money
+     * inside it is integer baisas, written that way by the merchant
+     * portal); branch_scope_json is the raw array/null. Shared axes
+     * (validity / dayofweek_mask / time window / branch scope / status)
+     * follow the mapDiscount conventions exactly.
+     *
+     * @return array<string, mixed>
+     */
+    private function mapOffer(Offer $o): array
+    {
+        return [
+            'id' => (int) $o->id,
+            'name' => $o->name,
+            'name_ar' => $o->name_ar,
+            'type' => $o->type,
+            'status' => $o->status,
+            // Bundle offers are ALWAYS cashier-picked (forced false
+            // merchant-side); the other four types default to true.
+            'auto_apply' => (bool) $o->auto_apply,
+            'validity_start' => $o->validity_start?->toIso8601String(),
+            'validity_end' => $o->validity_end?->toIso8601String(),
+            'dayofweek_mask' => $o->dayofweek_mask !== null ? (int) $o->dayofweek_mask : null,
+            'time_start' => $o->time_start,
+            'time_end' => $o->time_end,
+            'branch_scope_json' => $o->branch_scope_json,
+            'max_per_order' => $o->max_per_order !== null ? (int) $o->max_per_order : null,
+            'config' => $o->config,
         ];
     }
 

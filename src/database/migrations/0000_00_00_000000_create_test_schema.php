@@ -381,6 +381,31 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        // P-F9 — merchant offers / promotions. type + type-specific config
+        // JSON (the pos_loyalty_rules pattern); shared applicability axes
+        // mirror pos_discounts. Emitted verbatim in the device config.
+        Schema::create('pos_offers', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('name', 120);
+            $table->string('name_ar', 120)->nullable();
+            $table->string('type', 24);
+            $table->json('config');
+            // Bundle is ALWAYS cashier-picked (forced false merchant-side).
+            $table->boolean('auto_apply')->default(true);
+            $table->timestamp('validity_start')->nullable();
+            $table->timestamp('validity_end')->nullable();
+            $table->smallInteger('dayofweek_mask')->nullable();
+            $table->string('time_start', 8)->nullable();
+            $table->string('time_end', 8)->nullable();
+            $table->json('branch_scope_json')->nullable();
+            $table->smallInteger('max_per_order')->nullable();
+            $table->string('status', 16)->default('active');
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
         Schema::create('pos_loyalty_rules', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();
@@ -509,6 +534,9 @@ return new class extends Migration
             $table->unsignedBigInteger('order_id');
             $table->unsignedBigInteger('order_item_id')->nullable(); // null = order-level
             $table->unsignedBigInteger('discount_id')->nullable();   // null = manual / ad-hoc
+            // P-F9: which pos_offers promotion granted this amount
+            // (null = a plain discount application).
+            $table->unsignedBigInteger('offer_id')->nullable();
             $table->string('name_snapshot');
             $table->string('amount_type_snapshot', 32)->nullable();
             $table->decimal('amount', 12, 3)->default(0);
@@ -928,6 +956,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_orders');
         Schema::dropIfExists('pos_customers');
         Schema::dropIfExists('pos_loyalty_rules');
+        Schema::dropIfExists('pos_offers');
         Schema::dropIfExists('pos_discount_targets');
         Schema::dropIfExists('pos_discounts');
         Schema::dropIfExists('pos_branch_stock');

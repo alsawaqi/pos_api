@@ -13,6 +13,7 @@ use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Ingredient;
+use App\Models\Offer;
 use App\Models\Order;
 use App\Models\OrderComp;
 use App\Models\OrderDiscount;
@@ -266,6 +267,14 @@ class CreateOrderHandler implements SyncEventHandler
      * carries no discount_id). A line_index ties the row to that line's item;
      * absent → an order-level discount.
      *
+     * P-F9 — OFFER applications ride the same rows: an entry carrying
+     * `offer_id` records which pos_offers promotion granted the amount
+     * (name_snapshot = the offer's name). Unlike discount_id — which falls
+     * back to the sent label when unresolvable — an offer_id that does not
+     * resolve to one of the device company's offers FAILS the whole event
+     * (tenant guard, §9.11). Soft-deleted offers still resolve: an offline
+     * order may land after the merchant deleted the promotion.
+     *
      * @param  array<string, mixed>  $order
      * @param  array<int, int>  $itemIds  line index → created order_item id
      */
@@ -282,6 +291,22 @@ class CreateOrderHandler implements SyncEventHandler
             $rule = $discountId !== null
                 ? Discount::query()->where('company_id', $device->company_id)->find($discountId)
                 : null;
+
+            // P-F9 — offer attribution. Tenant-validated HARD: a foreign /
+            // unknown offer_id fails the event (unlike discount_id's soft
+            // fallback). withTrashed: a soft-deleted offer is still a valid
+            // historical reference for an offline-queued order.
+            $offerId = isset($d['offer_id']) ? (int) $d['offer_id'] : null;
+            $offer = null;
+            if ($offerId !== null) {
+                $offer = Offer::withTrashed()
+                    ->where('company_id', $device->company_id)
+                    ->find($offerId);
+                if ($offer === null) {
+                    throw new RuntimeException('order references an offer outside the device tenant: '.$offerId);
+                }
+            }
+
             $lineIndex = isset($d['line_index']) ? (int) $d['line_index'] : null;
 
             // P-F4 — optional cashier free-text reason for a manual /
@@ -296,7 +321,10 @@ class CreateOrderHandler implements SyncEventHandler
                 'order_id' => $model->id,
                 'order_item_id' => $lineIndex !== null ? ($itemIds[$lineIndex] ?? null) : null,
                 'discount_id' => $rule?->id ?? $discountId,
-                'name_snapshot' => $rule?->name ?? (string) $d['name'],
+                'offer_id' => $offer?->id,
+                // The offer's catalogue name wins for offer rows; else the
+                // discount rule's; else the device-sent label.
+                'name_snapshot' => $offer?->name ?? $rule?->name ?? (string) $d['name'],
                 'amount_type_snapshot' => $rule?->amount_type ?? ($d['amount_type'] ?? null),
                 'amount' => Money::toOmr((int) $d['amount_baisas']),
                 'reason' => $reason !== '' ? $reason : null,
@@ -445,6 +473,9 @@ class CreateOrderHandler implements SyncEventHandler
             'lines.*.line_total_baisas' => ['required', 'integer', 'min:0'],
             'discounts' => ['sometimes', 'array'],
             'discounts.*.discount_id' => ['nullable', 'integer'],
+            // P-F9 — which pos_offers promotion granted this amount.
+            // Tenant-validated hard in writeDiscounts (foreign → event fails).
+            'discounts.*.offer_id' => ['nullable', 'integer'],
             'discounts.*.name' => ['required', 'string'],
             'discounts.*.amount_type' => ['nullable', 'string'],
             'discounts.*.amount_baisas' => ['required', 'integer', 'min:0'],

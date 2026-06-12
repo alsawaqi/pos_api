@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Auth\DeviceActivateController;
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
+use App\Http\Controllers\Api\V1\Auth\VerifyKitchenPinController;
 use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
@@ -67,6 +68,13 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/auth/verify-manager-pin', VerifyManagerPinController::class)
             ->middleware('throttle:pos-login')
             ->name('device.verify-manager-pin');
+
+        // P-G1.6 — the Kitchen walk-up gate: a kitchen staff member's code
+        // lets the Kitchen screen open on someone else's till session (the
+        // session then runs AS the verified chef). Same brute-force bucket.
+        Route::post('device/auth/verify-kitchen-pin', VerifyKitchenPinController::class)
+            ->middleware('throttle:pos-login')
+            ->name('device.verify-kitchen-pin');
 
         // §11.5 — broadcast channel authorization, on-contract at
         // /api/v1/broadcasting/auth. Broadcast::auth() runs the channel

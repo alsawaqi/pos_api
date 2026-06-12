@@ -95,20 +95,53 @@ class ConsumeInventoryAction
             }
 
             foreach ($item->addons as $addon) {
+                // Classic single-ingredient add-on ("extra shot").
                 $snapshot = $addon->ingredient_snapshot_json;
-                if (! is_array($snapshot) || ! isset($snapshot['ingredient_id'])) {
-                    continue;
+                if (is_array($snapshot) && isset($snapshot['ingredient_id'])) {
+                    $count += $this->move(
+                        $branchId,
+                        (int) $snapshot['ingredient_id'],
+                        $sign * (float) ($snapshot['qty'] ?? 0) * $itemQty,
+                        (float) ($snapshot['unit_cost'] ?? 0),
+                        StockMovement::TYPE_ADDON_CONSUMPTION,
+                        (int) $order->id,
+                        $staffId,
+                        $at,
+                    );
                 }
-                $count += $this->move(
-                    $branchId,
-                    (int) $snapshot['ingredient_id'],
-                    $sign * (float) ($snapshot['qty'] ?? 0) * $itemQty,
-                    (float) ($snapshot['unit_cost'] ?? 0),
-                    StockMovement::TYPE_ADDON_CONSUMPTION,
-                    (int) $order->id,
-                    $staffId,
-                    $at,
-                );
+
+                // P-G3 — product-as-add-on: consume the FROZEN product by
+                // its type (one selection = 1 x the parent line qty).
+                // cooked/unit: branch shelf moves; made-to-order: the
+                // frozen recipe; untracked: nothing. Same pool as the
+                // standalone tile, so both grey out together at zero.
+                $productSnapshot = $addon->product_snapshot_json;
+                if (is_array($productSnapshot) && isset($productSnapshot['product_id'])) {
+                    $mode = (string) ($productSnapshot['stock_mode'] ?? '');
+                    if ($mode === 'unit' || $mode === 'cooked') {
+                        $this->moveProductStock(
+                            $order,
+                            (int) $productSnapshot['product_id'],
+                            $sign * $itemQty,
+                            $staffId,
+                            $at,
+                            'sold as add-on',
+                        );
+                    } elseif ($mode === 'ingredient') {
+                        foreach ((array) ($productSnapshot['recipe'] ?? []) as $ingredient) {
+                            $count += $this->move(
+                                $branchId,
+                                (int) $ingredient['ingredient_id'],
+                                $sign * (float) ($ingredient['qty'] ?? 0) * $itemQty,
+                                (float) ($ingredient['unit_cost'] ?? 0),
+                                StockMovement::TYPE_ADDON_CONSUMPTION,
+                                (int) $order->id,
+                                $staffId,
+                                $at,
+                            );
+                        }
+                    }
+                }
             }
         }
 

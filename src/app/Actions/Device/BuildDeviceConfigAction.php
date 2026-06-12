@@ -860,6 +860,9 @@ class BuildDeviceConfigAction
             'price_delta_baisas' => $this->baisas($a->price_delta),
             // Phase B — pre-selected in the customize sheet.
             'is_default' => (bool) ($a->is_default ?? false),
+            // P-G3 — the real product behind this option: the device greys
+            // the add-on when that product is sold out at the branch.
+            'linked_product_id' => $a->linked_product_id !== null ? (int) $a->linked_product_id : null,
             'ingredient_id' => $a->ingredient_id !== null ? (int) $a->ingredient_id : null,
             'ingredient_qty' => $this->num($a->ingredient_qty),
             'ingredient_unit' => $a->ingredient_unit,

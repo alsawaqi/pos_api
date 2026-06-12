@@ -157,6 +157,10 @@ class CreateOrderHandler implements SyncEventHandler
                         'add_on_name_snapshot' => $addOn?->name ?? ('#'.$addOnId),
                         'price_delta_snapshot' => Money::toOmr((int) ($addon['price_delta_baisas'] ?? 0)),
                         'ingredient_snapshot_json' => $this->snapshotAddonIngredient($addOn),
+                        // P-G3 — product-as-add-on freeze: id for reporting,
+                        // snapshot for consumption by the product's type.
+                        'linked_product_id' => $addOn?->linked_product_id !== null ? (int) $addOn->linked_product_id : null,
+                        'product_snapshot_json' => $this->snapshotAddonProduct($addOn, $device->company_id),
                     ]);
                 }
             }
@@ -555,6 +559,38 @@ class CreateOrderHandler implements SyncEventHandler
             'unit' => $r->unit_at_set,
             'unit_cost' => (float) ($costs[$r->ingredient_id] ?? 0),
         ])->all();
+    }
+
+    /**
+     * P-G3 — freeze the product behind a product-as-add-on at create time:
+     * {product_id, stock_mode, recipe}. Consumption at pay follows the
+     * frozen stock_mode — cooked/unit: branch shelf -1 per parent unit;
+     * ingredient (made-to-order): the frozen recipe; untracked: nothing.
+     * Cooked deliberately freezes NO recipe (production already consumed
+     * the ingredients — the same rule as snapshotRecipe).
+     *
+     * @return array{product_id: int, stock_mode: string, recipe: list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null}|null
+     */
+    private function snapshotAddonProduct(?AddOn $addOn, int|string|null $companyId): ?array
+    {
+        if ($addOn === null || $addOn->linked_product_id === null) {
+            return null;
+        }
+
+        $product = Product::query()
+            ->where('company_id', $companyId)
+            ->find((int) $addOn->linked_product_id);
+        if ($product === null) {
+            return null;
+        }
+
+        return [
+            'product_id' => (int) $product->id,
+            'stock_mode' => (string) $product->stock_mode,
+            'recipe' => $product->stock_mode === 'ingredient'
+                ? $this->snapshotRecipe((int) $product->id, $product)
+                : null,
+        ];
     }
 
     /**

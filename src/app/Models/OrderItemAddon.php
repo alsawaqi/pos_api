@@ -28,6 +28,9 @@ class OrderItemAddon extends Model
         return [
             'price_delta_snapshot' => 'decimal:3',
             'ingredient_snapshot_json' => 'array',
+            // P-G3 — product-as-add-on freeze: {product_id, stock_mode,
+            // recipe} drives consumption by the product's type at pay.
+            'product_snapshot_json' => 'array',
         ];
     }
 

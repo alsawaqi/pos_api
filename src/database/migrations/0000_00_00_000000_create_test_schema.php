@@ -230,6 +230,8 @@ return new class extends Migration
             $table->unsignedBigInteger('ingredient_id')->nullable();
             $table->decimal('ingredient_qty', 10, 3)->nullable();
             $table->string('ingredient_unit', 16)->nullable();
+            // P-G3 — the add-on IS this product (consumes its real stock).
+            $table->unsignedBigInteger('linked_product_id')->nullable();
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->string('status', 32)->default('active');
             $table->timestamps();
@@ -540,6 +542,9 @@ return new class extends Migration
             $table->string('add_on_name_snapshot');
             $table->decimal('price_delta_snapshot', 12, 3);
             $table->text('ingredient_snapshot_json')->nullable();
+            // P-G3 — product-as-add-on freeze (consumption + reporting).
+            $table->unsignedBigInteger('linked_product_id')->nullable()->index();
+            $table->text('product_snapshot_json')->nullable();
             $table->timestamps();
         });
 

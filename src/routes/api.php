@@ -9,8 +9,10 @@ use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
+use App\Http\Controllers\Api\V1\Device\DeviceKitchenController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
+use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
@@ -103,5 +105,19 @@ Route::prefix('v1')->group(function (): void {
         // aggregates. Who may OPEN it is the merchant's reports_positions
         // setting, enforced device-side from /device/config.
         Route::get('device/reports/branch', DeviceBranchReportController::class)->name('device.reports.branch');
+
+        // P-G1 — kitchen production (ONLINE-ONLY: the server validates
+        // fresh ingredient balances at each phase). The screen data, then
+        // the two-phase batch lifecycle. Who may OPEN the Kitchen screen
+        // is the merchant's kitchen_positions setting, enforced
+        // device-side from /device/config. Cancel carries a manager PIN
+        // verified server-side, so it shares the pos-login brute-force
+        // bucket with login + verify-manager-pin.
+        Route::get('device/kitchen', [DeviceKitchenController::class, 'show'])->name('device.kitchen');
+        Route::post('device/productions', [DeviceProductionsController::class, 'store'])->name('device.productions.store');
+        Route::post('device/productions/{uuid}/finish', [DeviceProductionsController::class, 'finish'])->name('device.productions.finish');
+        Route::post('device/productions/{uuid}/cancel', [DeviceProductionsController::class, 'cancel'])
+            ->middleware('throttle:pos-login')
+            ->name('device.productions.cancel');
     });
 });

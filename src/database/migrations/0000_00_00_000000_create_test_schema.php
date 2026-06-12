@@ -923,10 +923,50 @@ return new class extends Migration
             'CREATE UNIQUE INDEX pos_order_sequences_scope_unique ON pos_order_sequences '.
             "(company_id, COALESCE(branch_id, 0), COALESCE(seq_date, '1970-01-01'))"
         );
+
+        // P-G1 — kitchen production batches + their ingredient lines
+        // (mirrors pos_admin's 2026_07_14_010000 migration). Written by
+        // the device production endpoints; std (locked recipe x qty) and
+        // declared-extra lines stored separately.
+        Schema::create('pos_productions', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('product_id');
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->decimal('quantity', 12, 3);
+            $table->string('status', 16)->default('in_progress');
+            $table->unsignedBigInteger('started_by_staff_id')->nullable();
+            $table->unsignedBigInteger('finished_by_staff_id')->nullable();
+            $table->unsignedBigInteger('cancelled_by_staff_id')->nullable();
+            $table->unsignedBigInteger('cancel_approved_by_staff_id')->nullable();
+            $table->timestamp('started_at');
+            $table->timestamp('finished_at')->nullable();
+            $table->timestamp('cancelled_at')->nullable();
+            $table->unsignedInteger('duration_seconds')->nullable();
+            $table->timestamps();
+            $table->index(['company_id', 'branch_id', 'started_at'], 'pos_productions_company_branch_idx');
+            $table->index(['branch_id', 'status'], 'pos_productions_branch_status_idx');
+        });
+
+        Schema::create('pos_production_lines', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('production_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->decimal('quantity', 12, 3);
+            $table->string('unit_at_time', 16);
+            $table->boolean('is_extra')->default(false);
+            $table->timestamps();
+            $table->index(['production_id'], 'pos_production_lines_production_idx');
+            $table->index(['ingredient_id'], 'pos_production_lines_ingredient_idx');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_production_lines');
+        Schema::dropIfExists('pos_productions');
         Schema::dropIfExists('pos_order_sequences');
         Schema::dropIfExists('pos_company_settings');
         Schema::dropIfExists('pos_sale_commissions');

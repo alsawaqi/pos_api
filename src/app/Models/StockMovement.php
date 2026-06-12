@@ -46,6 +46,13 @@ class StockMovement extends Model
 
     public const TYPE_TRANSFER_OUT = 'transfer_out';
 
+    // P-G1 kitchen production: ingredients leave the branch shelf when the
+    // chef STARTS a batch (negative), and come back if a manager cancels
+    // the in-progress batch (positive).
+    public const TYPE_PRODUCTION_CONSUMPTION = 'production_consumption';
+
+    public const TYPE_PRODUCTION_RETURN = 'production_return';
+
     /**
      * @return array<string, string>
      */

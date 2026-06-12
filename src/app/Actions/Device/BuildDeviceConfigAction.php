@@ -277,6 +277,10 @@ class BuildDeviceConfigAction
                 // Reports dashboard (GET /device/reports/branch). The DEVICE
                 // gates its Reports screen on this list.
                 'reports_positions' => $this->positionListSetting($companyId, 'reports_positions'),
+                // P-G1 — staff positions allowed to open the device's Kitchen
+                // production section (start/finish/cancel cooked-product
+                // batches). The DEVICE gates its Kitchen screen on this list.
+                'kitchen_positions' => $this->positionListSetting($companyId, 'kitchen_positions'),
                 // P-F8 — merchant-defined order numbering policy. Always the
                 // full normalised five-key shape ({enabled:false, prefix:'',
                 // pad:4, scope:'branch', daily_reset:false} when unset). The
@@ -755,7 +759,9 @@ class BuildDeviceConfigAction
      */
     private function isLowStock(Product $p, $recipeRows, $branchProduct, $minThresholdByIngredient, $branchBalanceByIngredient): bool
     {
-        if ($p->stock_mode === 'unit') {
+        // P-G1: cooked products sell from the same branch shelf count as
+        // unit products, so the LOW STOCK badge follows the same rule.
+        if ($p->stock_mode === 'unit' || $p->stock_mode === 'cooked') {
             if ($p->low_stock_threshold === null || $branchProduct === null || $branchProduct->stock_qty === null) {
                 return false;
             }

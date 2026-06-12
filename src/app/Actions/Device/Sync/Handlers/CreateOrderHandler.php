@@ -142,7 +142,7 @@ class CreateOrderHandler implements SyncEventHandler
                     'unit_price_snapshot' => Money::toOmr((int) $line['unit_price_baisas']),
                     'line_discount' => Money::toOmr((int) ($line['line_discount_baisas'] ?? 0)),
                     'line_total' => Money::toOmr((int) $line['line_total_baisas']),
-                    'recipe_snapshot_json' => $this->snapshotRecipe($productId),
+                    'recipe_snapshot_json' => $this->snapshotRecipe($productId, $product),
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $line['notes'] ?? null,
                 ]);
@@ -523,10 +523,19 @@ class CreateOrderHandler implements SyncEventHandler
     /**
      * The product's current recipe, frozen for COGS + stock deduction.
      *
+     * P-G1: cooked products consume their recipe at PRODUCTION (the kitchen
+     * batch already deducted the ingredients when it started); at sale only
+     * the branch shelf count moves. Freezing NO recipe here keeps pay/void
+     * from double-consuming the ingredients.
+     *
      * @return list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null
      */
-    private function snapshotRecipe(int $productId): ?array
+    private function snapshotRecipe(int $productId, ?Product $product): ?array
     {
+        if ($product?->stock_mode === 'cooked') {
+            return null;
+        }
+
         $rows = DB::table('pos_product_recipes')
             ->where('product_id', $productId)
             ->orderBy('sort_order')

@@ -336,6 +336,19 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        // P-G4 — the merchant's central ingredient warehouse balance (schema
+        // owned by pos_admin 2026_07_18_000000). pos_api never touches it;
+        // mirrored only so the schemas stay in lock-step.
+        Schema::create('pos_ingredient_stock', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->decimal('quantity', 12, 3)->default(0);
+            $table->timestamp('last_movement_at')->nullable();
+            $table->timestamps();
+            $table->unique(['company_id', 'ingredient_id']);
+        });
+
         // Phase D1 — central product-unit pool + its signed append-only
         // ledger (schema owned by pos_admin 2026_06_25_0101/0200). pos_api
         // only appends sale_consumption rows (branch side); the central
@@ -644,7 +657,10 @@ return new class extends Migration
 
         Schema::create('pos_stock_movements', function (Blueprint $table): void {
             $table->id();
-            $table->unsignedBigInteger('branch_id');
+            // P-G4 — NULL = the merchant's central warehouse pool. pos_api
+            // never writes NULL (devices are branch-scoped) and every device
+            // read filters branch_id = the device's branch.
+            $table->unsignedBigInteger('branch_id')->nullable();
             $table->unsignedBigInteger('ingredient_id');
             $table->string('movement_type', 32);
             $table->decimal('quantity', 12, 3);
@@ -1024,6 +1040,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_discount_targets');
         Schema::dropIfExists('pos_discounts');
         Schema::dropIfExists('pos_branch_stock');
+        Schema::dropIfExists('pos_ingredient_stock');
         Schema::dropIfExists('pos_product_stock_movements');
         Schema::dropIfExists('pos_product_stock');
         Schema::dropIfExists('pos_product_recipes');

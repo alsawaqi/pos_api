@@ -95,6 +95,11 @@ class BuildDeviceConfigAction
         $products = $this->changed(
             Product::query()
                 ->where('company_id', $companyId)
+                // P-G2 — internal items (cups/lids) never reach the POS menu
+                // or the customer tablet; their stock is consumed server-side
+                // as components at order.pay. Newly-internal ids surface in
+                // the delta's deleted.products purge list below.
+                ->where('is_internal', false)
                 ->where(function (Builder $q) use ($branchId): void {
                     $q->whereExists(function ($sub) use ($branchId): void {
                         $sub->selectRaw('1')->from('pos_branch_product')
@@ -444,7 +449,20 @@ class BuildDeviceConfigAction
             'floors' => $this->trashedIds(Floor::query()->where('company_id', $companyId)->where('branch_id', $branchId), $since),
             'tables' => $this->trashedIds(Table::query()->where('company_id', $companyId)->whereIn('floor_id', $branchFloorIds ?: [0]), $since),
             'categories' => $this->trashedIds(ProductCategory::query()->where('company_id', $companyId), $since),
-            'products' => $this->trashedIds(Product::query()->where('company_id', $companyId), $since),
+            // P-G2 — soft-deleted products PLUS products flipped internal
+            // since the cursor: the changed-rows list filters internal items
+            // out, so without this purge a tile flipped internal after it
+            // reached a device would linger on its menu forever.
+            'products' => array_values(array_unique(array_merge(
+                $this->trashedIds(Product::query()->where('company_id', $companyId), $since),
+                Product::query()
+                    ->where('company_id', $companyId)
+                    ->where('is_internal', true)
+                    ->where('updated_at', '>', $since)
+                    ->pluck('id')
+                    ->map(fn ($id): int => (int) $id)
+                    ->all(),
+            ))),
             'addon_groups' => $this->trashedIds(AddOnGroup::query()->where('company_id', $companyId), $since),
             'addons' => $this->trashedIds(AddOn::query()->where('company_id', $companyId), $since),
             'ingredients' => $this->trashedIds(Ingredient::query()->where('company_id', $companyId), $since),

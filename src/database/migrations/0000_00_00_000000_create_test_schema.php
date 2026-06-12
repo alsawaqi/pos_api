@@ -189,6 +189,9 @@ return new class extends Migration
             $table->string('status', 32)->default('active');
             // Phase D2 — §5.5.3 "Show on Customer Tablet menu yes/no".
             $table->boolean('show_on_customer_tablet')->default(true);
+            // P-G2 — internal items (cups/lids): never on the POS menu or
+            // tablet, full stock participation.
+            $table->boolean('is_internal')->default(false);
             // G1 — menu time-window ('HH:MM:SS', both NULL = always
             // available, start > end wraps midnight).
             $table->string('available_from', 8)->nullable();
@@ -308,6 +311,18 @@ return new class extends Migration
             $table->decimal('stock_qty', 12, 3)->nullable();
             $table->timestamps();
             $table->unique(['branch_id', 'product_id']);
+        });
+
+        // P-G2 — physical-item components: per ONE unit sold of product_id,
+        // consume quantity of each component (unit-mode products: cups,
+        // lids...). Mirrors pos_admin's 2026_07_16_010000 migration.
+        Schema::create('pos_product_components', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('product_id');
+            $table->unsignedBigInteger('component_product_id');
+            $table->decimal('quantity', 12, 3);
+            $table->timestamps();
+            $table->unique(['product_id', 'component_product_id'], 'pos_product_components_pair_unique');
         });
 
         Schema::create('pos_branch_stock', function (Blueprint $table): void {

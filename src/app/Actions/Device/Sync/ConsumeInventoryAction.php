@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\ProductStockMovement;
 use App\Models\StockMovement;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Phase 8.3 — atomic branch-stock consumption for a sale (blueprint §9.9 +
@@ -49,6 +50,13 @@ class ConsumeInventoryAction
         $at = $order->closed_at ?? now();
         $count = 0;
 
+        // P-G2 — physical-item components per product, bulk-loaded once.
+        // ONE level only: components have no components.
+        $componentsByProduct = DB::table('pos_product_components')
+            ->whereIn('product_id', $order->items->pluck('product_id')->filter()->all() ?: [0])
+            ->get()
+            ->groupBy('product_id');
+
         foreach ($order->items as $item) {
             $itemQty = (float) $item->qty;
 
@@ -57,6 +65,21 @@ class ConsumeInventoryAction
             // unit-tracked at the order's branch. Independent of the recipe
             // ingredient depletion below; NULL/absent = untracked -> no-op.
             $this->moveProductStock($order, (int) $item->product_id, $sign * $itemQty, $staffId, $at);
+
+            // P-G2 — the product's physical items (coffee = 1 x cup + 1 x
+            // lid) leave the branch's unit stock with every sale and come
+            // back on void (the sign flips). Same no-op rule: a component
+            // not unit-tracked at this branch doesn't move.
+            foreach ($componentsByProduct->get($item->product_id) ?? [] as $component) {
+                $this->moveProductStock(
+                    $order,
+                    (int) $component->component_product_id,
+                    $sign * (float) $component->quantity * $itemQty,
+                    $staffId,
+                    $at,
+                    'component of #'.$item->product_id,
+                );
+            }
 
             foreach ((array) ($item->recipe_snapshot_json ?? []) as $ingredient) {
                 $count += $this->move(
@@ -138,7 +161,7 @@ class ConsumeInventoryAction
      * apply()'s return value — that remains the INGREDIENT movement count
      * (the sync ACK contract).
      */
-    private function moveProductStock(Order $order, int $productId, float $qty, ?int $staffId, Carbon $at): void
+    private function moveProductStock(Order $order, int $productId, float $qty, ?int $staffId, Carbon $at, ?string $note = null): void
     {
         if ($qty === 0.0) {
             return;
@@ -165,6 +188,9 @@ class ConsumeInventoryAction
             'reference_type' => 'pos_orders',
             'reference_id' => (int) $order->id,
             'recorded_by_pos_staff_id' => $staffId,
+            // P-G2 — component consumption names its parent product so the
+            // merchant Stock history reads "why did cups leave".
+            'note' => $note,
             'occurred_at' => $at,
             'created_at' => now(),
         ]);

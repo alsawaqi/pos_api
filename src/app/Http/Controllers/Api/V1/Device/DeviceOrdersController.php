@@ -33,8 +33,14 @@ class DeviceOrdersController
     /** Statuses considered "active" (not paid/void/refunded). */
     private const ACTIVE = [Order::STATUS_OPEN, Order::STATUS_HELD, Order::STATUS_KITCHEN];
 
-    /** Terminal statuses — the completed-sale history. */
-    private const HISTORY = [Order::STATUS_PAID, Order::STATUS_VOID, Order::STATUS_REFUNDED];
+    /**
+     * Completed-at-the-till history. pending_verification rides along
+     * (P-G7): the sale is DONE from the till's perspective — only the
+     * provider's money is outstanding — and staff need to see (and a
+     * manager void) punched delivery orders from any terminal. It is NOT
+     * in ACTIVE: there is nothing to resume or pay.
+     */
+    private const HISTORY = [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION, Order::STATUS_VOID, Order::STATUS_REFUNDED];
 
     public function active(Request $request): JsonResponse
     {
@@ -142,6 +148,12 @@ class DeviceOrdersController
             'plate_number' => $order->plate_number,
             // P-F8 — the printed receipt number; null for unnumbered orders.
             'receipt_number' => $order->receipt_number,
+            // P-G7 — provider linkage for delivery orders (null otherwise).
+            'delivery' => $order->delivery_provider_id !== null ? [
+                'provider_id' => (int) $order->delivery_provider_id,
+                'provider_name' => $order->delivery_provider_name,
+                'reference' => $order->delivery_reference,
+            ] : null,
             'opened_at' => $order->opened_at?->toIso8601String(),
             'subtotal_baisas' => Money::toBaisas($order->subtotal),
             'discount_total_baisas' => Money::toBaisas($order->discount_total),

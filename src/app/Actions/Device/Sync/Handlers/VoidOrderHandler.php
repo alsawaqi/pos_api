@@ -80,7 +80,11 @@ class VoidOrderHandler implements SyncEventHandler
         }
 
         $voidedAt = isset($payload['voided_at']) ? Carbon::parse((string) $payload['voided_at']) : now();
-        $wasPaid = $order->status === Order::STATUS_PAID;
+        // P-G7 — pending-verification delivery orders consumed inventory at
+        // intake, so a void must unwind them like a paid sale. Their OTHER
+        // effects never happened (no loyalty/round-up/commission for delivery
+        // orders), and each reversal below is a no-op against empty rows.
+        $wasPaid = in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true);
         $reason = isset($payload['reason']) ? (string) $payload['reason'] : null;
 
         // Phase B (Additions §1.2) — resolve the picked void reason code,

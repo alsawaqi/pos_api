@@ -67,6 +67,10 @@ class SyncEvent extends Model
         // a device wipe and is visible to the branch's other terminals.
         'order.hold',
         'order.pay',
+        // P-G7 — close a no-tender delivery-provider order as pending
+        // verification (consumes inventory; money waits for the merchant's
+        // statement reconciliation on the Deliveries page).
+        'order.deliver',
         'order.void',
         'donation.record',
         'expense.log',

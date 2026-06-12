@@ -185,7 +185,7 @@ class BuildBranchReportAction
      */
     private function byMethod(callable $orderIds): array
     {
-        return DB::table('pos_payments')
+        $rows = DB::table('pos_payments')
             ->whereIn('order_id', $orderIds())
             ->selectRaw('method, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt')
             ->groupBy('method')
@@ -196,6 +196,26 @@ class BuildBranchReportAction
                 'total_baisas' => $this->baisas($r->total),
                 'count' => (int) $r->cnt,
             ])->all();
+
+        // P-G7 — confirmed delivery-provider orders carry NO tender rows
+        // (the provider paid the merchant directly). Surface them as their
+        // own 'delivery' bucket so the method breakdown still sums to the
+        // summary gross.
+        $deliveryRow = DB::table('pos_orders')
+            ->whereIn('pos_orders.id', $orderIds())
+            ->whereNotNull('pos_orders.delivery_confirmed_at')
+            ->selectRaw('COALESCE(SUM(grand_total), 0) AS total, COUNT(*) AS cnt')
+            ->first();
+        if (($deliveryRow->cnt ?? 0) > 0) {
+            $rows[] = [
+                'method' => 'delivery',
+                'total_baisas' => $this->baisas($deliveryRow->total),
+                'count' => (int) $deliveryRow->cnt,
+            ];
+            usort($rows, fn (array $a, array $b): int => $b['total_baisas'] <=> $a['total_baisas']);
+        }
+
+        return $rows;
     }
 
     /**

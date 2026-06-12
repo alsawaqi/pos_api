@@ -64,6 +64,11 @@ class PayOrderHandler implements SyncEventHandler
         if ($order->status === Order::STATUS_PAID) {
             throw new RuntimeException('order already paid: '.$orderUuid);
         }
+        if ($order->status === Order::STATUS_PENDING_VERIFICATION) {
+            // P-G7 — a no-tender delivery order settles via the merchant's
+            // Deliveries reconciliation, never via a till tender.
+            throw new RuntimeException('cannot pay a pending-verification delivery order: '.$orderUuid);
+        }
         if ($order->status === Order::STATUS_VOID) {
             throw new RuntimeException('cannot pay a voided order: '.$orderUuid);
         }

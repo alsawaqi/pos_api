@@ -108,6 +108,12 @@ class CloseShiftHandler implements SyncEventHandler
         $orders = DB::table('pos_orders')
             ->where('device_id', $shift->device_id)
             ->where('status', Order::STATUS_PAID)
+            // P-G7 — confirmed delivery-provider orders never put money in
+            // the drawer, and confirmation RE-DATES opened_at to whenever the
+            // merchant reconciled the statement — which can fall inside any
+            // later shift's window on this till. The Z is a drawer document:
+            // exclude them so its totals keep reconciling with the tenders.
+            ->whereNull('delivery_confirmed_at')
             ->whereBetween('opened_at', $window)
             ->selectRaw(
                 'COUNT(*) as cnt,'

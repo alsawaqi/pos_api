@@ -260,6 +260,8 @@ return new class extends Migration
             $table->unsignedBigInteger('company_id');
             $table->string('name', 64);
             $table->string('color', 7)->nullable();
+            // P-G7 — mirrors pos_admin's 2026_07_20_010000 migration.
+            $table->decimal('commission_percent', 5, 2)->default(0);
             $table->boolean('is_active')->default(true);
             $table->unsignedSmallInteger('sort_order')->default(0);
             $table->timestamps();
@@ -529,8 +531,24 @@ return new class extends Migration
             // counter, e.g. "KLD-0042"); NULL when numbering is off or the
             // order was queued offline without a server allocation.
             $table->string('receipt_number', 24)->nullable();
+            // P-G7 — delivery-provider lifecycle (mirrors pos_admin's
+            // 2026_07_20_010000 migration): provider linkage + the
+            // Proceed-popup fields + the punch/confirm money snapshot.
+            $table->unsignedBigInteger('delivery_provider_id')->nullable();
+            $table->string('delivery_provider_name', 64)->nullable();
+            $table->string('delivery_reference', 64)->nullable();
+            $table->string('delivery_customer_phone', 32)->nullable();
+            $table->string('delivery_driver_phone', 32)->nullable();
+            $table->decimal('delivery_commission_percent', 5, 2)->nullable();
+            $table->decimal('delivery_expected_payout', 12, 3)->nullable();
+            $table->decimal('delivery_received_amount', 12, 3)->nullable();
+            $table->decimal('delivery_variance', 12, 3)->nullable();
+            $table->timestamp('delivery_punched_at')->nullable();
+            $table->timestamp('delivery_confirmed_at')->nullable();
+            $table->unsignedBigInteger('delivery_confirmed_by_user_id')->nullable();
             $table->timestamps();
             $table->index(['company_id', 'receipt_number'], 'pos_orders_company_receipt_idx');
+            $table->index(['company_id', 'delivery_provider_id'], 'pos_orders_company_provider_idx');
         });
 
         Schema::create('pos_order_items', function (Blueprint $table): void {

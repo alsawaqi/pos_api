@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync;
 use App\Actions\Device\IngestSyncEventsAction;
 use App\Actions\Device\Sync\Handlers\CloseShiftHandler;
 use App\Actions\Device\Sync\Handlers\CreateOrderHandler;
+use App\Actions\Device\Sync\Handlers\DeliverOrderHandler;
 use App\Actions\Device\Sync\Handlers\DonationRecordHandler;
 use App\Actions\Device\Sync\Handlers\ExpenseLogHandler;
 use App\Actions\Device\Sync\Handlers\HoldOrderHandler;
@@ -38,6 +39,7 @@ class SyncEventDispatcher
         private readonly CreateOrderHandler $createOrder,
         private readonly HoldOrderHandler $holdOrder,
         private readonly PayOrderHandler $payOrder,
+        private readonly DeliverOrderHandler $deliverOrder,
         private readonly VoidOrderHandler $voidOrder,
         private readonly OpenShiftHandler $openShift,
         private readonly CloseShiftHandler $closeShift,
@@ -53,6 +55,7 @@ class SyncEventDispatcher
             'order.create' => $this->createOrder,
             'order.hold' => $this->holdOrder,
             'order.pay' => $this->payOrder,
+            'order.deliver' => $this->deliverOrder,
             'order.void' => $this->voidOrder,
             'shift.open' => $this->openShift,
             'shift.close' => $this->closeShift,

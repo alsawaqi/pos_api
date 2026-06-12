@@ -130,6 +130,26 @@ class DeviceSyncOrderTest extends TestCase
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
     }
 
+    public function test_unit_products_freeze_no_recipe_snapshot(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+
+        // PD2 — a ready/bought-in product whose made-to-order past left
+        // stale recipe rows: its cost is booked at RECEIVE (the
+        // stock-purchase expense), so freezing the recipe here would
+        // consume ingredients that were never used AND double-count the
+        // goods' cost in net profit (recipe COGS + the purchase expense).
+        DB::table('pos_products')->where('id', 1)->update(['stock_mode' => 'unit']);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $item = OrderItem::firstWhere('order_id', $order->id);
+        $this->assertNull($item->recipe_snapshot_json);
+    }
+
     public function test_order_create_persists_order_with_a_recipe_snapshot(): void
     {
         $this->seedCatalogue();

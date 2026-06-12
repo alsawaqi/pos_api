@@ -535,11 +535,18 @@ class CreateOrderHandler implements SyncEventHandler
      * the branch shelf count moves. Freezing NO recipe here keeps pay/void
      * from double-consuming the ingredients.
      *
+     * PD2: unit (ready / bought-in) products are PURCHASED, never made — their
+     * cost reaches net profit through the stock-purchase expense booked at
+     * receive, and only the shelf count moves at sale. A stale recipe left
+     * over from a made-to-order past must not freeze here: it would consume
+     * ingredients that were never used AND double-count the goods' cost
+     * (recipe COGS at sale + the purchase expense).
+     *
      * @return list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null
      */
     private function snapshotRecipe(int $productId, ?Product $product): ?array
     {
-        if ($product?->stock_mode === 'cooked') {
+        if ($product?->stock_mode === 'cooked' || $product?->stock_mode === 'unit') {
             return null;
         }
 

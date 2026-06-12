@@ -42,6 +42,7 @@ class Production extends Model
             'quantity' => 'decimal:3',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
+            'expires_at' => 'datetime',
             'cancelled_at' => 'datetime',
         ];
     }

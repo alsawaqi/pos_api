@@ -41,6 +41,17 @@ class ProductStockMovement extends Model
     // ProductStockMovementType::Produced.
     public const TYPE_PRODUCED = 'produced';
 
+    // P-G1.5 day-end disposition: expired pieces thrown away (negative).
+    public const TYPE_WASTE = 'waste';
+
+    // P-G1.5 day-end disposition: expired pieces gifted to staff or a
+    // customer (negative, manager-approved with a required comment).
+    public const TYPE_GIVE_AWAY = 'give_away';
+
+    // P-G1.5 day-end disposition: AUDIT row (quantity 0; carried amount +
+    // approver in the note) for keeping expired pieces on sale.
+    public const TYPE_CARRY_OVER = 'carry_over';
+
     /**
      * @return array<string, string>
      */

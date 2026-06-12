@@ -7,8 +7,10 @@ namespace App\Actions\Device\Production;
 use App\Models\BranchProduct;
 use App\Models\Device;
 use App\Models\PosStaff;
+use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductStockMovement;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -29,7 +31,13 @@ use RuntimeException;
  */
 final readonly class FinishProductionAction
 {
-    public function handle(Device $device, string $uuid, ?int $staffId): Production
+    /**
+     * @param  bool  $expiryProvided  whether the payload carried an explicit
+     *                                expires_at (even null = "never expires");
+     *                                false = derive the default from the
+     *                                product's shelf_life_days
+     */
+    public function handle(Device $device, string $uuid, ?int $staffId, ?string $expiresAt = null, bool $expiryProvided = false): Production
     {
         $companyId = (int) $device->company_id;
         $branchId = (int) $device->branch_id;
@@ -45,7 +53,7 @@ final readonly class FinishProductionAction
             }
         }
 
-        return DB::transaction(function () use ($uuid, $staffId, $companyId, $branchId): Production {
+        return DB::transaction(function () use ($uuid, $staffId, $expiresAt, $expiryProvided, $companyId, $branchId): Production {
             $production = Production::query()
                 ->where('company_id', $companyId)
                 ->where('uuid', $uuid)
@@ -90,10 +98,25 @@ final readonly class FinishProductionAction
                 'created_at' => $now,
             ]);
 
+            // P-G1.5 — the batch expiry. The chef's explicit value (incl.
+            // explicit null = never expires) wins; otherwise default from
+            // the product's shelf_life_days; no shelf life = no expiry.
+            if ($expiryProvided) {
+                $expiry = $expiresAt !== null ? Carbon::parse($expiresAt) : null;
+            } else {
+                $shelfLifeDays = Product::query()
+                    ->whereKey((int) $production->product_id)
+                    ->value('shelf_life_days');
+                $expiry = $shelfLifeDays !== null
+                    ? $now->copy()->addDays((int) $shelfLifeDays)->endOfDay()
+                    : null;
+            }
+
             $production->update([
                 'status' => Production::STATUS_FINISHED,
                 'finished_by_staff_id' => $staffId,
                 'finished_at' => $now,
+                'expires_at' => $expiry,
                 // Recorded (not derived) per spec — the kitchen batch-duration
                 // statistic the merchant reports on.
                 'duration_seconds' => max(0, (int) $production->started_at->diffInSeconds($now)),

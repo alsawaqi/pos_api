@@ -86,6 +86,10 @@ class DeviceProductionsController
                 $device,
                 $uuid,
                 $request->validated('staff_id') !== null ? (int) $request->validated('staff_id') : null,
+                // P-G1.5 — the chef's batch expiry; "provided" covers an
+                // explicit null too (= this batch never expires).
+                $request->validated('expires_at'),
+                array_key_exists('expires_at', $request->validated()),
             );
         } catch (RuntimeException $e) {
             return $this->domainError($e);

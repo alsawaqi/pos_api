@@ -713,6 +713,9 @@ class BuildDeviceConfigAction
             // device-side recompute after offline sales.
             'low_stock' => $this->isLowStock($p, $recipeRows, $branchProduct, $minThresholdByIngredient, $branchBalanceByIngredient),
             'low_stock_threshold' => $this->num($p->low_stock_threshold),
+            // P-G1.5 — default shelf life in days (NULL = keeps indefinitely).
+            // The device Finish dialog prefills the batch expiry from it.
+            'shelf_life_days' => $p->shelf_life_days !== null ? (int) $p->shelf_life_days : null,
             'addon_group_ids' => $groupRows
                 ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all()
                 : [],

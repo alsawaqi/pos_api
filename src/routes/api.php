@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
+use App\Http\Controllers\Api\V1\Device\DeviceDispositionController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
@@ -119,5 +120,14 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/productions/{uuid}/cancel', [DeviceProductionsController::class, 'cancel'])
             ->middleware('throttle:pos-login')
             ->name('device.productions.cancel');
+
+        // P-G1.5 — day-end disposition of expired cooked pieces (online-
+        // only, runs right before shift close). The POST can carry a
+        // manager PIN (give-away / carry-over approval), so it shares the
+        // pos-login brute-force bucket.
+        Route::get('device/disposition', [DeviceDispositionController::class, 'show'])->name('device.disposition.show');
+        Route::post('device/disposition', [DeviceDispositionController::class, 'store'])
+            ->middleware('throttle:pos-login')
+            ->name('device.disposition.store');
     });
 });

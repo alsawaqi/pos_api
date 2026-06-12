@@ -129,6 +129,9 @@ class DeviceKitchenController
                 'branch_stock_qty' => $mine?->stock_qty !== null ? (float) $mine->stock_qty : null,
                 // "Can make up to N" from live balances; null = no recipe.
                 'max_producible' => $max !== null ? max(0, $max) : null,
+                // P-G1.5 — default shelf life (prefills the Finish dialog's
+                // batch expiry; null = keeps indefinitely).
+                'shelf_life_days' => $p->shelf_life_days !== null ? (int) $p->shelf_life_days : null,
                 'recipe' => $recipe,
             ];
         };
@@ -175,6 +178,8 @@ class DeviceKitchenController
             'quantity' => (float) $production->quantity,
             'started_at' => $production->started_at?->toIso8601String(),
             'finished_at' => $production->finished_at?->toIso8601String(),
+            // P-G1.5 — the chef's batch expiry (null = never expires).
+            'expires_at' => $production->expires_at?->toIso8601String(),
             'cancelled_at' => $production->cancelled_at?->toIso8601String(),
             'duration_seconds' => $production->duration_seconds !== null ? (int) $production->duration_seconds : null,
             'started_by' => $production->startedByStaff?->name,

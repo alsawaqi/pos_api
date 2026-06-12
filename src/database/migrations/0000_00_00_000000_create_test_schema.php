@@ -179,6 +179,8 @@ return new class extends Migration
             $table->string('stock_mode', 16)->default('untracked');
             // Phase D2 — unit-mode LOW STOCK badge threshold (NULL = no badge).
             $table->decimal('low_stock_threshold', 12, 3)->nullable();
+            // P-G1.5 — default shelf life in days (NULL = keeps indefinitely).
+            $table->unsignedSmallInteger('shelf_life_days')->nullable();
             $table->decimal('cost_price', 12, 3)->nullable();
             $table->decimal('tax_rate', 5, 2)->nullable();
             // Phase D2 — §5.5.3 tax-inclusive flag (display-only for now).
@@ -943,6 +945,8 @@ return new class extends Migration
             $table->unsignedBigInteger('cancel_approved_by_staff_id')->nullable();
             $table->timestamp('started_at');
             $table->timestamp('finished_at')->nullable();
+            // P-G1.5 — the chef's per-batch expiry (NULL = never expires).
+            $table->timestamp('expires_at')->nullable();
             $table->timestamp('cancelled_at')->nullable();
             $table->unsignedInteger('duration_seconds')->nullable();
             $table->timestamps();

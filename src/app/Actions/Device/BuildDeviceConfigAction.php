@@ -19,8 +19,11 @@ use App\Models\Ingredient;
 use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyRule;
 use App\Models\Offer;
+use App\Models\PosStaff;
 use App\Models\Product;
 use App\Models\ProductCategory;
+use App\Models\StaffMessage;
+use App\Models\StaffMessageRead;
 use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
@@ -209,6 +212,41 @@ class BuildDeviceConfigAction
             $since
         )->get();
 
+        // ---- P-G6 — staff announcements (portal → device). The device
+        // shows company-wide + this-branch messages to whoever is on the
+        // till, and staff-targeted ones only to that logged-in staff
+        // member — so the slice carries every message addressed to this
+        // BRANCH's audience: company-wide, this branch, or any staff OF
+        // this branch. Windowed to the last 30 days (announcements are
+        // ephemeral; the portal keeps the full history). A read receipt
+        // touch()es the message, so the updated read-set resurfaces in
+        // deltas; retractions surface in deleted.staff_messages.
+        $branchStaffIds = PosStaff::query()
+            ->where('branch_id', $branchId)
+            ->pluck('id')
+            ->all();
+        $staffMessages = $this->changed(
+            StaffMessage::query()
+                ->where('company_id', $companyId)
+                ->where('created_at', '>=', now()->subDays(30))
+                ->where(function ($q) use ($branchId, $branchStaffIds): void {
+                    $q->where('target_type', StaffMessage::TARGET_COMPANY)
+                        ->orWhere(function ($w) use ($branchId): void {
+                            $w->where('target_type', StaffMessage::TARGET_BRANCH)
+                                ->where('target_branch_id', $branchId);
+                        })
+                        ->orWhere(function ($w) use ($branchStaffIds): void {
+                            $w->where('target_type', StaffMessage::TARGET_STAFF)
+                                ->whereIn('target_staff_id', $branchStaffIds ?: [0]);
+                        });
+                }),
+            $since
+        )->orderByDesc('created_at')->limit(100)->get();
+        $readsByMessage = StaffMessageRead::query()
+            ->whereIn('staff_message_id', $staffMessages->pluck('id')->all() ?: [0])
+            ->get()
+            ->groupBy('staff_message_id');
+
         // ---- Loyalty rules ----
         $loyaltyRules = $this->changed(
             LoyaltyRule::query()->where('company_id', $companyId),
@@ -322,6 +360,10 @@ class BuildDeviceConfigAction
                 $targetsByDiscount->get($d->id),
             ))->all(),
             'offers' => $offers->map(fn (Offer $o): array => $this->mapOffer($o))->all(),
+            'staff_messages' => $staffMessages->map(fn (StaffMessage $m): array => $this->mapStaffMessage(
+                $m,
+                $readsByMessage->get($m->id),
+            ))->all(),
             'loyalty_rules' => $loyaltyRules->map(fn (LoyaltyRule $r): array => $this->mapLoyaltyRule($r))->all(),
             'customers' => $customers->map(fn (Customer $c): array => $this->mapCustomer(
                 $c,
@@ -437,7 +479,7 @@ class BuildDeviceConfigAction
         $empty = [
             'floors' => [], 'tables' => [], 'categories' => [], 'products' => [],
             'addon_groups' => [], 'addons' => [], 'ingredients' => [], 'discounts' => [],
-            'offers' => [], 'loyalty_rules' => [], 'customers' => [],
+            'offers' => [], 'staff_messages' => [], 'loyalty_rules' => [], 'customers' => [],
             'delivery_providers' => [], 'expense_categories' => [],
         ];
 
@@ -468,6 +510,8 @@ class BuildDeviceConfigAction
             'ingredients' => $this->trashedIds(Ingredient::query()->where('company_id', $companyId), $since),
             'discounts' => $this->trashedIds(Discount::query()->where('company_id', $companyId), $since),
             'offers' => $this->trashedIds(Offer::query()->where('company_id', $companyId), $since),
+            // P-G6 — portal-retracted announcements purge from devices.
+            'staff_messages' => $this->trashedIds(StaffMessage::query()->where('company_id', $companyId), $since),
             'loyalty_rules' => $this->trashedIds(LoyaltyRule::query()->where('company_id', $companyId), $since),
             'customers' => $this->trashedIds(Customer::query()->where('company_id', $companyId), $since),
             'delivery_providers' => DB::table('pos_delivery_providers')
@@ -976,6 +1020,32 @@ class BuildDeviceConfigAction
             'branch_scope_json' => $o->branch_scope_json,
             'max_per_order' => $o->max_per_order !== null ? (int) $o->max_per_order : null,
             'config' => $o->config,
+        ];
+    }
+
+    /**
+     * P-G6 — a staff announcement in the device shape. read_staff_ids is
+     * the receipt set: the device computes "unread for the logged-in
+     * staff" from it (cross-till reads heal because a new receipt
+     * touch()es the message and the delta resurfaces it).
+     *
+     * @param  \Illuminate\Support\Collection<int, StaffMessageRead>|null  $reads
+     * @return array<string, mixed>
+     */
+    private function mapStaffMessage(StaffMessage $m, $reads = null): array
+    {
+        return [
+            'id' => (int) $m->id,
+            'target_type' => $m->target_type,
+            'target_staff_id' => $m->target_staff_id !== null ? (int) $m->target_staff_id : null,
+            'title' => $m->title,
+            'body' => $m->body,
+            'created_by_name' => $m->created_by_name,
+            'created_at' => $m->created_at?->toIso8601String(),
+            'read_staff_ids' => collect($reads ?? [])
+                ->map(fn ($r): int => (int) $r->staff_id)
+                ->values()
+                ->all(),
         ];
     }
 

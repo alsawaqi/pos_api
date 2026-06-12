@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceDispositionController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenController;
+use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
@@ -137,5 +138,11 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/disposition', [DeviceDispositionController::class, 'store'])
             ->middleware('throttle:pos-login')
             ->name('device.disposition.store');
+
+        // P-G6 — staff-announcement read receipts. Announcements arrive
+        // in /device/config (staff_messages slice); the device reports
+        // who SAW them here. No PIN, no extra throttle.
+        Route::post('device/messages/read', [DeviceMessagesController::class, 'read'])
+            ->name('device.messages.read');
     });
 });

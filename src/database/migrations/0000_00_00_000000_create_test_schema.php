@@ -1001,10 +1001,45 @@ return new class extends Migration
             $table->index(['production_id'], 'pos_production_lines_production_idx');
             $table->index(['ingredient_id'], 'pos_production_lines_ingredient_idx');
         });
+
+        // P-G6 — staff announcements (portal -> devices) + read receipts
+        // (mirrors pos_admin's 2026_07_19_000000 migration; the
+        // portal-inbox pair lives merchant-side only — pos_users isn't in
+        // this schema). Written by pos_merchant; this app serves them in
+        // /device/config and writes the receipts. created_by_name is the
+        // sender snapshot so devices render it without a users join.
+        Schema::create('pos_staff_messages', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->string('target_type', 16);
+            $table->unsignedBigInteger('target_branch_id')->nullable();
+            $table->unsignedBigInteger('target_staff_id')->nullable();
+            $table->string('title')->nullable();
+            $table->text('body');
+            $table->unsignedBigInteger('created_by_user_id')->nullable();
+            $table->string('created_by_name')->nullable();
+            $table->timestamps();
+            $table->softDeletes();
+            $table->index(['company_id', 'created_at'], 'pos_staff_messages_company_created_idx');
+            $table->index(['target_branch_id'], 'pos_staff_messages_branch_idx');
+        });
+
+        Schema::create('pos_staff_message_reads', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('staff_message_id');
+            $table->unsignedBigInteger('staff_id');
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->timestamp('read_at');
+            $table->timestamps();
+            $table->unique(['staff_message_id', 'staff_id'], 'pos_staff_message_reads_unique');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_staff_message_reads');
+        Schema::dropIfExists('pos_staff_messages');
         Schema::dropIfExists('pos_production_lines');
         Schema::dropIfExists('pos_productions');
         Schema::dropIfExists('pos_order_sequences');

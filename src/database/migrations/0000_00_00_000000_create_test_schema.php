@@ -192,6 +192,10 @@ return new class extends Migration
             // P-G2 — internal items (cups/lids): never on the POS menu or
             // tablet, full stock participation.
             $table->boolean('is_internal')->default(false);
+            // PD3a — physical-item kind: 'packaging' | 'general' | NULL.
+            // The device never reads it (internal items are excluded from
+            // /device/config); mirrored for schema parity only.
+            $table->string('internal_purpose', 16)->nullable();
             // G1 — menu time-window ('HH:MM:SS', both NULL = always
             // available, start > end wraps midnight).
             $table->string('available_from', 8)->nullable();

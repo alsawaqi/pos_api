@@ -154,16 +154,21 @@ class CreateOrderHandler implements SyncEventHandler
                 foreach ($line['addons'] ?? [] as $addon) {
                     $addOnId = (int) $addon['add_on_id'];
                     $addOn = AddOn::query()->where('company_id', $device->company_id)->find($addOnId);
+                    // PD3b — per-option stock-usage lines, frozen at create.
+                    // When present they SUPERSEDE the legacy single-ingredient
+                    // trio for this addon (never both — no double-count).
+                    $consumption = $this->snapshotAddonConsumption($addOn);
                     OrderItemAddon::create([
                         'order_item_id' => $item->id,
                         'add_on_id' => $addOnId,
                         'add_on_name_snapshot' => $addOn?->name ?? ('#'.$addOnId),
                         'price_delta_snapshot' => Money::toOmr((int) ($addon['price_delta_baisas'] ?? 0)),
-                        'ingredient_snapshot_json' => $this->snapshotAddonIngredient($addOn),
+                        'ingredient_snapshot_json' => $consumption === null ? $this->snapshotAddonIngredient($addOn) : null,
                         // P-G3 — product-as-add-on freeze: id for reporting,
                         // snapshot for consumption by the product's type.
                         'linked_product_id' => $addOn?->linked_product_id !== null ? (int) $addOn->linked_product_id : null,
                         'product_snapshot_json' => $this->snapshotAddonProduct($addOn, $device->company_id),
+                        'consumption_snapshot_json' => $consumption,
                     ]);
                 }
             }
@@ -600,7 +605,70 @@ class CreateOrderHandler implements SyncEventHandler
             'recipe' => $product->stock_mode === 'ingredient'
                 ? $this->snapshotRecipe((int) $product->id, $product)
                 : null,
+            // PD3b — the linked product's OWN components (its packaging:
+            // a side-fries product's box) now ride the freeze and leave
+            // branch stock at pay. Frozen, unlike the parent line's live
+            // component read — everything else in this snapshot already is.
+            'components' => DB::table('pos_product_components')
+                ->where('product_id', (int) $product->id)
+                ->get()
+                ->map(static fn ($c): array => [
+                    'product_id' => (int) $c->component_product_id,
+                    'qty' => (float) $c->quantity,
+                ])
+                ->all() ?: null,
         ];
+    }
+
+    /**
+     * PD3b — freeze an option's stock-usage lines at create time. Each line
+     * is ingredient XOR product, direction add|remove, quantity per ONE
+     * parent line unit (ingredient quantities already in the ingredient's
+     * BASE unit — the portal converts at entry). Ingredient lines freeze
+     * the live default_unit_cost like recipe lines do. NULL when the option
+     * has no lines (legacy options keep the trio path).
+     *
+     * @return list<array{type: string, ingredient_id?: int, product_id?: int, direction: string, qty: float, unit?: string|null, unit_cost?: float}>|null
+     */
+    private function snapshotAddonConsumption(?AddOn $addOn): ?array
+    {
+        if ($addOn === null) {
+            return null;
+        }
+
+        $rows = DB::table('pos_addon_consumptions')
+            ->where('add_on_id', (int) $addOn->id)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->get();
+        if ($rows->isEmpty()) {
+            return null;
+        }
+
+        $ingredientIds = $rows->pluck('ingredient_id')->filter()->all();
+        $costs = $ingredientIds === []
+            ? collect()
+            : Ingredient::query()->whereIn('id', $ingredientIds)->pluck('default_unit_cost', 'id');
+
+        return $rows->map(static function ($row) use ($costs): array {
+            if ($row->ingredient_id !== null) {
+                return [
+                    'type' => 'ingredient',
+                    'ingredient_id' => (int) $row->ingredient_id,
+                    'direction' => (string) $row->direction,
+                    'qty' => (float) $row->quantity,
+                    'unit' => $row->unit,
+                    'unit_cost' => (float) ($costs[$row->ingredient_id] ?? 0),
+                ];
+            }
+
+            return [
+                'type' => 'product',
+                'product_id' => (int) $row->component_product_id,
+                'direction' => (string) $row->direction,
+                'qty' => (float) $row->quantity,
+            ];
+        })->all();
     }
 
     /**

@@ -31,6 +31,9 @@ class OrderItemAddon extends Model
             // P-G3 — product-as-add-on freeze: {product_id, stock_mode,
             // recipe} drives consumption by the product's type at pay.
             'product_snapshot_json' => 'array',
+            // PD3b — the option's stock-usage lines frozen at create
+            // (supersedes ingredient_snapshot_json when present).
+            'consumption_snapshot_json' => 'array',
         ];
     }
 

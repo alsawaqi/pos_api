@@ -167,6 +167,15 @@ class BuildDeviceConfigAction
             ->get()
             ->groupBy('add_on_group_id');
 
+        // PD3b — per-option stock-usage lines, bulk-loaded for every addon
+        // in this slice (the device gates option availability on them).
+        $consumptionByAddon = DB::table('pos_addon_consumptions')
+            ->whereIn('add_on_id', $addonsByGroup->flatten()->pluck('id')->all() ?: [0])
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->get()
+            ->groupBy('add_on_id');
+
         // ---- Delivery providers + per-product price overrides (§6.3). The POS
         // shows the provider picker on a delivery order; each product's price
         // then resolves override → delivery_price → base_price on the device. ----
@@ -352,6 +361,7 @@ class BuildDeviceConfigAction
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
                 $addonsByGroup->get($g->id),
+                $consumptionByAddon,
             ))->all(),
             'ingredients' => $ingredients->map(fn (Ingredient $i): array => $this->mapIngredient($i))->all(),
             'branch_stock' => $branchStock->map(fn (BranchStock $s): array => $this->mapBranchStock($s))->all(),
@@ -867,9 +877,10 @@ class BuildDeviceConfigAction
 
     /**
      * @param  \Illuminate\Database\Eloquent\Collection<int, AddOn>|null  $addons
+     * @param  \Illuminate\Support\Collection<int|string, mixed>|null  $consumptionByAddon
      * @return array<string, mixed>
      */
-    private function mapAddOnGroup(AddOnGroup $g, $addons): array
+    private function mapAddOnGroup(AddOnGroup $g, $addons, $consumptionByAddon = null): array
     {
         return [
             'id' => (int) $g->id,
@@ -885,15 +896,16 @@ class BuildDeviceConfigAction
             'display_order' => (int) $g->display_order,
             'status' => $g->status,
             'addons' => $addons
-                ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a))->values()->all()
+                ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a, $consumptionByAddon?->get($a->id)))->values()->all()
                 : [],
         ];
     }
 
     /**
+     * @param  \Illuminate\Support\Collection<int, mixed>|null  $consumptionLines
      * @return array<string, mixed>
      */
-    private function mapAddOn(AddOn $a): array
+    private function mapAddOn(AddOn $a, $consumptionLines = null): array
     {
         return [
             'id' => (int) $a->id,
@@ -910,6 +922,18 @@ class BuildDeviceConfigAction
             'ingredient_id' => $a->ingredient_id !== null ? (int) $a->ingredient_id : null,
             'ingredient_qty' => $this->num($a->ingredient_qty),
             'ingredient_unit' => $a->ingredient_unit,
+            // PD3b — the option's stock-usage lines (ingredient XOR product,
+            // direction add|remove, qty per ONE parent line unit, ingredient
+            // qty in the ingredient's BASE unit). The device gates option
+            // availability on the 'add' lines it can see.
+            'consumption' => $consumptionLines === null ? [] : $consumptionLines->map(static fn ($c): array => [
+                'type' => $c->ingredient_id !== null ? 'ingredient' : 'product',
+                'ingredient_id' => $c->ingredient_id !== null ? (int) $c->ingredient_id : null,
+                'product_id' => $c->component_product_id !== null ? (int) $c->component_product_id : null,
+                'direction' => (string) $c->direction,
+                'qty' => (float) $c->quantity,
+                'unit' => $c->unit,
+            ])->values()->all(),
             'display_order' => (int) $a->display_order,
             'status' => $a->status,
         ];

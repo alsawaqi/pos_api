@@ -476,6 +476,55 @@ class DeviceConfigTest extends TestCase
         $this->assertNull($tea['branch_stock_qty']);
     }
 
+    /**
+     * Regression — a 2nd kitchen production batch (or any per-branch shelf
+     * move: sale decrement, restock, availability toggle) bumps ONLY
+     * pos_branch_product.stock_qty, NOT pos_products.updated_at. The delta must
+     * still re-emit the product with its fresh branch_stock_qty, otherwise the
+     * device keeps a stale sellable cap — e.g. stuck at the first batch of 5
+     * while the kitchen shelf already reads 10. Mirrors the pivot-only write
+     * paths in FinishProductionAction / ConsumeInventoryAction::moveProductStock.
+     */
+    public function test_delta_re_emits_a_product_when_only_its_branch_shelf_changed(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // branch 10
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Latte (1) shelved at 5 units; Tea (2) at 7 — both stamped OLD so
+        // neither is "changed" yet, and pos_products.updated_at stays OLD too.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => 5.000] + $t,
+            ['branch_id' => 10, 'product_id' => 2, 'is_available' => true, 'stock_qty' => 7.000] + $t,
+        ]);
+
+        $since = now()->subHours(2);          // after the OLD seed stamp
+        $now = now()->toDateTimeString();
+
+        // 2nd batch: bump ONLY Latte's shelf 5 -> 10 on the pivot. Critically
+        // leave pos_products.updated_at untouched, as the real finish path does.
+        DB::table('pos_branch_product')
+            ->where('branch_id', 10)->where('product_id', 1)
+            ->update(['stock_qty' => 10.000, 'updated_at' => $now]);
+
+        $data = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))
+            ->assertOk()->json('data');
+
+        // Latte is re-emitted with the LIVE shelf (10); Tea (pivot + product
+        // both unchanged) is NOT in the changed set.
+        $this->assertSame([1], collect($data['products'])->pluck('id')->all());
+        $this->assertEquals(10.0, collect($data['products'])->firstWhere('id', 1)['branch_stock_qty']);
+
+        // No infinite re-emit: once the cursor advances past the pivot bump,
+        // the product drops back out of the delta.
+        $after = now()->addSecond();
+        $data2 = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($after->toIso8601String()))
+            ->assertOk()->json('data');
+        $this->assertSame([], collect($data2['products'])->pluck('id')->all());
+    }
+
     public function test_settings_defaults_order_cancel_positions_to_manager(): void
     {
         $this->seedCatalogue();

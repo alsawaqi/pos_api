@@ -95,28 +95,52 @@ class BuildDeviceConfigAction
             ->get()
             ->keyBy('product_id');
 
-        $products = $this->changed(
-            Product::query()
-                ->where('company_id', $companyId)
-                // P-G2 — internal items (cups/lids) never reach the POS menu
-                // or the customer tablet; their stock is consumed server-side
-                // as components at order.pay. Newly-internal ids surface in
-                // the delta's deleted.products purge list below.
-                ->where('is_internal', false)
-                ->where(function (Builder $q) use ($branchId): void {
-                    $q->whereExists(function ($sub) use ($branchId): void {
+        $productsQuery = Product::query()
+            ->where('company_id', $companyId)
+            // P-G2 — internal items (cups/lids) never reach the POS menu
+            // or the customer tablet; their stock is consumed server-side
+            // as components at order.pay. Newly-internal ids surface in
+            // the delta's deleted.products purge list below.
+            ->where('is_internal', false)
+            ->where(function (Builder $q) use ($branchId): void {
+                $q->whereExists(function ($sub) use ($branchId): void {
+                    $sub->selectRaw('1')->from('pos_branch_product')
+                        ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
+                        ->where('pos_branch_product.branch_id', $branchId)
+                        ->where('pos_branch_product.is_available', true);
+                })->orWhereNotExists(function ($sub): void {
+                    $sub->selectRaw('1')->from('pos_branch_product')
+                        ->whereColumn('pos_branch_product.product_id', 'pos_products.id');
+                });
+            })
+            ->orderBy('display_order');
+
+        // Delta change-detection for products must ALSO fire when only the
+        // per-branch shelf moved — NOT just on pos_products.updated_at. A
+        // cooked product's sellable cap is its branch shelf count
+        // (branch_stock_qty, emitted below from pos_branch_product.stock_qty),
+        // and a kitchen batch finish (FinishProductionAction) or a sale
+        // decrement (ConsumeInventoryAction) bumps pos_branch_product WITHOUT
+        // touching pos_products.updated_at. The plain updated_at gate would
+        // therefore omit the product and the device would keep a stale cap —
+        // e.g. a 2nd production batch of 5 never lifts the POS cap from 5 to
+        // 10 even though the kitchen shelf reads 10. So for a delta, OR in an
+        // EXISTS on THIS branch's pivot row changed after the cursor (the
+        // pivot carries timestamps); the full sync ($since === null) keeps
+        // emitting every product with its live shelf and is left untouched.
+        if ($since !== null) {
+            $productsQuery->where(function (Builder $q) use ($since, $branchId): void {
+                $q->where('pos_products.updated_at', '>', $since)
+                    ->orWhereExists(function ($sub) use ($since, $branchId): void {
                         $sub->selectRaw('1')->from('pos_branch_product')
                             ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
                             ->where('pos_branch_product.branch_id', $branchId)
-                            ->where('pos_branch_product.is_available', true);
-                    })->orWhereNotExists(function ($sub): void {
-                        $sub->selectRaw('1')->from('pos_branch_product')
-                            ->whereColumn('pos_branch_product.product_id', 'pos_products.id');
+                            ->where('pos_branch_product.updated_at', '>', $since);
                     });
-                })
-                ->orderBy('display_order'),
-            $since
-        )->get();
+            });
+        }
+
+        $products = $productsQuery->get();
         $productIds = $products->pluck('id')->all();
 
         $recipesByProduct = DB::table('pos_product_recipes')

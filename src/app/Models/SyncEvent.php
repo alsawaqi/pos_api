@@ -77,6 +77,9 @@ class SyncEvent extends Model
         'restock.request',
         // Phase A (Additions §2.8) — day-end physical stock count.
         'stock.count',
+        // Product wastage: cooked or bought-in products wasted at the branch
+        // (the product-units parallel of the stock.count shortfall waste).
+        'product.waste',
         'shift.open',
         'shift.close',
         // Reserved no-op: ingested + ACKed but has NO domain handler, so it

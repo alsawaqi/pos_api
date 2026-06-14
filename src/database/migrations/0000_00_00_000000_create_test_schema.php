@@ -393,7 +393,10 @@ return new class extends Migration
             $table->unsignedBigInteger('product_id');
             $table->unsignedBigInteger('branch_id')->nullable();
             $table->string('movement_type', 32);
+            // Product wastage (folds in admin 2026_07_27_010000): reason + frozen cost.
+            $table->string('reason', 32)->nullable();
             $table->decimal('quantity', 12, 3);
+            $table->decimal('unit_cost', 12, 3)->nullable();
             $table->string('reference_type')->nullable();
             $table->unsignedBigInteger('reference_id')->nullable();
             $table->unsignedBigInteger('recorded_by_user_id')->nullable();

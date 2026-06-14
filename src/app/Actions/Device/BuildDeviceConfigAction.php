@@ -332,7 +332,9 @@ class BuildDeviceConfigAction
                 // P-G1 — staff positions allowed to open the device's Kitchen
                 // production section (start/finish/cancel cooked-product
                 // batches). The DEVICE gates its Kitchen screen on this list.
-                'kitchen_positions' => $this->positionListSetting($companyId, 'kitchen_positions'),
+                // The 'kitchen' role is ALWAYS in the list (kitchen staff always
+                // have access); the saved positions add OTHER roles.
+                'kitchen_positions' => $this->kitchenPositions($companyId),
                 // P-F8 — merchant-defined order numbering policy. Always the
                 // full normalised five-key shape ({enabled:false, prefix:'',
                 // pad:4, scope:'branch', daily_reset:false} when unset). The
@@ -458,6 +460,37 @@ class BuildDeviceConfigAction
         ));
 
         return $positions === [] ? ['manager'] : $positions;
+    }
+
+    /**
+     * The effective kitchen-access set emitted to the device. Unlike the
+     * sibling position policies, the 'kitchen' role ALWAYS has kitchen access,
+     * so it is always unioned into the list; the saved positions add OTHER
+     * roles. An empty saved list therefore emits ['kitchen'] (kitchen-role-only)
+     * — NOT a managers-only fallback. Kept in lock-step with
+     * {@see VerifyKitchenPinAction} so the device gate and the walk-up PIN gate
+     * agree.
+     *
+     * @return list<string>
+     */
+    private function kitchenPositions(int $companyId): array
+    {
+        $raw = DB::table('pos_company_settings')
+            ->where('company_id', $companyId)
+            ->where('key', 'kitchen_positions')
+            ->value('value');
+
+        $positions = is_string($raw) ? json_decode($raw, true) : $raw;
+        if (! is_array($positions)) {
+            $positions = [];
+        }
+
+        $positions = array_values(array_filter(
+            array_map(static fn ($p): string => is_string($p) ? trim($p) : '', $positions),
+            static fn (string $p): bool => $p !== '',
+        ));
+
+        return array_values(array_unique([...$positions, 'kitchen']));
     }
 
     /**

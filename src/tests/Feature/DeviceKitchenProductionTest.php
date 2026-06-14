@@ -393,18 +393,20 @@ class DeviceKitchenProductionTest extends TestCase
         $this->seedKitchen();
         $this->device();
 
-        // Default: managers only.
+        // Default (no policy row): the kitchen role ALWAYS has access, so the
+        // emitted list is kitchen-only — there is NO managers-only fallback.
         $res = $this->withToken('mdev_kitchen')->getJson('/api/v1/device/config')->assertOk();
-        $this->assertSame(['manager'], $res->json('data.settings.kitchen_positions'));
+        $this->assertSame(['kitchen'], $res->json('data.settings.kitchen_positions'));
 
-        // Merchant-set policy flows through (trimmed; emitted as stored).
+        // A merchant-ticked role is unioned with the always-present kitchen role
+        // (trimmed; deduped). 'kitchen' is implicit and appended once.
         DB::table('pos_company_settings')->insert([
             'company_id' => 100, 'key' => 'kitchen_positions',
-            'value' => json_encode(['kitchen ', 'manager']),
+            'value' => json_encode(['cashier ', 'manager']),
             'created_at' => now(), 'updated_at' => now(),
         ]);
         $res = $this->withToken('mdev_kitchen')->getJson('/api/v1/device/config')->assertOk();
-        $this->assertSame(['kitchen', 'manager'], $res->json('data.settings.kitchen_positions'));
+        $this->assertSame(['cashier', 'manager', 'kitchen'], $res->json('data.settings.kitchen_positions'));
     }
 
     public function test_selling_a_cooked_product_moves_shelf_stock_not_ingredients(): void

@@ -13,9 +13,10 @@ use Tests\TestCase;
 
 /**
  * P-G1.6 — POST /device/auth/verify-kitchen-pin: the Kitchen walk-up
- * gate. Verifies a PIN against ACTIVE staff whose position is in the
- * merchant's kitchen_positions policy (default managers-only), so a
- * chef can open the Kitchen screen on a cashier's till session.
+ * gate. Verifies a PIN against ACTIVE staff whose position is allowed —
+ * the 'kitchen' role always is, plus whatever positions the merchant
+ * ticked (no managers-only default) — so a chef can open the Kitchen
+ * screen on a cashier's till session.
  *
  * Staff: chef Sami (kitchen, PIN 1111), manager Mona (manager, PIN
  * 4321), cashier Omar (cashier, PIN 2222), all company 100 / branch 10.
@@ -51,23 +52,48 @@ class DeviceKitchenPinVerifyTest extends TestCase
         ]);
     }
 
-    public function test_default_policy_accepts_a_manager_pin_only(): void
+    public function test_the_kitchen_role_always_passes_with_no_managers_only_default(): void
     {
         $this->seedStaff();
         $this->device();
 
-        // No policy row: managers-only by default.
+        // No policy row: the kitchen role ALWAYS has access, so the chef passes.
         $res = $this->withToken('mdev_kpin')
-            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '4321'])
+            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '1111'])
             ->assertOk();
         $this->assertTrue($res->json('ok'));
-        $this->assertSame('Mona', $res->json('staff.name'));
+        $this->assertSame('Sami', $res->json('staff.name'));
 
-        // The chef's PIN does NOT pass until the policy allows 'kitchen'.
+        // No managers-only fallback: a manager does NOT pass until the merchant
+        // ticks 'manager' explicitly.
         $this->withToken('mdev_kpin')
-            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '1111'])
+            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '4321'])
             ->assertStatus(401)
             ->assertJsonPath('errors.0.code', 'invalid_pin');
+    }
+
+    public function test_a_ticked_role_passes_and_the_kitchen_role_still_passes(): void
+    {
+        $this->seedStaff();
+        $this->device();
+        $this->setKitchenPolicy(['manager']); // give managers kitchen access too
+
+        // The ticked manager now passes...
+        $this->withToken('mdev_kpin')
+            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '4321'])
+            ->assertOk()
+            ->assertJsonPath('staff.name', 'Mona');
+
+        // ...and the kitchen role still passes (always implicit)...
+        $this->withToken('mdev_kpin')
+            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '1111'])
+            ->assertOk()
+            ->assertJsonPath('staff.name', 'Sami');
+
+        // ...while a cashier (neither ticked nor the kitchen role) still fails.
+        $this->withToken('mdev_kpin')
+            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '2222'])
+            ->assertStatus(401);
     }
 
     public function test_the_merchant_policy_decides_who_passes(): void

@@ -19,12 +19,13 @@ use RuntimeException;
  * and the Kitchen session runs AS them (batches attribute to the actual
  * chef, not the cashier whose till it is).
  *
- * The VerifyManagerPinAction mechanics verbatim, against the
- * `kitchen_positions` policy (default managers-only, the same default
- * BuildDeviceConfigAction emits): ACTIVE staff of the device's company
- * whose position is allowed, own-branch first, bcrypt check per
- * candidate. No match throws — the controller maps it to the same
- * generic 401 invalid_pin, never revealing whether a PIN exists.
+ * The VerifyManagerPinAction mechanics verbatim, against the effective
+ * kitchen-access set (the 'kitchen' role is ALWAYS allowed, plus whatever
+ * positions the merchant ticked — the same set BuildDeviceConfigAction
+ * emits): ACTIVE staff of the device's company whose position is allowed,
+ * own-branch first, bcrypt check per candidate. No match throws — the
+ * controller maps it to the same generic 401 invalid_pin, never revealing
+ * whether a PIN exists.
  */
 final readonly class VerifyKitchenPinAction
 {
@@ -47,11 +48,12 @@ final readonly class VerifyKitchenPinAction
     }
 
     /**
-     * The company's `kitchen_positions` policy, defaulting to managers-only
-     * when unset — the same read + normalisation
-     * BuildDeviceConfigAction::positionListSetting() emits in
-     * /device/config, so the device-side gate and this server-side check
-     * can't diverge.
+     * The company's effective kitchen-access set: the saved `kitchen_positions`
+     * list PLUS the 'kitchen' role, which always has access. Mirrors the union
+     * BuildDeviceConfigAction::kitchenPositions() emits in /device/config, so the
+     * device-side gate and this server-side check can't diverge. An empty saved
+     * list means kitchen-role-only — there is NO managers-only fallback (managers
+     * get kitchen access only when the merchant ticks them explicitly).
      *
      * @return list<string>
      */
@@ -72,6 +74,6 @@ final readonly class VerifyKitchenPinAction
             static fn (string $p): bool => $p !== '',
         ));
 
-        return $positions === [] ? ['manager'] : $positions;
+        return array_values(array_unique([...$positions, 'kitchen']));
     }
 }

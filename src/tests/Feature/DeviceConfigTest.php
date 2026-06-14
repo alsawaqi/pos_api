@@ -525,6 +525,57 @@ class DeviceConfigTest extends TestCase
         $this->assertSame([], collect($data2['products'])->pluck('id')->all());
     }
 
+    /**
+     * Regression — disabling a product at the branch (pos_branch_product
+     * is_available flipped true→false, a pivot-only write via the merchant's
+     * SyncProductBranchesAction) must PURGE it from a delta device. The flip is
+     * not a soft-delete and not an is_internal change, so it never reaches the
+     * `changed` products set, and the payload carries no per-branch availability
+     * field for the device to filter on locally — without the deleted.products
+     * purge a tile already cached on the device would keep selling until the
+     * next full re-sync. Symmetric to the shelf-qty re-emit above.
+     */
+    public function test_delta_purges_a_product_disabled_at_the_branch(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice(); // branch 10
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Latte (1) + Tea (2) both available at branch 10, stamped OLD so the
+        // device has already cached them and neither is "changed" yet.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => null] + $t,
+            ['branch_id' => 10, 'product_id' => 2, 'is_available' => true, 'stock_qty' => null] + $t,
+        ]);
+
+        $since = now()->subHours(2);          // after the OLD seed stamp
+        $now = now()->toDateTimeString();
+
+        // Disable Latte at branch 10 — a pivot-only write: is_available
+        // true→false, pos_products.updated_at left untouched (as the merchant
+        // SyncProductBranchesAction does).
+        DB::table('pos_branch_product')
+            ->where('branch_id', 10)->where('product_id', 1)
+            ->update(['is_available' => false, 'updated_at' => $now]);
+
+        $data = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))
+            ->assertOk()->json('data');
+
+        // Latte is purged via the delta's deleted map, NOT re-emitted in the
+        // (filtered-out) changed products set. Tea is untouched either way.
+        $this->assertContains(1, $data['deleted']['products']);
+        $this->assertNotContains(1, collect($data['products'])->pluck('id')->all());
+
+        // No infinite purge: once the cursor advances past the pivot flip, the
+        // product drops out of the deleted map too.
+        $after = now()->addSecond();
+        $data2 = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($after->toIso8601String()))
+            ->assertOk()->json('data');
+        $this->assertNotContains(1, $data2['deleted']['products']);
+    }
+
     public function test_settings_defaults_order_cancel_positions_to_manager(): void
     {
         $this->seedCatalogue();

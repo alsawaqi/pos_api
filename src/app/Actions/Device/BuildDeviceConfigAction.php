@@ -562,12 +562,38 @@ class BuildDeviceConfigAction
             // since the cursor: the changed-rows list filters internal items
             // out, so without this purge a tile flipped internal after it
             // reached a device would linger on its menu forever.
+            //
+            // ALSO — a product DISABLED at THIS branch since the cursor
+            // (pos_branch_product.is_available flipped true→false via the
+            // merchant's SyncProductBranchesAction). That is a pivot-only
+            // write — NOT a soft-delete and NOT an is_internal flip — so
+            // neither source above catches it; the availability filter on the
+            // products query then omits it from the changed set, and the
+            // product payload carries no per-branch availability field for the
+            // device to filter on locally (unlike categories). Without this
+            // purge a tile already cached on a delta device would keep showing
+            // and selling forever until the next full re-sync (login/activate).
+            // Symmetric to the per-branch shelf-qty delta re-emit above: an
+            // EXISTS on THIS branch's pivot row changed after the cursor and
+            // now hidden. Scoped to the device's company via the Product query.
             'products' => array_values(array_unique(array_merge(
                 $this->trashedIds(Product::query()->where('company_id', $companyId), $since),
                 Product::query()
                     ->where('company_id', $companyId)
                     ->where('is_internal', true)
                     ->where('updated_at', '>', $since)
+                    ->pluck('id')
+                    ->map(fn ($id): int => (int) $id)
+                    ->all(),
+                Product::query()
+                    ->where('company_id', $companyId)
+                    ->whereExists(function ($sub) use ($since, $branchId): void {
+                        $sub->selectRaw('1')->from('pos_branch_product')
+                            ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
+                            ->where('pos_branch_product.branch_id', $branchId)
+                            ->where('pos_branch_product.updated_at', '>', $since)
+                            ->where('pos_branch_product.is_available', false);
+                    })
                     ->pluck('id')
                     ->map(fn ($id): int => (int) $id)
                     ->all(),

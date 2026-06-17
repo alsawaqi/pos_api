@@ -972,6 +972,13 @@ return new class extends Migration
             $table->string('client_event_id', 64)->nullable();
             $table->timestamp('occurred_at')->nullable();
             $table->timestamps();
+            // Commission settlement (admin-written; mirrored so the shared
+            // pos_sale_commissions shape matches prod). pos_api only writes the
+            // estimate (commission_amount); these stay NULL/false on its writes.
+            $table->decimal('settled_amount', 12, 3)->nullable();
+            $table->boolean('is_settled')->default(false);
+            $table->timestamp('settled_at')->nullable();
+            $table->unsignedBigInteger('settlement_id')->nullable();
             $table->unique(['order_id', 'sort_order'], 'pos_sale_commissions_order_sort_unique');
         });
 

@@ -175,6 +175,7 @@ class CreateOrderHandler implements SyncEventHandler
 
             $discountCount = $this->writeDiscounts($order, $model, $device, $itemIds);
             $compCount = $this->writeComps($order, $model, $device, $itemIds);
+            $joinedCount = $this->writeJoinedTables($order, $model);
 
             return [
                 'order_id' => (int) $model->id,
@@ -183,6 +184,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'order_status' => $status,
                 'discounts' => $discountCount,
                 'comps' => $compCount,
+                'joined_tables' => $joinedCount,
             ];
         });
     }
@@ -214,6 +216,47 @@ class CreateOrderHandler implements SyncEventHandler
         }
         OrderDiscount::query()->where('order_id', $order->id)->delete();
         OrderComp::query()->where('order_id', $order->id)->delete();
+        // Joined-table coverage rows (v2) — cleared on every upsert so a
+        // re-hold/finalize reinserts a fresh set.
+        DB::table('pos_order_tables')->where('order_id', $order->id)->delete();
+    }
+
+    /**
+     * Joined dine-in tables (v2) — one pos_order_tables row per EXTRA table the
+     * party's single shared order covered. The primary table_id (on pos_orders)
+     * is excluded so the order isn't double-listed under its own table.
+     * Tenant-validated in assertReferencesInTenant; runs inside the order write
+     * transaction after purgeOrderChildren cleared any prior rows.
+     *
+     * @param  array<string, mixed>  $order
+     */
+    private function writeJoinedTables(array $order, Order $model): int
+    {
+        $primaryId = isset($order['table_id']) ? (int) $order['table_id'] : null;
+        // A joined seat is meaningless without a primary table. Never record
+        // joined tables for a non-dine-in order (table_id null) even if the
+        // payload (a device bug / malformed input) carries some — that would
+        // surface a phantom sitting in the merchant per-table report.
+        if ($primaryId === null) {
+            return 0;
+        }
+        $joined = array_values(array_diff($this->joinedTableIds($order), [$primaryId]));
+        if ($joined === []) {
+            return 0;
+        }
+
+        $now = now();
+        DB::table('pos_order_tables')->insert(array_map(
+            static fn (int $tableId): array => [
+                'order_id' => (int) $model->id,
+                'table_id' => $tableId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            $joined,
+        ));
+
+        return count($joined);
     }
 
     /**
@@ -268,6 +311,34 @@ class CreateOrderHandler implements SyncEventHandler
             && ! Table::query()->where('company_id', $companyId)->whereKey($tableId)->exists()) {
             throw new RuntimeException('order references a table outside the device tenant');
         }
+
+        // Joined dine-in tables (v2) — every EXTRA table the shared order
+        // covered must also belong to the device's company (same guard as the
+        // primary table above, applied to the list).
+        $joinedTableIds = $this->joinedTableIds($order);
+        if ($joinedTableIds !== []) {
+            $ownedTables = Table::query()->where('company_id', $companyId)->whereIn('id', $joinedTableIds)->pluck('id')->all();
+            $foreignTables = array_diff($joinedTableIds, array_map('intval', $ownedTables));
+            if ($foreignTables !== []) {
+                throw new RuntimeException('order references joined table(s) outside the device tenant: '.implode(',', $foreignTables));
+            }
+        }
+    }
+
+    /**
+     * The de-duplicated, positive EXTRA joined table ids from the payload (the
+     * primary table_id is NOT stripped here — that happens at write time so the
+     * tenant guard validates the full set the device sent).
+     *
+     * @param  array<string, mixed>  $order
+     * @return list<int>
+     */
+    private function joinedTableIds(array $order): array
+    {
+        return array_values(array_unique(array_filter(
+            array_map('intval', (array) ($order['joined_table_ids'] ?? [])),
+            static fn (int $id): bool => $id > 0,
+        )));
     }
 
     /**
@@ -478,6 +549,11 @@ class CreateOrderHandler implements SyncEventHandler
             // P-F8 — optional printed receipt number (server-allocated or
             // the device's offline fallback); column is varchar(24).
             'receipt_number' => ['nullable', 'string', 'max:24'],
+            // Joined dine-in tables (v2) — the EXTRA table ids this one shared
+            // order covered (a party joined across tables). Tenant-validated in
+            // assertReferencesInTenant; the primary stays on table_id.
+            'joined_table_ids' => ['sometimes', 'array'],
+            'joined_table_ids.*' => ['integer', 'min:1'],
             'lines' => ['required', 'array', 'min:1'],
             'lines.*.product_id' => ['required', 'integer'],
             'lines.*.qty' => ['required', 'numeric', 'gt:0'],

@@ -606,6 +606,18 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        // Joined dine-in tables (v2) — the EXTRA tables a shared order covered
+        // (primary stays on pos_orders.table_id). FK-less per the api test
+        // convention. Mirrors pos_admin 2026_07_30_010000_create_pos_order_tables.
+        Schema::create('pos_order_tables', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('table_id')->nullable();
+            $table->timestamps();
+            $table->unique(['order_id', 'table_id'], 'pos_order_tables_order_table_unique');
+            $table->index(['table_id'], 'pos_order_tables_table_idx');
+        });
+
         // ---- Phase 8.10 discount-application records (order.create writes here) ----
         Schema::create('pos_order_discounts', function (Blueprint $table): void {
             $table->id();
@@ -1117,6 +1129,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_waste_records');
         Schema::dropIfExists('pos_stock_movements');
         Schema::dropIfExists('pos_payments');
+        Schema::dropIfExists('pos_order_tables');
         Schema::dropIfExists('pos_order_discounts');
         Schema::dropIfExists('pos_order_item_addons');
         Schema::dropIfExists('pos_order_items');

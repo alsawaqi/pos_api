@@ -455,6 +455,106 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertDatabaseCount('pos_orders', 0);
     }
 
+    public function test_order_create_records_joined_tables_excluding_the_primary(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_tables')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
+            ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T3'] + $t,
+        ]);
+
+        $uuid = (string) Str::uuid();
+        // The party's one order is billed on T1 (primary) and covers T2 + T3.
+        // Send the primary in joined_table_ids too, to prove it is stripped.
+        $r = $this->push('mdev_ord', [$this->createEvent($uuid, [
+            'table_id' => 1,
+            'joined_table_ids' => [1, 2, 3],
+        ])])->assertOk()->json('data.results.0');
+
+        $this->assertSame('processed', $r['status']);
+        $this->assertSame(2, (int) $r['result']['joined_tables']);
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $covered = DB::table('pos_order_tables')->where('order_id', $order->id)->pluck('table_id')->sort()->values()->all();
+        $this->assertSame([2, 3], array_map('intval', $covered)); // primary T1 excluded
+    }
+
+    public function test_order_create_rejects_a_joined_table_from_another_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_tables')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
+            ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'floor_id' => 1, 'label' => 'T99'] + $t,
+        ]);
+
+        $event = $this->createEvent((string) Str::uuid(), [
+            'table_id' => 1,
+            'joined_table_ids' => [99],
+        ]);
+        $r = $this->push('mdev_ord', [$event])->assertOk()->json('data.results.0');
+
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('joined table', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
+        $this->assertDatabaseCount('pos_order_tables', 0);
+    }
+
+    public function test_re_pushing_an_order_replaces_its_joined_table_set(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_tables')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
+            ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T3'] + $t,
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid, [
+            'table_id' => 1, 'joined_table_ids' => [2, 3],
+        ])])->assertOk();
+        $this->assertDatabaseCount('pos_order_tables', 2);
+
+        // Re-push the same uuid (a re-hold / finalize) with a smaller joined
+        // set — the stale T3 row must be purged, leaving only T2.
+        $this->push('mdev_ord', [$this->createEvent($uuid, [
+            'table_id' => 1, 'joined_table_ids' => [2],
+        ])])->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $covered = DB::table('pos_order_tables')->where('order_id', $order->id)->pluck('table_id')->all();
+        $this->assertSame([2], array_map('intval', $covered));
+        $this->assertDatabaseCount('pos_order_tables', 1);
+    }
+
+    public function test_joined_tables_are_ignored_on_a_non_dine_in_order(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_tables')->insert([
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
+        ]);
+
+        // A to_go order has no primary table — joined tables are meaningless
+        // and must NOT be recorded (no phantom sitting in the merchant report).
+        $uuid = (string) Str::uuid();
+        $r = $this->push('mdev_ord', [$this->createEvent($uuid, [
+            'order_type' => 'to_go',
+            'joined_table_ids' => [2],
+        ])])->assertOk()->json('data.results.0');
+
+        $this->assertSame('processed', $r['status']);
+        $this->assertSame(0, (int) $r['result']['joined_tables']);
+        $this->assertDatabaseCount('pos_order_tables', 0);
+    }
+
     public function test_order_create_accepts_a_customer_from_the_same_company(): void
     {
         $this->seedCatalogue();

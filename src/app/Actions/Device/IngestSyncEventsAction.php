@@ -17,7 +17,9 @@ use Illuminate\Support\Carbon;
  * The contract is EXACTLY-ONCE settlement keyed on (device_id, client_event_id):
  *  - First time we see an id → insert a `received` row, ACK { duplicate:false }.
  *  - Any later push of the same id → no second row, ACK { duplicate:true }
- *    re-returning the ORIGINAL row's id / status / result.
+ *    re-returning the ORIGINAL row's id / status / result. EXCEPTION: a row
+ *    left `failed` (its handler txn rolled back) is re-dispatched on re-push so
+ *    a transient fault isn't a permanent silent no-settle.
  *
  * That is what lets a terminal that was offline for hours blindly re-push
  * its whole backlog (or push it twice) and have it settle once. Inserts are
@@ -55,6 +57,23 @@ class IngestSyncEventsAction
                 ->first();
 
             if ($existing !== null) {
+                // A previously FAILED event is RETRIED, not swallowed. Its
+                // handler ran in one transaction that rolled back atomically on
+                // error (no partial settlement), so a transient fault (deadlock
+                // / lock-wait timeout / DB blip) would otherwise strand a real
+                // sale UNPAID with zero inventory deducted while the device's
+                // legitimate re-push is ACKed as a no-op duplicate. Re-dispatch
+                // it; if it now settles it stamps `processed`. received/processed
+                // events still ACK as the duplicate they are.
+                if ($existing->ack_status === SyncEvent::STATUS_FAILED) {
+                    $this->dispatcher->dispatch($existing, $device);
+                    $existing->refresh();
+                    $existing->ack_status === SyncEvent::STATUS_PROCESSED ? $accepted++ : $duplicates++;
+                    $results[] = $this->ack($existing, duplicate: true);
+
+                    continue;
+                }
+
                 $duplicates++;
                 $results[] = $this->ack($existing, duplicate: true);
 

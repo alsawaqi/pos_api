@@ -82,7 +82,25 @@ class PayOrderHandler implements SyncEventHandler
         $loyaltyRuleIds = $this->earnRuleIds($payload);
         $loyaltyRedeem = is_array($payload['loyalty_redeem'] ?? null) ? $payload['loyalty_redeem'] : null;
 
-        return DB::transaction(function () use ($order, $device, $event, $payments, $capturedAt, $loyaltyRuleIds, $loyaltyRedeem): array {
+        return DB::transaction(function () use ($order, $orderUuid, $device, $event, $payments, $capturedAt, $loyaltyRuleIds, $loyaltyRedeem): array {
+            // Re-read + lock the order INSIDE the txn before consuming inventory.
+            // The status guard above is unlocked, so two concurrent order.pay
+            // events with DIFFERENT client_event_ids (not caught by the sync
+            // de-dup) could both pass it and deduct stock twice. Locking the row
+            // and re-checking the terminal status here serialises them: the
+            // loser blocks until the winner commits, then sees STATUS_PAID and
+            // throws — exactly one consume() ever runs.
+            $order = Order::query()->whereKey($order->id)->lockForUpdate()->first();
+            if ($order === null || $order->status === Order::STATUS_PAID) {
+                throw new RuntimeException('order already paid: '.$orderUuid);
+            }
+            if ($order->status === Order::STATUS_VOID) {
+                throw new RuntimeException('cannot pay a voided order: '.$orderUuid);
+            }
+            if ($order->status === Order::STATUS_PENDING_VERIFICATION) {
+                throw new RuntimeException('cannot pay a pending-verification delivery order: '.$orderUuid);
+            }
+
             $paymentIds = [];
             $tenderedBaisas = 0;
             // Card-paid portion of this sale — drives the acquirer (bank)

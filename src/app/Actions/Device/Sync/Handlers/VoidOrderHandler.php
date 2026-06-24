@@ -80,11 +80,6 @@ class VoidOrderHandler implements SyncEventHandler
         }
 
         $voidedAt = isset($payload['voided_at']) ? Carbon::parse((string) $payload['voided_at']) : now();
-        // P-G7 — pending-verification delivery orders consumed inventory at
-        // intake, so a void must unwind them like a paid sale. Their OTHER
-        // effects never happened (no loyalty/round-up/commission for delivery
-        // orders), and each reversal below is a no-op against empty rows.
-        $wasPaid = in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true);
         $reason = isset($payload['reason']) ? (string) $payload['reason'] : null;
 
         // Phase B (Additions §1.2) — resolve the picked void reason code,
@@ -103,7 +98,22 @@ class VoidOrderHandler implements SyncEventHandler
         }
         $keepInventoryConsumed = $voidReason !== null && $voidReason->affects_inventory;
 
-        return DB::transaction(function () use ($order, $voidedAt, $wasPaid, $reason, $voidReason, $keepInventoryConsumed): array {
+        return DB::transaction(function () use ($order, $orderUuid, $voidedAt, $reason, $voidReason, $keepInventoryConsumed): array {
+            // Re-read + lock the order INSIDE the txn before reversing stock. The
+            // "already void" guard above is unlocked and is the SOLE idempotency
+            // mechanism, so two concurrent order.void events with DIFFERENT
+            // client_event_ids could both pass it and reverse() twice, over-
+            // restoring branch stock. Locking + re-checking here serialises them.
+            $order = Order::query()->whereKey($order->id)->lockForUpdate()->first();
+            if ($order === null || $order->status === Order::STATUS_VOID) {
+                throw new RuntimeException('order already void: '.$orderUuid);
+            }
+            // P-G7 — pending-verification delivery orders consumed inventory at
+            // intake, so a void must unwind them like a paid sale. Their OTHER
+            // effects never happened (no loyalty/round-up/commission for delivery
+            // orders), and each reversal below is a no-op against empty rows.
+            $wasPaid = in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true);
+
             $order->update([
                 'status' => Order::STATUS_VOID,
                 'closed_at' => $voidedAt,

@@ -279,6 +279,12 @@ class ConsumeInventoryAction
 
     private function move(int $branchId, int $ingredientId, float $qty, float $unitCost, string $type, int $orderId, ?int $staffId, Carbon $at): int
     {
+        // Round to ledger precision ONCE, then use the SAME value for the
+        // movement row AND the balance delta. The per-unit plan is 3dp but
+        // (plan × fractional item qty) can carry a 4th decimal; writing
+        // number_format(qty,3) to the movement while adding the raw float to
+        // the balance would drift Σ(movements) from branch_stock over time.
+        $qty = round($qty, 3);
         if ($qty === 0.0) {
             return 0;
         }
@@ -325,6 +331,9 @@ class ConsumeInventoryAction
      */
     private function moveProductStock(Order $order, int $productId, float $qty, ?int $staffId, Carbon $at, ?string $note = null): void
     {
+        // Same 3dp-once rule as move() — keep the product ledger row and the
+        // pos_branch_product.stock_qty balance in lockstep on fractional sales.
+        $qty = round($qty, 3);
         if ($qty === 0.0) {
             return;
         }

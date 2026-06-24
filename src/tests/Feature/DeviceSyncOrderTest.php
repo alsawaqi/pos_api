@@ -261,6 +261,92 @@ class DeviceSyncOrderTest extends TestCase
         }
     }
 
+    public function test_a_second_distinct_id_pay_does_not_double_deduct(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid), $this->payEvent($uuid)])->assertOk();
+
+        $this->assertDatabaseCount('pos_stock_movements', 2);
+        $this->assertEqualsWithDelta(4.5, (float) BranchStock::where(['branch_id' => 10, 'ingredient_id' => 1])->value('quantity'), 1e-9);
+
+        // A SECOND order.pay for the same order with a DIFFERENT client_event_id
+        // (not caught by the sync de-dup) must be refused by the in-transaction
+        // status guard — inventory is never deducted twice.
+        $res = $this->push('mdev_ord', [$this->payEvent($uuid)])->assertOk();
+        $r = $res->json('data.results.0');
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('already paid', $r['result']['error']);
+
+        $this->assertDatabaseCount('pos_stock_movements', 2); // still 2, no re-consume
+        $this->assertEqualsWithDelta(4.5, (float) BranchStock::where(['branch_id' => 10, 'ingredient_id' => 1])->value('quantity'), 1e-9);
+    }
+
+    public function test_fractional_quantity_keeps_movements_and_balance_in_lockstep(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $uuid = (string) Str::uuid();
+
+        // 0.25 qty x 0.25 L recipe = 0.0625 → rounds to 0.063. The movement row
+        // and the branch_stock balance must use the SAME rounded value, so
+        // Σ(movements) == balance exactly (no sub-0.001 drift).
+        $create = $this->createEvent($uuid, [
+            'subtotal_baisas' => 375,
+            'grand_total_baisas' => 375,
+            'lines' => [[
+                'product_id' => 1,
+                'qty' => 0.25,
+                'unit_price_baisas' => 1500,
+                'line_discount_baisas' => 0,
+                'line_total_baisas' => 375,
+                'addons' => [],
+            ]],
+        ]);
+        $this->push('mdev_ord', [$create, $this->payEvent($uuid, [['method' => 'cash', 'amount_baisas' => 375, 'change_given_baisas' => 0]])])->assertOk();
+
+        $balance = (float) BranchStock::where(['branch_id' => 10, 'ingredient_id' => 1])->value('quantity');
+        $movementSum = (float) \App\Models\StockMovement::where(['branch_id' => 10, 'ingredient_id' => 1])->sum('quantity');
+
+        // The ledger invariant: start + Σ(movements) == balance.
+        $this->assertEqualsWithDelta(5.0 + $movementSum, $balance, 1e-9);
+        // Pinned: rounded once to 0.063 (a raw-float balance would store 4.938).
+        $this->assertEqualsWithDelta(4.937, $balance, 1e-9);
+    }
+
+    public function test_a_failed_pay_event_is_retried_on_re_push(): void
+    {
+        $this->seedCatalogue();
+        $device = $this->device();
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk(); // order is OPEN
+
+        // Simulate a prior TRANSIENT failure: a `failed` ledger row whose handler
+        // txn rolled back (nothing settled). The device re-pushes the same id.
+        $pay = $this->payEvent($uuid);
+        \App\Models\SyncEvent::create([
+            'client_event_id' => $pay['client_event_id'],
+            'device_id' => $device->id,
+            'event_type' => 'order.pay',
+            'payload_json' => $pay['payload'],
+            'client_timestamp' => now(),
+            'server_received_at' => now(),
+            'ack_status' => \App\Models\SyncEvent::STATUS_FAILED,
+            'result_json' => ['error' => 'deadlock'],
+        ]);
+
+        $res = $this->push('mdev_ord', [$pay])->assertOk();
+        $r = $res->json('data.results.0');
+
+        // Re-dispatched (not swallowed): it now settles exactly once.
+        $this->assertTrue($r['duplicate']);
+        $this->assertSame('processed', $r['status']);
+        $this->assertSame('paid', Order::firstWhere('uuid', $uuid)->status);
+        $this->assertDatabaseCount('pos_stock_movements', 2);
+        $this->assertEqualsWithDelta(4.5, (float) BranchStock::where(['branch_id' => 10, 'ingredient_id' => 1])->value('quantity'), 1e-9);
+    }
+
     public function test_split_payment_records_a_row_per_tender(): void
     {
         $this->seedCatalogue();

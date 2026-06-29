@@ -1098,10 +1098,92 @@ return new class extends Migration
             $table->timestamps();
             $table->unique(['staff_message_id', 'staff_id'], 'pos_staff_message_reads_unique');
         });
+
+        // ---- Phase 3 — marketing sliders (advertising on the customer screen).
+        // content_assets is marketing-api-owned; the sliders/items/targets are
+        // pos_admin-owned; pos_api READS all four for the device-config slider
+        // slice. pos_marketing_impressions is pos_api-OWNED (display telemetry).
+
+        Schema::create('content_assets', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('advertiser_id')->nullable();
+            $table->string('type', 16)->default('image'); // image | video
+            $table->string('title')->nullable();
+            $table->string('status', 16)->default('draft');
+            $table->string('path')->nullable();
+            $table->string('thumbnail_path')->nullable();
+            $table->string('url')->nullable();
+            $table->string('thumbnail_url')->nullable();
+            $table->unsignedInteger('duration_seconds')->nullable();
+            $table->unsignedBigInteger('size_bytes')->nullable();
+            $table->unsignedInteger('width')->nullable();
+            $table->unsignedInteger('height')->nullable();
+            $table->timestamp('submitted_at')->nullable();
+            $table->timestamp('reviewed_at')->nullable();
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
+        Schema::create('pos_marketing_sliders', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->string('name');
+            $table->unsignedInteger('loop_interval_seconds')->default(6);
+            $table->string('status', 16)->default('draft');
+            $table->timestamp('starts_at')->nullable();
+            $table->timestamp('ends_at')->nullable();
+            $table->unsignedBigInteger('created_by_user_id')->nullable();
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
+        Schema::create('pos_marketing_slider_items', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('slider_id');
+            $table->unsignedBigInteger('content_asset_id');
+            $table->unsignedBigInteger('advertiser_id')->nullable();
+            $table->unsignedInteger('sort_order')->default(0);
+            $table->unsignedInteger('duration_seconds')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_marketing_slider_targets', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('slider_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('pos_marketing_impressions', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->unsignedBigInteger('company_id')->nullable();
+            $table->unsignedBigInteger('branch_id')->nullable();
+            $table->unsignedBigInteger('slider_id')->nullable();
+            $table->unsignedBigInteger('slider_item_id')->nullable();
+            $table->unsignedBigInteger('content_asset_id')->nullable();
+            $table->unsignedBigInteger('advertiser_id')->nullable();
+            $table->unsignedInteger('play_duration_ms')->default(0);
+            // Anonymous audience measurement (null = not measured on this play).
+            $table->unsignedInteger('viewers_peak')->nullable();
+            $table->unsignedInteger('viewers_avg')->nullable();
+            $table->unsignedInteger('viewers_distinct')->nullable();
+            $table->unsignedInteger('attention_ms')->nullable();
+            $table->uuid('client_event_id')->nullable();
+            $table->timestamp('played_at')->nullable();
+            $table->timestamps();
+            $table->unique(['device_id', 'client_event_id']);
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_marketing_impressions');
+        Schema::dropIfExists('pos_marketing_slider_targets');
+        Schema::dropIfExists('pos_marketing_slider_items');
+        Schema::dropIfExists('pos_marketing_sliders');
+        Schema::dropIfExists('content_assets');
         Schema::dropIfExists('pos_staff_message_reads');
         Schema::dropIfExists('pos_staff_messages');
         Schema::dropIfExists('pos_production_lines');

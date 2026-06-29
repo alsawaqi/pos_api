@@ -82,6 +82,9 @@ class SyncEvent extends Model
         'product.waste',
         'shift.open',
         'shift.close',
+        // Phase 3 — advertising slider play-time telemetry from the customer
+        // screen: one event per slide shown (→ pos_marketing_impressions).
+        'slider.display',
         // Reserved no-op: ingested + ACKed but has NO domain handler, so it
         // settles as 'received'. Lets the ingestion pipe be exercised in
         // isolation and stays a stable placeholder as handlers are added

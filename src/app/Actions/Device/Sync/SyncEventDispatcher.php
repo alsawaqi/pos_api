@@ -15,6 +15,7 @@ use App\Actions\Device\Sync\Handlers\OpenShiftHandler;
 use App\Actions\Device\Sync\Handlers\PayOrderHandler;
 use App\Actions\Device\Sync\Handlers\ProductWasteHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
+use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
 use App\Actions\Device\Sync\Handlers\StockCountHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Events\DeviceSyncBroadcast;
@@ -49,6 +50,7 @@ class SyncEventDispatcher
         private readonly DonationRecordHandler $donationRecord,
         private readonly StockCountHandler $stockCount,
         private readonly ProductWasteHandler $productWaste,
+        private readonly SliderDisplayHandler $sliderDisplay,
     ) {}
 
     public function dispatch(SyncEvent $event, Device $device): void
@@ -66,6 +68,7 @@ class SyncEventDispatcher
             'donation.record' => $this->donationRecord,
             'stock.count' => $this->stockCount,
             'product.waste' => $this->productWaste,
+            'slider.display' => $this->sliderDisplay,
             default => null,
         };
 

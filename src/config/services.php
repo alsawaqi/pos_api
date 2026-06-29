@@ -45,4 +45,13 @@ return [
         'timeout' => (int) env('CHARITY_API_TIMEOUT', 8),
     ],
 
+    // Marketing-api public base. Advertiser content (slider images/videos) lives
+    // on the marketing-api app's `public` disk; it leaves the `url` column null
+    // and computes URLs at read time. The device-config slider slice rebuilds an
+    // absolute URL from the stored `path` + this base, so it must be a host the
+    // DEVICE can reach (dev: localhost:8089; prod: the public marketing URL).
+    'marketing' => [
+        'public_url' => env('MARKETING_PUBLIC_URL', 'http://localhost:8089'),
+    ],
+
 ];

@@ -18,6 +18,8 @@ use App\Models\Floor;
 use App\Models\Ingredient;
 use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyRule;
+use App\Models\MarketingSlider;
+use App\Models\MarketingSliderItem;
 use App\Models\Offer;
 use App\Models\PosStaff;
 use App\Models\Product;
@@ -245,6 +247,33 @@ class BuildDeviceConfigAction
             $since
         )->get();
 
+        // ---- Phase 3 — marketing sliders (platform advertising loop on the
+        // customer screen). The ONE slice that is NOT company-scoped: the
+        // platform sells ad time across merchants, so a slider reaches THIS
+        // device when it is `active`, inside its validity window, and either
+        // targets this device, targets this device's branch (device_id null),
+        // or has no targets at all (= everywhere). The full matching set rides
+        // on EVERY pull (full + delta, like `settings`) and the device replaces
+        // its slider set wholesale — so item/target edits propagate without
+        // per-row delta bookkeeping or a deleted.sliders purge list. Small by
+        // nature (a handful of loops, a few items each).
+        $now = now();
+        $sliders = MarketingSlider::query()
+            ->where('status', 'active')
+            ->where(fn (Builder $q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $now))
+            ->where(fn (Builder $q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $now))
+            ->where(function (Builder $q) use ($device, $branchId): void {
+                $q->whereHas('targets', function (Builder $t) use ($device, $branchId): void {
+                    $t->where('device_id', $device->id)
+                        ->orWhere(function (Builder $w) use ($branchId): void {
+                            $w->whereNull('device_id')->where('branch_id', $branchId);
+                        });
+                })->orWhereDoesntHave('targets');
+            })
+            ->with(['items' => fn ($q) => $q->orderBy('sort_order'), 'items.contentAsset'])
+            ->orderBy('id')
+            ->get();
+
         // ---- P-G6 — staff announcements (portal → device). The device
         // shows company-wide + this-branch messages to whoever is on the
         // till, and staff-targeted ones only to that logged-in staff
@@ -396,6 +425,7 @@ class BuildDeviceConfigAction
                 $targetsByDiscount->get($d->id),
             ))->all(),
             'offers' => $offers->map(fn (Offer $o): array => $this->mapOffer($o))->all(),
+            'sliders' => $sliders->map(fn (MarketingSlider $s): array => $this->mapSlider($s))->all(),
             'staff_messages' => $staffMessages->map(fn (StaffMessage $m): array => $this->mapStaffMessage(
                 $m,
                 $readsByMessage->get($m->id),
@@ -1127,6 +1157,42 @@ class BuildDeviceConfigAction
             'branch_scope_json' => $o->branch_scope_json,
             'max_per_order' => $o->max_per_order !== null ? (int) $o->max_per_order : null,
             'config' => $o->config,
+        ];
+    }
+
+    /**
+     * Phase 3 — a marketing slider in the device shape: the ordered loop + each
+     * slide's media. Items with a missing or not-yet-approved asset are dropped
+     * (an asset can be un-approved after it was added). `duration_seconds` is the
+     * on-screen time the device honours for BOTH images and (capped) videos,
+     * falling back to the slider's loop interval. URLs are absolute + device-
+     * reachable (rebuilt from the marketing public base).
+     */
+    private function mapSlider(MarketingSlider $s): array
+    {
+        $items = $s->items
+            ->filter(fn (MarketingSliderItem $i): bool => $i->contentAsset !== null
+                && in_array($i->contentAsset->status, ['approved', 'live'], true)
+                && $i->contentAsset->public_url !== null)
+            ->values()
+            ->map(fn (MarketingSliderItem $i): array => [
+                'id' => (int) $i->id,
+                'content_asset_id' => (int) $i->content_asset_id,
+                'advertiser_id' => $i->advertiser_id !== null ? (int) $i->advertiser_id : null,
+                'sort_order' => (int) $i->sort_order,
+                'duration_seconds' => (int) ($i->duration_seconds ?: $s->loop_interval_seconds),
+                'type' => $i->contentAsset->type,
+                'url' => $i->contentAsset->public_url,
+                'thumbnail_url' => $i->contentAsset->thumbnail_public_url,
+            ])
+            ->all();
+
+        return [
+            'id' => (int) $s->id,
+            'uuid' => $s->uuid,
+            'name' => $s->name,
+            'loop_interval_seconds' => (int) $s->loop_interval_seconds,
+            'items' => $items,
         ];
     }
 

@@ -54,7 +54,14 @@ services:
     depends_on:
       - pos_api
     networks:
-      - charity_net
+      # Unique alias so broadcasters target THIS reverb explicitly. The bare
+      # service name `reverb` is AMBIGUOUS on the shared external charity_net
+      # (charity-laravel-api also runs a `reverb` service), so the bare name
+      # resolves to the wrong server and broadcasts miss the devices subscribed
+      # here. pos_api + pos_admin both set REVERB_HOST=pos_api_reverb.
+      charity_net:
+        aliases:
+          - pos_api_reverb
 
   # NOTE: this is a JSON-only device API — no Vue frontend — so the vite
   # service isn't needed and can be deleted. Port bumped 5175 -> 5176 only
@@ -65,7 +72,7 @@ services:
       volumes:
          - ./src:/var/www/html
       ports:
-        - "5176:5174"
+        - "5176:5176"
       environment:
         - CHOKIDAR_USEPOLLING=true
         - CHOKIDAR_INTERVAL=200

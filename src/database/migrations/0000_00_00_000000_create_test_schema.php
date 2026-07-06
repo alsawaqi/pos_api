@@ -49,6 +49,7 @@ return new class extends Migration
             $table->smallInteger('last_battery')->nullable();
             $table->json('metadata')->nullable();
             $table->string('terminal_id', 64)->nullable();
+            $table->string('terminal_pin', 32)->nullable();
             $table->unsignedBigInteger('commission_profile_id')->nullable();
             $table->unsignedBigInteger('bank_id')->nullable();
             $table->unsignedBigInteger('organization_id')->nullable();
@@ -530,6 +531,13 @@ return new class extends Migration
             $table->unsignedBigInteger('company_id');
             $table->unsignedBigInteger('branch_id');
             $table->unsignedBigInteger('device_id')->nullable();
+            // Device-to-device order transfer (mirrors pos_admin's
+            // 2026_07_31_010000 migration). A held order addressed to
+            // transferred_to_device_id waits in that device's inbox until it
+            // claims (clears the target) — see TransferOrderHandler.
+            $table->unsignedBigInteger('transferred_to_device_id')->nullable();
+            $table->unsignedBigInteger('transferred_from_device_id')->nullable();
+            $table->timestamp('transferred_at')->nullable();
             $table->decimal('latitude', 10, 7)->nullable();
             $table->decimal('longitude', 10, 7)->nullable();
             $table->unsignedBigInteger('staff_id')->nullable();

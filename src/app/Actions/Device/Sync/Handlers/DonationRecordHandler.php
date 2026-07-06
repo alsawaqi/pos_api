@@ -89,8 +89,22 @@ class DonationRecordHandler implements SyncEventHandler
 
         $branch = Branch::query()->find($device->branch_id);
 
-        $receipt = is_array($payload['receipt'] ?? null) ? $payload['receipt'] : null;
-        $status = $this->statusFromReceipt($receipt);
+        // The device does NOT resend the bank receipt on donation.record — the
+        // authoritative Soft POS receipt lives on the CARD payment this round-up
+        // rides. Use it so the pos_roundup_donations row (and the forwarded
+        // charity_transaction) store the real bank response, falling back to any
+        // receipt the payload did carry.
+        $receipt = is_array($payment->bank_response)
+            ? $payment->bank_response
+            : (is_array($payload['receipt'] ?? null) ? $payload['receipt'] : null);
+
+        // A round-up is only forwarded once the money is confirmed. A settled
+        // ride ⇒ 'success'; a still-pending ride ⇒ 'pending' until the platform
+        // admin approves it (pos_admin ReconcileDeferredEffectsAction flips it to
+        // 'success' when it forwards). This replaces the old receipt-derived
+        // status that always fell through to 'pending' (the device sends no
+        // receipt) and mis-filed every forwarded round-up as 'fail' at charity.
+        $status = $orderHasPendingTender ? 'pending' : 'success';
         $amount = Money::toOmr((int) $payload['amount_baisas']);
 
         $result = DB::transaction(function () use ($payload, $event, $device, $order, $payment, $branch, $receipt, $status, $amount): array {
@@ -144,7 +158,7 @@ class DonationRecordHandler implements SyncEventHandler
         // money not confirmed ⇒ nothing goes to charity yet. forwarded_at
         // stays NULL and pos_admin forwards it on reconciliation approval.
         if (! $orderHasPendingTender) {
-            $forwarded = $this->charityForwarder->forward($device, $branch, $amount, $receipt);
+            $forwarded = $this->charityForwarder->forward($device, $branch, $amount, $receipt, $status);
             if ($forwarded) {
                 RoundupDonation::query()
                     ->whereKey($result['roundup_donation_id'])
@@ -169,17 +183,5 @@ class DonationRecordHandler implements SyncEventHandler
             ->where('method', Payment::METHOD_CARD)
             ->latest('id')
             ->first();
-    }
-
-    /**
-     * @param  array<string, mixed>|null  $receipt
-     */
-    private function statusFromReceipt(?array $receipt): string
-    {
-        if ($receipt === null || ! isset($receipt['status'])) {
-            return 'pending';
-        }
-
-        return strtolower(trim((string) $receipt['status'])) === 'success' ? 'success' : 'fail';
     }
 }

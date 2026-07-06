@@ -23,6 +23,7 @@ class DeviceActivateTest extends TestCase
         $device = Device::factory()->create([
             'kiosk_id' => 'KIOSK-ACT',
             'terminal_id' => 'TERM-ACT',
+            'terminal_pin' => '4821',
         ]);
         DeviceActivationToken::factory()->for($device)->forPlaintext('code_abc')->create();
 
@@ -31,6 +32,7 @@ class DeviceActivateTest extends TestCase
         $this->assertNotEmpty($res->json('data.device_token'));
         $this->assertSame('KIOSK-ACT', $res->json('data.device.kiosk_id'));
         $this->assertSame('TERM-ACT', $res->json('data.device.terminal_id'));
+        $this->assertSame('4821', $res->json('data.device.terminal_pin'));
         $this->assertSame((int) $device->company_id, $res->json('data.device.company_id'));
 
         $device->refresh();

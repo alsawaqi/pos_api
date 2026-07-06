@@ -17,6 +17,7 @@ use App\Actions\Device\Sync\Handlers\ProductWasteHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
 use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
 use App\Actions\Device\Sync\Handlers\StockCountHandler;
+use App\Actions\Device\Sync\Handlers\TransferOrderHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
@@ -40,6 +41,7 @@ class SyncEventDispatcher
     public function __construct(
         private readonly CreateOrderHandler $createOrder,
         private readonly HoldOrderHandler $holdOrder,
+        private readonly TransferOrderHandler $transferOrder,
         private readonly PayOrderHandler $payOrder,
         private readonly DeliverOrderHandler $deliverOrder,
         private readonly VoidOrderHandler $voidOrder,
@@ -58,6 +60,7 @@ class SyncEventDispatcher
         $handler = match ($event->event_type) {
             'order.create' => $this->createOrder,
             'order.hold' => $this->holdOrder,
+            'order.transfer' => $this->transferOrder,
             'order.pay' => $this->payOrder,
             'order.deliver' => $this->deliverOrder,
             'order.void' => $this->voidOrder,

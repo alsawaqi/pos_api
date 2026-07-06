@@ -36,6 +36,9 @@ class ForwardCharityDonationAction
     /**
      * @param  string  $amountOmr  the round-up amount as a decimal OMR string
      * @param  array<string, mixed>|null  $receipt  the bank receipt (bank_response)
+     * @param  string|null  $status  explicit settlement outcome ('success' once
+     *                               the ride card is confirmed) — the charity
+     *                               app honours this over receipt['status'].
      * @return bool true when the charity app accepted the forward
      */
     public function forward(
@@ -43,6 +46,7 @@ class ForwardCharityDonationAction
         ?Branch $branch,
         string $amountOmr,
         ?array $receipt,
+        ?string $status = null,
     ): bool {
         $baseUrl = rtrim((string) config('services.charity.url'), '/');
         if ($baseUrl === '') {
@@ -56,12 +60,19 @@ class ForwardCharityDonationAction
                 ->post($baseUrl.'/api/donations-pos-roundup', [
                     'pos_device_id' => $device->getKey(),
                     'pos_branch_id' => $device->branch_id,
+                    // Snapshot the merchant branch NAME so charity reporting can
+                    // show it without joining the pos-owned pos_branches table.
+                    'pos_branch_name' => $branch?->name,
                     // The device's CHARITY commission profile drives the shares;
                     // organization_id is the beneficiary org assigned in pos_admin.
                     'commission_profile_id' => $device->commission_profile_id,
                     'organization_id' => $device->organization_id,
                     'amount' => $amountOmr,
                     'receipt' => $receipt,
+                    // Confirmed settlement outcome — wins over receipt['status']
+                    // on the charity side so a settled round-up is never mis-filed
+                    // as 'fail' when the device didn't resend the bank receipt.
+                    'status' => $status,
                     'terminal_id' => $device->terminal_id,
                     'bank_id' => $device->bank_id,
                     // Geo copied from the POS branch (same id-space as charity geo).

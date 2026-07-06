@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
 use App\Http\Controllers\Api\V1\Auth\VerifyKitchenPinController;
 use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
+use App\Http\Controllers\Api\V1\Device\DeviceBranchDevicesController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
@@ -17,6 +18,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
+use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use Illuminate\Http\Request;
@@ -97,6 +99,13 @@ Route::prefix('v1')->group(function (): void {
         // active orders, customer lookup by phone/plate, register a customer.
         Route::get('device/orders/active', [DeviceOrdersController::class, 'active'])->name('device.orders.active');
         Route::get('device/orders/history', [DeviceOrdersController::class, 'history'])->name('device.orders.history');
+
+        // Device-to-device order transfer: the picker's device list, the
+        // receiving device's inbox, and the atomic claim. The SEND leg rides
+        // the order.transfer sync event (idempotent, upserts the held mirror).
+        Route::get('device/branch-devices', DeviceBranchDevicesController::class)->name('device.branch-devices');
+        Route::get('device/transfers/incoming', [DeviceTransfersController::class, 'incoming'])->name('device.transfers.incoming');
+        Route::post('device/transfers/{uuid}/claim', [DeviceTransfersController::class, 'claim'])->name('device.transfers.claim');
         // P-F8 — atomically allocate the next merchant-defined order
         // number (prefix + zero-padded counter) at payment time. 409
         // numbering_disabled when the merchant hasn't enabled the policy.

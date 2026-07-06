@@ -62,6 +62,8 @@ class Order extends Model
             'longitude' => 'decimal:7',
             'opened_at' => 'datetime',
             'closed_at' => 'datetime',
+            // Device-to-device order transfer.
+            'transferred_at' => 'datetime',
             // P-G7 — delivery-provider lifecycle.
             'delivery_commission_percent' => 'decimal:2',
             'delivery_expected_payout' => 'decimal:3',

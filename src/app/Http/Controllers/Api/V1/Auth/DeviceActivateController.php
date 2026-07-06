@@ -42,6 +42,7 @@ class DeviceActivateController
                     'branch_id' => (int) $device->branch_id,
                     'kiosk_id' => $device->kiosk_id,
                     'terminal_id' => $device->terminal_id,
+                    'terminal_pin' => $device->terminal_pin,
                     'name' => $device->name,
                 ],
             ],

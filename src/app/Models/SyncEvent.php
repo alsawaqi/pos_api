@@ -66,6 +66,10 @@ class SyncEvent extends Model
         // Phase C2 — mirror a held (parked) order server-side so it survives
         // a device wipe and is visible to the branch's other terminals.
         'order.hold',
+        // Device-to-device transfer: park an unpaid order (held mirror)
+        // addressed to another device in the same branch. Upserts through the
+        // exact order.hold path, then stamps the transfer target.
+        'order.transfer',
         'order.pay',
         // P-G7 — close a no-tender delivery-provider order as pending
         // verification (consumes inventory; money waits for the merchant's

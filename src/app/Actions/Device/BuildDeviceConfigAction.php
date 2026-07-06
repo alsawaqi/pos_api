@@ -453,6 +453,10 @@ class BuildDeviceConfigAction
                 'company_id' => $companyId,
                 'branch_id' => $branchId,
                 'terminal_id' => $device->terminal_id,
+                // Per-device Mosambee Soft-POS terminal PIN (bank-issued at
+                // assignment). Null when unset — devices fall back to the
+                // Mosambee default and MUST clear their cached copy on null.
+                'terminal_pin' => $device->terminal_pin,
                 // Phase C3 (§9.3/§11.5) — where the device should dial its
                 // Reverb WebSocket. Null when broadcasting isn't configured.
                 'websocket' => $this->websocketMeta(),

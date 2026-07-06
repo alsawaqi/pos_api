@@ -150,17 +150,59 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertDatabaseCount('pos_roundup_donations', 0);
     }
 
-    public function test_donation_status_follows_the_bank_receipt(): void
+    public function test_donation_status_reflects_the_card_settlement_not_a_payload_receipt(): void
     {
         $this->device();
         $this->seedBranch();
-        $this->seedOrderAndCard();
+        $this->seedOrderAndCard(); // settled card
 
+        // A stray payload receipt no longer decides the status — the CONFIRMED
+        // card settlement does. The device does not resend a receipt in
+        // practice, so a settled ride is always 'success'.
         $res = $this->push('mdev_x', [$this->donationEvent(['receipt' => ['status' => 'timeout']])])->assertOk();
 
         $this->assertSame('processed', $res->json('data.results.0.status'));
-        $this->assertSame('fail', $res->json('data.results.0.result.status'));
-        $this->assertSame('fail', RoundupDonation::firstOrFail()->status);
+        $this->assertSame('success', $res->json('data.results.0.result.status'));
+        $this->assertSame('success', RoundupDonation::firstOrFail()->status);
+    }
+
+    public function test_forwarded_receipt_and_status_come_from_the_card_when_the_device_sends_none(): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $this->device();
+        $this->seedBranch();
+        $orderId = DB::table('pos_orders')->insertGetId([
+            'uuid' => 'order-uuid-1', 'company_id' => 100, 'branch_id' => 10,
+            'order_type' => 'quick', 'status' => 'paid', 'source' => 'main_pos',
+            'subtotal' => '4.800', 'discount_total' => 0, 'tax_total' => 0, 'grand_total' => '4.800',
+            'opened_at' => now(), 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('pos_payments')->insert([
+            'uuid' => (string) Str::uuid(), 'order_id' => $orderId, 'method' => 'card',
+            'amount' => '5.000', 'status' => 'success', 'pending_reconciliation' => false,
+            'bank_response' => json_encode(['rrn' => 'RRN-1', 'approvalCode' => 'A1']),
+            'captured_at' => now(), 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        // The device sends NO receipt on donation.record (the real payload).
+        $event = $this->donationEvent();
+        unset($event['payload']['receipt']);
+        $this->push('mdev_x', [$event])->assertOk();
+
+        // The forward carries the CARD's real bank response + an explicit
+        // success status, so charity never mis-files the round-up as 'fail'.
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/donations-pos-roundup')
+                && $request['status'] === 'success'
+                && ($request['receipt']['rrn'] ?? null) === 'RRN-1';
+        });
+
+        $donation = RoundupDonation::firstOrFail();
+        $this->assertSame('success', $donation->status);
+        $this->assertSame('RRN-1', $donation->bank_response['rrn']);
+        $this->assertNotNull($donation->forwarded_at);
     }
 
     public function test_donation_is_forwarded_to_the_charity_pos_roundup_endpoint(): void
@@ -181,10 +223,12 @@ class DeviceSyncDonationTest extends TestCase
             return str_contains($request->url(), '/api/donations-pos-roundup')
                 && $request['pos_device_id'] === $device->id
                 && $request['pos_branch_id'] === 10
+                && $request['pos_branch_name'] === 'Main'
                 && $request['commission_profile_id'] === 7
                 && $request['organization_id'] === 3
                 && $request['bank_id'] === 5
                 && $request['amount'] === '0.200'
+                && $request['status'] === 'success'
                 && $request['terminal_id'] === 'TID-9'
                 && $request['country_id'] === 1
                 && ($request['receipt']['status'] ?? null) === 'success';
@@ -213,10 +257,11 @@ class DeviceSyncDonationTest extends TestCase
 
         $res = $this->push('mdev_x', [$this->donationEvent()])->assertOk();
 
-        // Recorded as usual — payment linked, amount snapshotted…
+        // Recorded as usual — payment linked, amount snapshotted, held 'pending'
+        // (money not confirmed) until the admin approves it…
         $this->assertSame('processed', $res->json('data.results.0.status'));
         $this->assertDatabaseHas('pos_roundup_donations', [
-            'order_id' => $orderId, 'payment_id' => $paymentId,
+            'order_id' => $orderId, 'payment_id' => $paymentId, 'status' => 'pending',
         ]);
 
         // …but nothing went to charity: money not confirmed yet.

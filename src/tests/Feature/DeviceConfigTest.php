@@ -262,6 +262,10 @@ class DeviceConfigTest extends TestCase
         $this->assertSame('baisas', $res->json('meta.money_unit'));
         $this->assertSame(100, $res->json('meta.company_id'));
         $this->assertSame(10, $res->json('meta.branch_id'));
+        // Mosambee terminal PIN: key always present, null when unassigned so
+        // the device clears its cache and reverts to the built-in default.
+        $this->assertArrayHasKey('terminal_pin', $res->json('meta'));
+        $this->assertNull($res->json('meta.terminal_pin'));
 
         // Branch + structure (branch 11 / company 200 excluded)
         $this->assertSame(10, $data['branch']['id']);
@@ -346,6 +350,32 @@ class DeviceConfigTest extends TestCase
         // Nothing from company 200 leaked
         $this->assertNotContains(99, collect($data['products'])->pluck('id')->all());
         $this->assertNotContains('otherco', collect($data['expense_categories'])->pluck('key')->all());
+    }
+
+    /**
+     * A bank-issued Mosambee terminal PIN on the device surfaces as
+     * meta.terminal_pin on BOTH the full config and the delta (they share one
+     * builder) so the device can cache it beside terminal_id.
+     */
+    public function test_meta_terminal_pin_is_returned_on_full_and_delta_config(): void
+    {
+        $this->seedCatalogue();
+        Device::factory()->paired('mdev_cfg')->create([
+            'company_id' => 100,
+            'branch_id' => 10,
+            'terminal_id' => 'TERM-PIN',
+            'terminal_pin' => '4821',
+        ]);
+
+        $full = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk();
+        $this->assertSame('TERM-PIN', $full->json('meta.terminal_id'));
+        $this->assertSame('4821', $full->json('meta.terminal_pin'));
+
+        $delta = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode(now()->subHour()->toIso8601String()))
+            ->assertOk();
+        $this->assertSame('delta', $delta->json('meta.mode'));
+        $this->assertSame('4821', $delta->json('meta.terminal_pin'));
     }
 
     public function test_full_config_excludes_soft_deleted_rows(): void

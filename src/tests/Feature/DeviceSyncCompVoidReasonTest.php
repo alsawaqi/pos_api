@@ -28,6 +28,14 @@ class DeviceSyncCompVoidReasonTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Phase 4 — the order cashier (7) + the comp approver (9) both belong
+        // to the device tenant (company 100).
+        $this->seedPosStaff([7, 9]);
+    }
+
     private function device(string $token = 'mdev_cv', int $company = 100, int $branch = 10): Device
     {
         return Device::factory()->paired($token)->create(['company_id' => $company, 'branch_id' => $branch]);
@@ -172,6 +180,32 @@ class DeviceSyncCompVoidReasonTest extends TestCase
         ]);
         // The line comp ties to the created order item.
         $this->assertNotNull(DB::table('pos_order_comps')->value('order_item_id'));
+    }
+
+    public function test_comp_rejects_an_approver_from_another_company(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+        // Staff 77 exists, but in another company — a device must not attribute
+        // a manager comp approval to a foreign staff id (audit integrity).
+        $this->seedPosStaff([77], companyId: 200, branchId: 20);
+
+        $res = $this->push('mdev_cv', [$this->createEvent((string) Str::uuid(), [
+            'comp_total_baisas' => 1500,
+            'grand_total_baisas' => 1500,
+            'comps' => [[
+                'comp_reason_id' => 2,
+                'amount_baisas' => 1500,
+                'line_index' => 0,
+                'staff_id' => 77,
+            ]],
+        ])])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('approver outside the device tenant', $res->json('data.results.0.result.error'));
+        $this->assertDatabaseCount('pos_orders', 0);
+        $this->assertDatabaseCount('pos_order_comps', 0);
     }
 
     public function test_comp_exceeding_the_reason_cap_fails_the_event(): void

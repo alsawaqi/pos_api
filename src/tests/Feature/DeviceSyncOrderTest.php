@@ -31,6 +31,13 @@ class DeviceSyncOrderTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Phase 4 — the order.create staff_id guard needs cashier 7 in the tenant.
+        $this->seedPosStaff([7]);
+    }
+
     private function device(string $token = 'mdev_ord', int $company = 100, int $branch = 10): Device
     {
         return Device::factory()->paired($token)->create(['company_id' => $company, 'branch_id' => $branch]);
@@ -539,6 +546,38 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertSame('failed', $r['status']);
         $this->assertStringContainsString('table', $r['result']['error']);
         $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_order_create_rejects_a_staff_member_from_another_company(): void
+    {
+        $this->seedCatalogue();
+        $this->device(); // company 100 / branch 10 (cashier 7 is seeded in setUp)
+        // A staff row that exists, but in a DIFFERENT company — a device must
+        // not stamp its order (→ stock movements' recorded_by + the Z-report
+        // drawer attribution) with a foreign cashier's id.
+        $this->seedPosStaff([88], companyId: 200, branchId: 20);
+
+        $event = $this->createEvent((string) Str::uuid(), ['staff_id' => 88]);
+        $r = $this->push('mdev_ord', [$event])->assertOk()->json('data.results.0');
+
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('staff member outside the device tenant', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_order_create_accepts_a_soft_deleted_staff_member(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        // An offline order queued by a since-terminated cashier must still
+        // settle — the guard is withTrashed-tolerant.
+        DB::table('pos_staff')->where('id', 7)->update(['deleted_at' => now()]);
+
+        $uuid = (string) Str::uuid();
+        $r = $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk()->json('data.results.0');
+
+        $this->assertSame('processed', $r['status']);
+        $this->assertSame(7, (int) Order::firstWhere('uuid', $uuid)->staff_id);
     }
 
     public function test_order_create_records_joined_tables_excluding_the_primary(): void

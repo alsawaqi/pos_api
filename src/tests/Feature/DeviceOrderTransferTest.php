@@ -24,6 +24,14 @@ class DeviceOrderTransferTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Phase 4 — the transferred order's cashier (7, source) and the
+        // claimer's cashier (9, on pay) both belong to the device tenant.
+        $this->seedPosStaff([7, 9]);
+    }
+
     private function device(string $token, int $company = 100, int $branch = 10, string $name = 'Device', string $type = 'pos_terminal'): Device
     {
         return Device::factory()->paired($token)->create([

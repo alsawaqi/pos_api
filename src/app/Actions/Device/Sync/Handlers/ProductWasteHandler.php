@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\BranchProduct;
 use App\Models\Device;
 use App\Models\Product;
@@ -61,10 +62,11 @@ class ProductWasteHandler implements SyncEventHandler
         $wastedAt = isset($payload['wasted_at'])
             ? Carbon::parse((string) $payload['wasted_at'])
             : ($event->client_timestamp ?? now());
-        // The acting staff id is recorded as sent by the device (the device's
-        // authenticated session is the trust boundary), matching the stock.count
-        // flow — we don't re-verify it here.
+        // Phase 4 — the recorded_by staff id (an audit column) must be a staff
+        // member of the device's own company; withTrashed keeps offline-queued
+        // events by a since-terminated recorder settling.
         $staffId = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
+        TenantReferenceGuard::assertStaffInTenant($device, $staffId, 'product.waste references a staff member outside the device tenant');
         $note = isset($payload['note']) && trim((string) $payload['note']) !== '' ? trim((string) $payload['note']) : null;
 
         // Resolve + validate every line BEFORE writing, so a bad line fails the

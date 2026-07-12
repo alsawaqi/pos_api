@@ -6,6 +6,7 @@ namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\AddOn;
 use App\Models\Branch;
 use App\Models\CompReason;
@@ -312,6 +313,14 @@ class CreateOrderHandler implements SyncEventHandler
             throw new RuntimeException('order references a table outside the device tenant');
         }
 
+        // Phase 4 — attribution integrity: the order's cashier (pos_orders.staff_id
+        // → every stock movement's recorded_by + the shared-shift cash/Z-report
+        // attribution) must be a staff member of the device's own company.
+        // withTrashed: a since-terminated cashier's offline-queued order still
+        // settles.
+        $staffId = isset($order['staff_id']) ? (int) $order['staff_id'] : null;
+        TenantReferenceGuard::assertStaffInTenant($device, $staffId, 'order references a staff member outside the device tenant');
+
         // Joined dine-in tables (v2) — every EXTRA table the shared order
         // covered must also belong to the device's company (same guard as the
         // primary table above, applied to the list).
@@ -403,7 +412,11 @@ class CreateOrderHandler implements SyncEventHandler
                 'branch_id' => $device->branch_id,
                 'order_id' => $model->id,
                 'order_item_id' => $lineIndex !== null ? ($itemIds[$lineIndex] ?? null) : null,
-                'discount_id' => $rule?->id ?? $discountId,
+                // Phase 4 — only a RESOLVED company rule is persisted as the FK;
+                // an unresolved/foreign discount_id is dropped to null (a
+                // manual/ad-hoc discount carries none, and name_snapshot below
+                // still keeps the device-sent label) rather than written raw.
+                'discount_id' => $rule?->id,
                 'offer_id' => $offer?->id,
                 // The offer's catalogue name wins for offer rows; else the
                 // discount rule's; else the device-sent label.
@@ -478,6 +491,13 @@ class CreateOrderHandler implements SyncEventHandler
                     ));
                 }
             }
+
+            // Phase 4 — the manager who APPROVED this write-off
+            // (approved_by_pos_staff_id) is an audit-integrity FK: a device
+            // must not attribute a comp approval to an arbitrary staff number.
+            // Same tenant + withTrashed guard as the order's cashier.
+            $approverId = isset($c['staff_id']) ? (int) $c['staff_id'] : null;
+            TenantReferenceGuard::assertStaffInTenant($device, $approverId, 'comp references an approver outside the device tenant: '.$approverId);
 
             $lineIndex = isset($c['line_index']) ? (int) $c['line_index'] : null;
             OrderComp::create([

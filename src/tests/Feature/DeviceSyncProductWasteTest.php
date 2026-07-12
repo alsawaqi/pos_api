@@ -21,6 +21,13 @@ class DeviceSyncProductWasteTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Phase 4 — the product.waste recorder (staff 7) must exist in the tenant.
+        $this->seedPosStaff([7]);
+    }
+
     private function device(string $token = 'mdev_w'): Device
     {
         return Device::factory()->paired($token)->create(['company_id' => 100, 'branch_id' => 10]);
@@ -138,6 +145,27 @@ class DeviceSyncProductWasteTest extends TestCase
         ])])->assertOk();
 
         $this->assertSame('failed', $res->json('data.results.0.status'));
+    }
+
+    public function test_rejects_a_recorder_from_another_company(): void
+    {
+        $this->device();
+        $this->seedProduct(1, 'unit', '0.200', 'Cola');
+        $this->seedShelf(1, '10.000');
+        // Staff 66 exists, but in another company — the recorded_by audit id
+        // must belong to the device tenant.
+        $this->seedPosStaff([66], companyId: 200, branchId: 20);
+
+        $res = $this->push([$this->wasteEvent([
+            'lines' => [['product_id' => 1, 'qty' => 3, 'reason' => 'expired']],
+            'staff_id' => 66,
+        ])])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('staff member outside the device tenant', $res->json('data.results.0.result.error'));
+        // Nothing wasted — the shelf is untouched.
+        $this->assertSame(10.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
+        $this->assertDatabaseMissing('pos_product_stock_movements', ['product_id' => 1, 'movement_type' => 'waste']);
     }
 
     public function test_does_not_waste_another_company_product(): void

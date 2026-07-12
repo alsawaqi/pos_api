@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\Device;
 use App\Models\Expense;
 use App\Models\ExpenseCategory;
@@ -50,6 +51,12 @@ class ExpenseLogHandler implements SyncEventHandler
             throw new RuntimeException('invalid expense.log payload: '.implode('; ', $validator->errors()->all()));
         }
 
+        // Phase 4 — the logged_by staff id (an audit column) must be a staff
+        // member of the device's own company; withTrashed keeps offline-queued
+        // events by a since-terminated recorder settling.
+        $staffId = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
+        TenantReferenceGuard::assertStaffInTenant($device, $staffId, 'expense.log references a staff member outside the device tenant');
+
         $expense = Expense::create([
             'uuid' => (string) Str::uuid(),
             'company_id' => $device->company_id,
@@ -58,7 +65,7 @@ class ExpenseLogHandler implements SyncEventHandler
             'amount' => Money::toOmr((int) $payload['amount_baisas']),
             'note' => $payload['note'] ?? null,
             'receipt_photo_path' => $payload['receipt_photo_path'] ?? null,
-            'logged_by_pos_staff_id' => $payload['staff_id'] ?? null,
+            'logged_by_pos_staff_id' => $staffId,
             'logged_at' => isset($payload['logged_at']) ? Carbon::parse((string) $payload['logged_at']) : now(),
             'status' => Expense::STATUS_RECORDED,
         ]);

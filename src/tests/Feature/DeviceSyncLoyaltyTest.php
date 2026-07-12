@@ -28,6 +28,13 @@ class DeviceSyncLoyaltyTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Phase 4 — the loyalty order's cashier (staff 7) is in the tenant.
+        $this->seedPosStaff([7]);
+    }
+
     private function device(string $token = 'mdev_ord', int $company = 100, int $branch = 10): Device
     {
         return Device::factory()->paired($token)->create(['company_id' => $company, 'branch_id' => $branch]);

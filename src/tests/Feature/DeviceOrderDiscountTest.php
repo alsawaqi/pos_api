@@ -136,6 +136,31 @@ class DeviceOrderDiscountTest extends TestCase
         $this->assertSame(str_repeat('x', 160), $row->reason);
     }
 
+    public function test_an_unresolved_discount_id_is_dropped_to_null_not_persisted_raw(): void
+    {
+        // Phase 4 — a discount_id that does not resolve to one of the device
+        // company's rules must NOT be written verbatim (an unvalidated foreign
+        // FK on pos_order_discounts): it is dropped to null while the
+        // device-sent label still stands. A real rule (id 5) exists but in
+        // ANOTHER company, so it does not resolve for this device.
+        $this->device();
+        DB::table('pos_discounts')->insert([
+            'id' => 5, 'uuid' => (string) Str::uuid(), 'company_id' => 200,
+            'name' => 'Foreign Rule', 'scope' => 'order', 'amount_type' => 'percent',
+            'amount' => 10, 'status' => 'active', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $uuid = (string) Str::uuid();
+
+        $res = $this->push($this->createEvent($uuid, [
+            ['discount_id' => 5, 'name' => 'Spoofed label', 'amount_baisas' => 800],
+        ]))->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $row = OrderDiscount::firstOrFail();
+        $this->assertNull($row->discount_id);                    // foreign FK dropped, not raw
+        $this->assertSame('Spoofed label', $row->name_snapshot); // device label still stands
+    }
+
     public function test_an_order_without_discounts_writes_no_application_rows(): void
     {
         $this->device();

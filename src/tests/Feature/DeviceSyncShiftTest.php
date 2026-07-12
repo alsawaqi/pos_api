@@ -24,6 +24,15 @@ class DeviceSyncShiftTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // GAP 1 (order.staff_id ownership guard) rejects an order whose staff
+        // isn't in the device's tenant. Every cash sale rung in these shift
+        // tests uses staff 7, so seed it for company 100 / branch 10.
+        $this->seedPosStaff([7]);
+    }
+
     private function device(string $token = 'mdev_a', int $company = 100, int $branch = 10): Device
     {
         return Device::factory()->paired($token)->create(['company_id' => $company, 'branch_id' => $branch]);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\BranchStock;
 use App\Models\Device;
 use App\Models\Ingredient;
@@ -67,6 +68,10 @@ class StockCountHandler implements SyncEventHandler
             ? Carbon::parse((string) $payload['counted_at'])
             : ($event->client_timestamp ?? now());
         $staffId = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
+        // Phase 4 — the recorded_by staff id (an audit column) must be a staff
+        // member of the device's own company; withTrashed keeps offline-queued
+        // events by a since-terminated recorder settling.
+        TenantReferenceGuard::assertStaffInTenant($device, $staffId, 'stock.count references a staff member outside the device tenant');
         $note = isset($payload['note']) && trim((string) $payload['note']) !== '' ? trim((string) $payload['note']) : null;
 
         // Resolve + convert every line BEFORE writing anything, so a

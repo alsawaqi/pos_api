@@ -25,9 +25,12 @@ use Illuminate\Support\Str;
  * Payment-method scoping: a BANK line is an acquirer fee, so it is charged
  * only on the card-paid portion of the sale ($cardBaisas) — a pure-cash
  * sale carries no bank cut and the merchant keeps that slice. Platform and
- * other lines apply to the COLLECTED amount (grand_total minus any gifted
- * portion — Phase D4: a gift tender is money never collected, so nobody
- * takes a cut of it; a fully gifted order records NO rows at all).
+ * other lines apply to the base their `applies_to` channel selects:
+ * 'all' (default) → the COLLECTED amount; 'card' → the card-paid portion;
+ * 'cash_bank' → the non-card collected portion (cash + bank-POS money the
+ * merchant holds). COLLECTED = grand_total minus any gifted portion —
+ * Phase D4: a gift tender is money never collected, so nobody takes a cut
+ * of it; a fully gifted order records NO rows at all.
  *
  * No active profile (or a profile with no share lines) ⇒ nothing is
  * recorded; the merchant simply keeps 100% (the blueprint default).
@@ -39,6 +42,12 @@ use Illuminate\Support\Str;
 final readonly class RecordSaleCommissionAction
 {
     private const PARTY_BANK = 'bank';
+
+    private const APPLIES_ALL = 'all';
+
+    private const APPLIES_CARD = 'card';
+
+    private const APPLIES_CASH_BANK = 'cash_bank';
 
     /**
      * @param  int  $cardBaisas  the card-paid amount of the sale (≤ grand_total)
@@ -77,11 +86,21 @@ final readonly class RecordSaleCommissionAction
 
         foreach ($profile->shares as $share) {
             $percent = (float) $share->percent;
-            // Bank (acquirer) cut only on card money; everyone else on the
-            // COLLECTED amount. $cardBaisas ≤ $collectedBaisas (a gift tender
-            // is never a card tender), so the bank slice can never exceed
-            // its share of the total.
-            $base = $share->party_type === self::PARTY_BANK ? $cardBaisas : $collectedBaisas;
+            // Bank (acquirer) cut only on card money. Everyone else on the base
+            // their channel selects: 'all' → collected, 'card' → card money,
+            // 'cash_bank' → non-card collected (cash + bank-POS). Null-safe so
+            // this deploys cleanly before the pos_admin migration adds the
+            // column (a missing attribute reads as 'all' — prior behaviour).
+            // $cardBaisas ≤ $collectedBaisas (a gift tender is never a card
+            // tender), so no slice can exceed its share of the total.
+            $appliesTo = (string) ($share->applies_to ?? self::APPLIES_ALL);
+            if ($share->party_type === self::PARTY_BANK || $appliesTo === self::APPLIES_CARD) {
+                $base = $cardBaisas;
+            } elseif ($appliesTo === self::APPLIES_CASH_BANK) {
+                $base = max(0, $collectedBaisas - $cardBaisas);
+            } else {
+                $base = $collectedBaisas;
+            }
             $amountBaisas = (int) round($base * $percent / 100);
             $allocatedBaisas += $amountBaisas;
 

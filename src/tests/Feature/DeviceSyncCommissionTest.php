@@ -73,6 +73,8 @@ class DeviceSyncCommissionTest extends TestCase
                 'party_type' => $share['party_type'],
                 'label' => $share['label'],
                 'percent' => $share['percent'],
+                // Channel scope; defaults to 'all' (the pre-channel behaviour).
+                'applies_to' => $share['applies_to'] ?? 'all',
                 'sort_order' => $sort++,
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -382,6 +384,62 @@ class DeviceSyncCommissionTest extends TestCase
         $this->assertEqualsWithDelta(0.0, (float) $rows[1]->commission_amount, 1e-9);
         $this->assertEqualsWithDelta(2.940, (float) $rows[2]->commission_amount, 1e-9);
         $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+    }
+
+    public function test_channel_scoped_lines_bite_only_their_channel(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        // Per-channel platform commission: 1% on card sales, 2% on cash/bank-POS.
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Mithqal card', 'percent' => 1, 'applies_to' => 'card'],
+            ['party_type' => 'platform', 'label' => 'Mithqal cash', 'percent' => 2, 'applies_to' => 'cash_bank'],
+        ]);
+
+        // CARD sale 10.000 → card line 1% = 100; cash line base 0 → 0; merchant 9900.
+        $cardUuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($cardUuid, 10000)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($cardUuid, $this->card(10000))])->assertOk();
+        // number_format: raw SQLite reads drop trailing zeros ('0.100' → '0.1').
+        $cardRows = $this->breakdownFor($cardUuid)->keyBy('party_label');
+        $this->assertSame('0.100', number_format((float) $cardRows['Mithqal card']->commission_amount, 3, '.', ''));
+        $this->assertSame('0.000', number_format((float) $cardRows['Mithqal cash']->commission_amount, 3, '.', ''));
+        $this->assertSame('9.900', number_format((float) $cardRows['Merchant']->commission_amount, 3, '.', ''));
+
+        // CASH sale 10.000 → card line base 0 → 0; cash line 2% = 200; merchant 9800.
+        $cashUuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($cashUuid, 10000)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($cashUuid, $this->cash(10000))])->assertOk();
+        $cashRows = $this->breakdownFor($cashUuid)->keyBy('party_label');
+        $this->assertSame('0.000', number_format((float) $cashRows['Mithqal card']->commission_amount, 3, '.', ''));
+        $this->assertSame('0.200', number_format((float) $cashRows['Mithqal cash']->commission_amount, 3, '.', ''));
+        $this->assertSame('9.800', number_format((float) $cashRows['Merchant']->commission_amount, 3, '.', ''));
+    }
+
+    public function test_channel_scoped_lines_split_a_mixed_tender_by_portion(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Mithqal card', 'percent' => 1, 'applies_to' => 'card'],
+            ['party_type' => 'platform', 'label' => 'Mithqal cash', 'percent' => 2, 'applies_to' => 'cash_bank'],
+        ]);
+
+        // Mixed 6.000 card + 4.000 cash → card line 1% of 6000 = 60; cash line
+        // 2% of (10000−6000) = 80; merchant takes the exact remainder 9860.
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($uuid, 10000)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($uuid, [
+            ['method' => 'card', 'amount_baisas' => 6000, 'softpos_reference' => 'TXN9', 'softpos_auth_code' => 'A9'],
+            ['method' => 'cash', 'amount_baisas' => 4000, 'change_given_baisas' => 0],
+        ])])->assertOk();
+
+        $rows = $this->breakdownFor($uuid)->keyBy('party_label');
+        $this->assertSame('0.060', number_format((float) $rows['Mithqal card']->commission_amount, 3, '.', ''));
+        $this->assertSame('0.080', number_format((float) $rows['Mithqal cash']->commission_amount, 3, '.', ''));
+        $this->assertSame('9.860', number_format((float) $rows['Merchant']->commission_amount, 3, '.', ''));
+        // Σ(rows) == collected, to the baisa.
+        $this->assertSame('10.000', number_format((float) $this->breakdownFor($uuid)->sum('commission_amount'), 3, '.', ''));
     }
 
     public function test_no_profile_records_no_breakdown(): void

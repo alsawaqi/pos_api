@@ -227,12 +227,18 @@ class VoidOrderHandler implements SyncEventHandler
      * deleted — a created/paid payout's snapshot must stay backed by real rows
      * (the merchant's settlement is a frozen fact; voiding the sale afterwards
      * can't erase it). Only unsettled rows are reversed.
+     *
+     * Phase B mirror: the same holds for a commission INVOICE claim (invoice_id
+     * set) — an issued invoice's total_owed is a frozen bill, so its backing rows
+     * must survive a later void (else the merchant is billed for a sale whose
+     * statement rows have vanished). Adjusting the bill is a separate admin void.
      */
     private function reverseCommission(Order $order): int
     {
         return SaleCommission::query()
             ->where('order_id', $order->id)
             ->whereNull('payout_id')
+            ->whereNull('invoice_id')
             ->delete();
     }
 

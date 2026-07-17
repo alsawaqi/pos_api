@@ -992,4 +992,38 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNotNull('payout_id')->count());
         $this->assertSame(0, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNull('payout_id')->count());
     }
+
+    public function test_voiding_keeps_commission_rows_already_claimed_by_an_invoice(): void
+    {
+        $this->seedCatalogue();
+        Device::factory()->paired('mdev_ord')->create([
+            'company_id' => 100, 'branch_id' => 10, 'bank_id' => 5, 'terminal_id' => 'TID-9', 'commission_profile_id' => 7,
+        ]);
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        $profileId = (int) DB::table('pos_commission_profiles')->insertGetId([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'is_active' => true, 'merchant_percent' => 95,
+        ] + $t);
+        DB::table('pos_commission_shares')->insert([
+            ['commission_profile_id' => $profileId, 'party_type' => 'platform', 'label' => 'Platform', 'percent' => 2, 'sort_order' => 0] + $t,
+            ['commission_profile_id' => $profileId, 'party_type' => 'bank', 'label' => 'Bank', 'percent' => 3, 'sort_order' => 1] + $t,
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk();
+        // A pure CASH sale — money the merchant holds, billed via a commission invoice.
+        $this->push('mdev_ord', [$this->payEvent($uuid, [
+            ['method' => 'cash', 'amount_baisas' => 3000],
+        ])])->assertOk();
+
+        $order = Order::firstWhere('uuid', $uuid);
+        // A commission invoice has CLAIMED the platform row (the admin billed it).
+        DB::table('pos_sale_commissions')->where(['order_id' => $order->id, 'party_type' => 'platform'])->update(['invoice_id' => 1]);
+
+        $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
+
+        // The invoice-claimed platform row survives so the frozen bill stays
+        // backed; the unclaimed merchant/bank rows are reversed.
+        $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNotNull('invoice_id')->count());
+        $this->assertSame(0, DB::table('pos_sale_commissions')->where('order_id', $order->id)->where('party_type', 'merchant')->count());
+    }
 }

@@ -999,6 +999,10 @@ return new class extends Migration
             $table->boolean('is_settled')->default(false);
             $table->timestamp('settled_at')->nullable();
             $table->unsignedBigInteger('settlement_id')->nullable();
+            // Phase B commission-invoice claim (admin-written; mirrored so the
+            // shared shape matches prod). The void-reversal guard reads it so an
+            // invoiced sale's rows survive a later void.
+            $table->unsignedBigInteger('invoice_id')->nullable();
             $table->unique(['order_id', 'sort_order'], 'pos_sale_commissions_order_sort_unique');
         });
 

@@ -52,6 +52,11 @@ class DonationRecordHandler implements SyncEventHandler
             'amount_baisas' => ['required', 'integer', 'min:1'],
             'receipt' => ['sometimes', 'nullable', 'array'],
             'payment_uuid' => ['sometimes', 'nullable', 'string'],
+            // The tender's position in the order.pay payments array — the
+            // device cannot know server-minted payment uuids, but rows are
+            // inserted in array order, so the index addresses the exact leg.
+            // Lets each card leg of a split carry ITS OWN round-up donation.
+            'payment_index' => ['sometimes', 'nullable', 'integer', 'min:0'],
             'occurred_at' => ['sometimes', 'nullable', 'date'],
         ]);
         if ($validator->fails()) {
@@ -69,9 +74,21 @@ class DonationRecordHandler implements SyncEventHandler
         }
 
         // The round-up rides a CARD payment (blueprint §9.6.1) — attach to it.
-        $payment = $this->resolveCardPayment((int) $order->id, $payload['payment_uuid'] ?? null);
+        $payment = $this->resolveCardPayment(
+            (int) $order->id,
+            $payload['payment_uuid'] ?? null,
+            array_key_exists('payment_index', $payload) && $payload['payment_index'] !== null
+                ? (int) $payload['payment_index']
+                : null,
+        );
         if ($payment === null) {
             throw new RuntimeException('no card payment to attach the round-up to for order: '.$payload['order_uuid']);
+        }
+        if ($payment->method !== Payment::METHOD_CARD) {
+            // A round-up can only ride card money — an index pointing at a
+            // cash/bank-POS leg is a device bug, not a choice. Fail loud so
+            // the charity amount is never mis-attributed.
+            throw new RuntimeException('round-up payment_index does not address a card tender for order: '.$payload['order_uuid']);
         }
 
         // P-F7 — when the round-up rides a force-recorded (ambiguous) card
@@ -169,7 +186,7 @@ class DonationRecordHandler implements SyncEventHandler
         return $result;
     }
 
-    private function resolveCardPayment(int $orderId, ?string $paymentUuid): ?Payment
+    private function resolveCardPayment(int $orderId, ?string $paymentUuid, ?int $paymentIndex): ?Payment
     {
         if ($paymentUuid !== null && $paymentUuid !== '') {
             return Payment::query()
@@ -178,6 +195,18 @@ class DonationRecordHandler implements SyncEventHandler
                 ->first();
         }
 
+        // Positional address: PayOrderHandler inserts one row per tender in
+        // array order (ascending ids), so payments-ordered-by-id[index] is the
+        // exact leg the device rounded. Out-of-range ⇒ null (caller throws).
+        if ($paymentIndex !== null) {
+            return Payment::query()
+                ->where('order_id', $orderId)
+                ->orderBy('id')
+                ->skip($paymentIndex)
+                ->first();
+        }
+
+        // Legacy devices (no index): the latest card payment.
         return Payment::query()
             ->where('order_id', $orderId)
             ->where('method', Payment::METHOD_CARD)

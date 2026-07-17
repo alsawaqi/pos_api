@@ -124,6 +124,60 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertSame((int) $donation->id, (int) $payment->charity_transaction_id);
     }
 
+    public function test_payment_index_attaches_each_roundup_to_its_exact_card_leg(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        [$orderId] = $this->seedOrderAndCard();
+        // A 3-leg split: cash + two card guests, each rounding up their own
+        // share. payment_index addresses legs by insertion order (0-based).
+        DB::table('pos_payments')->where('order_id', $orderId)->delete();
+        $legIds = [];
+        foreach ([['cash', '1.000'], ['card', '2.000'], ['card', '1.800']] as [$method, $amount]) {
+            $legIds[] = DB::table('pos_payments')->insertGetId([
+                'uuid' => (string) Str::uuid(), 'order_id' => $orderId, 'method' => $method,
+                'amount' => $amount, 'status' => 'success', 'pending_reconciliation' => false,
+                'captured_at' => now(), 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        $res = $this->push('mdev_x', [
+            $this->donationEvent(['payment_index' => 1, 'amount_baisas' => 300]),
+            $this->donationEvent(['payment_index' => 2, 'amount_baisas' => 500]),
+        ])->assertOk();
+
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertSame('processed', $res->json('data.results.1.status'));
+        $this->assertDatabaseCount('pos_roundup_donations', 2);
+        // Each donation rides ITS OWN card leg, with its own breadcrumb.
+        $this->assertDatabaseHas('pos_roundup_donations', ['payment_id' => $legIds[1], 'amount' => '0.300']);
+        $this->assertDatabaseHas('pos_roundup_donations', ['payment_id' => $legIds[2], 'amount' => '0.500']);
+        $this->assertSame('0.300', Payment::findOrFail($legIds[1])->roundup_amount);
+        $this->assertSame('0.500', Payment::findOrFail($legIds[2])->roundup_amount);
+    }
+
+    public function test_payment_index_addressing_a_cash_leg_fails_loud(): void
+    {
+        $this->device();
+        $this->seedBranch();
+        [$orderId] = $this->seedOrderAndCard();
+        DB::table('pos_payments')->where('order_id', $orderId)->delete();
+        foreach ([['cash', '2.000'], ['card', '2.800']] as [$method, $amount]) {
+            DB::table('pos_payments')->insert([
+                'uuid' => (string) Str::uuid(), 'order_id' => $orderId, 'method' => $method,
+                'amount' => $amount, 'status' => 'success', 'pending_reconciliation' => false,
+                'captured_at' => now(), 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        // Index 0 = the CASH leg — a round-up can only ride card money.
+        $res = $this->push('mdev_x', [$this->donationEvent(['payment_index' => 0])])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('does not address a card tender', $res->json('data.results.0.result.error'));
+        $this->assertDatabaseCount('pos_roundup_donations', 0);
+    }
+
     public function test_replaying_a_donation_does_not_duplicate(): void
     {
         $this->device();

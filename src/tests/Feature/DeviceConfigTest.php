@@ -994,4 +994,34 @@ class DeviceConfigTest extends TestCase
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
         $this->assertFalse(collect($data['products'])->firstWhere('id', 1)['low_stock']);
     }
+
+    public function test_audience_measurement_meta_defaults_off_and_follows_company_consent(): void
+    {
+        $this->pairedDevice();
+
+        // No setting → the camera gate stays CLOSED.
+        $this->assertFalse(
+            $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')
+                ->assertOk()->json('meta.audience_measurement'),
+        );
+
+        // Explicit consent (admin-set) → open.
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100, 'key' => 'audience_measurement',
+            'value' => json_encode(true), 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $this->assertTrue(
+            $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')
+                ->assertOk()->json('meta.audience_measurement'),
+        );
+
+        // Anything but explicit true — e.g. revoked consent — closes it again.
+        DB::table('pos_company_settings')
+            ->where(['company_id' => 100, 'key' => 'audience_measurement'])
+            ->update(['value' => json_encode(false)]);
+        $this->assertFalse(
+            $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')
+                ->assertOk()->json('meta.audience_measurement'),
+        );
+    }
 }

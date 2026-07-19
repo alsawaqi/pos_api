@@ -460,8 +460,30 @@ class BuildDeviceConfigAction
                 // Phase C3 (§9.3/§11.5) — where the device should dial its
                 // Reverb WebSocket. Null when broadcasting isn't configured.
                 'websocket' => $this->websocketMeta(),
+                // Marketing #46 — server-driven audience-measurement gate.
+                // True ONLY when the merchant consented (admin-set company
+                // setting); the device must keep its camera off otherwise.
+                // Supersedes the device-local settings toggle.
+                'audience_measurement' => $this->audienceMeasurement($companyId),
             ],
         ];
+    }
+
+    /**
+     * The per-company audience-measurement consent (pos_company_settings key
+     * `audience_measurement`). Anything but an explicit true is OFF — the
+     * camera-based viewer counting defaults closed.
+     */
+    private function audienceMeasurement(int $companyId): bool
+    {
+        $raw = DB::table('pos_company_settings')
+            ->where('company_id', $companyId)
+            ->where('key', 'audience_measurement')
+            ->value('value');
+
+        $value = is_string($raw) ? json_decode($raw, true) : $raw;
+
+        return $value === true;
     }
 
     /**

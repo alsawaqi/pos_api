@@ -129,12 +129,22 @@ class DeviceCustomersController
         $customer = DB::transaction(function () use ($data, $companyId): Customer {
             // Find-or-create on phone (the natural key) so the POS can't
             // spawn a duplicate customer for a returning phone number.
+            // withTrashed: a soft-deleted customer still OCCUPIES the
+            // (company_id, phone) unique slot — creating "fresh" would hit
+            // the index and 500 the device. A returning phone revives the
+            // deleted profile instead (plates + loyalty history intact).
             $customer = Customer::query()
+                ->withTrashed()
                 ->where('company_id', $companyId)
                 ->where('phone', $data['phone'])
                 ->first();
 
-            if ($customer === null) {
+            if ($customer !== null && $customer->trashed()) {
+                $customer->restore();
+                // The cashier just typed this name — a revived profile must
+                // not resurface under its stale pre-deletion one.
+                $customer->update(['name' => $data['name']]);
+            } elseif ($customer === null) {
                 $customer = Customer::create([
                     'uuid' => (string) Str::uuid(),
                     'company_id' => $companyId,
@@ -149,11 +159,19 @@ class DeviceCustomersController
                 // an additional link even when it already belongs to
                 // someone else (family car, several loyalty members).
                 // Re-posting the same customer+plate is a no-op.
+                // Normalise EXACTLY like the merchant portal's
+                // AttachVehiclePlateAction (trim + collapse internal runs of
+                // whitespace + uppercase) — a device-written "12345  A" must
+                // be the SAME row the portal writes/searches as "12345 A".
+                $normalisedPlate = strtoupper(
+                    (string) preg_replace('/\s+/', ' ', trim((string) $data['plate_number']))
+                );
+
                 $plate = CustomerVehiclePlate::firstOrCreate(
                     [
                         'company_id' => $companyId,
                         'customer_id' => $customer->id,
-                        'plate_number' => strtoupper(trim((string) $data['plate_number'])),
+                        'plate_number' => $normalisedPlate,
                     ],
                     ['uuid' => (string) Str::uuid()],
                 );

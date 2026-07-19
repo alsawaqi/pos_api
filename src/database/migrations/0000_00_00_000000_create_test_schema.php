@@ -521,6 +521,9 @@ return new class extends Migration
             $table->decimal('wallet_balance', 12, 3)->default(0);
             $table->timestamps();
             $table->softDeletes();
+            // Mirrors live: a soft-deleted row still OCCUPIES the phone slot,
+            // which is exactly what the device store's revive path handles.
+            $table->unique(['company_id', 'phone'], 'pos_customers_company_phone_unique');
         });
 
         // ---- Phase 8.3 order-lifecycle slice (sync ingestion writes here) ----

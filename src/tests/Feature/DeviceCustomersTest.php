@@ -287,4 +287,53 @@ class DeviceCustomersTest extends TestCase
         Device::factory()->paired('mdev_unassigned')->create(['company_id' => null, 'branch_id' => null]);
         $this->withToken('mdev_unassigned')->getJson('/api/v1/device/customers/search?q=ali')->assertStatus(409);
     }
+
+    public function test_store_revives_a_soft_deleted_customer_instead_of_500ing(): void
+    {
+        // Regression: a soft-deleted customer still OCCUPIES the
+        // (company_id, phone) unique slot, so the old find-or-create path
+        // (which skips trashed rows) crashed into the index with a 500 the
+        // moment a cashier re-registered a deleted customer's phone.
+        $this->device();
+        $old = $this->customer(['name' => 'Ali Said', 'phone' => '+96890007777']);
+        $old->delete();
+        $this->assertSoftDeleted('pos_customers', ['id' => $old->id]);
+
+        $res = $this->withToken('mdev_cust')->postJson('/api/v1/device/customers', [
+            'name' => 'Ali S. (returning)',
+            'phone' => '+96890007777',
+        ]);
+
+        $res->assertOk();
+        $this->assertSame($old->id, $res->json('data.customer.id')); // revived, not duplicated
+        $this->assertSame('Ali S. (returning)', $res->json('data.customer.name'));
+
+        $revived = Customer::query()->findOrFail($old->id);
+        $this->assertNull($revived->deleted_at);
+        $this->assertSame('Ali S. (returning)', $revived->name);
+        $this->assertSame(1, Customer::query()->withTrashed()->where('phone', '+96890007777')->count());
+    }
+
+    public function test_store_revive_still_attaches_a_plate(): void
+    {
+        // The revive path must flow into the same plate attach the normal
+        // find-or-create does (drive-up capture on a returning customer).
+        $this->device();
+        $old = $this->customer(['phone' => '+96890008888']);
+        $old->delete();
+
+        $res = $this->withToken('mdev_cust')->postJson('/api/v1/device/customers', [
+            'name' => 'Back Again',
+            'phone' => '+96890008888',
+            'plate_number' => '  9876  b ',
+        ]);
+
+        $res->assertOk();
+        // plates[] is a flat list of canonical plate strings.
+        $this->assertSame(['9876 B'], $res->json('data.customer.plates'));
+        $this->assertDatabaseHas('pos_customer_vehicle_plates', [
+            'customer_id' => $old->id,
+            'plate_number' => '9876 B',
+        ]);
+    }
 }

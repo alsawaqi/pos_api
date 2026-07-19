@@ -52,9 +52,11 @@ class DeviceTransfersController
         $fromIds = $orders->pluck('transferred_from_device_id')->filter()->unique()->all();
         $names = Device::query()->whereKey($fromIds)->pluck('name', 'id');
 
+        $joinedByOrder = $this->joinedTablesByOrder($orders->pluck('id')->all());
+
         return response()->json([
             'data' => [
-                'transfers' => $orders->map(fn (Order $o): array => $this->mapOrder($o, $names))->all(),
+                'transfers' => $orders->map(fn (Order $o): array => $this->mapOrder($o, $names, $joinedByOrder[$o->id] ?? []))->all(),
             ],
             'meta' => ['money_unit' => 'baisas', 'count' => $orders->count()],
             'errors' => [],
@@ -105,12 +107,38 @@ class DeviceTransfersController
         /** @var Order $order */
         $order = $result['order'];
         $names = Device::query()->whereKey([$order->transferred_from_device_id])->pluck('name', 'id');
+        $joined = $this->joinedTablesByOrder([$order->id]);
 
         return response()->json([
-            'data' => ['order' => $this->mapOrder($order, $names)],
+            'data' => ['order' => $this->mapOrder($order, $names, $joined[$order->id] ?? [])],
             'meta' => ['money_unit' => 'baisas'],
             'errors' => [],
         ]);
+    }
+
+    /**
+     * HH-8 — the EXTRA dine-in tables joined onto each order (the primary
+     * rides pos_orders.table_id; pos_order_tables holds one row per joined
+     * extra). Without these on the snapshot, claiming a transferred
+     * joined-table bill silently shrank it to one table on the receiving
+     * device — the freed-table bookkeeping then went wrong at close.
+     *
+     * @param  list<int>  $orderIds
+     * @return array<int, list<int>>  order_id → joined table ids
+     */
+    private function joinedTablesByOrder(array $orderIds): array
+    {
+        if ($orderIds === []) {
+            return [];
+        }
+
+        return DB::table('pos_order_tables')
+            ->whereIn('order_id', $orderIds)
+            ->orderBy('table_id')
+            ->get(['order_id', 'table_id'])
+            ->groupBy('order_id')
+            ->map(fn ($rows) => $rows->pluck('table_id')->map(fn ($id): int => (int) $id)->all())
+            ->all();
     }
 
     private function unassigned(): JsonResponse
@@ -127,9 +155,10 @@ class DeviceTransfersController
      * rebuild the exact cart and show who sent it.
      *
      * @param  \Illuminate\Support\Collection<int, string|null>  $names
+     * @param  list<int>  $joinedTableIds
      * @return array<string, mixed>
      */
-    private function mapOrder(Order $order, $names): array
+    private function mapOrder(Order $order, $names, array $joinedTableIds = []): array
     {
         $fromId = $order->transferred_from_device_id !== null ? (int) $order->transferred_from_device_id : null;
 
@@ -140,6 +169,7 @@ class DeviceTransfersController
             'status' => $order->status,
             'source' => $order->source,
             'table_id' => $order->table_id !== null ? (int) $order->table_id : null,
+            'joined_table_ids' => $joinedTableIds,
             'customer_id' => $order->customer_id !== null ? (int) $order->customer_id : null,
             'staff_id' => $order->staff_id !== null ? (int) $order->staff_id : null,
             'plate_number' => $order->plate_number,

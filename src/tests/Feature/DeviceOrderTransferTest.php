@@ -260,4 +260,52 @@ class DeviceOrderTransferTest extends TestCase
         $this->assertSame('failed', $res->json('data.results.0.status'));
         $this->assertStringContainsString('sending device', $res->json('data.results.0.result.error'));
     }
+
+    public function test_a_joined_table_bill_keeps_its_tables_through_incoming_and_claim(): void
+    {
+        // HH-8 regression: a dine-in bill spanning JOINED tables (primary T1
+        // covering T2+T3) must arrive on the receiving device with the full
+        // table set — the snapshot used to drop joined_table_ids, silently
+        // shrinking the bill to one table after a transfer.
+        $this->seedCatalogue();
+        $this->device('mdev_a', 100, 10, 'Main POS');
+        $to = $this->device('mdev_b', 100, 10, 'Handheld', 'handheld');
+
+        $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_tables')->insert([
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
+            ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
+            ['id' => 3, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T3'] + $t,
+        ]);
+
+        $uuid = (string) Str::uuid();
+        $event = $this->transferEvent($uuid, (int) $to->id);
+        $event['payload']['order']['order_type'] = 'dine_in';
+        $event['payload']['order']['table_id'] = 1;
+        $event['payload']['order']['joined_table_ids'] = [2, 3];
+        $this->assertProcessed($this->push('mdev_a', [$event]));
+
+        $incoming = $this->as('mdev_b')->getJson('/api/v1/device/transfers/incoming');
+        $incoming->assertOk();
+        $this->assertSame(1, $incoming->json('data.transfers.0.table_id'));
+        $this->assertSame([2, 3], $incoming->json('data.transfers.0.joined_table_ids'));
+
+        $claim = $this->as('mdev_b')->postJson("/api/v1/device/transfers/{$uuid}/claim");
+        $claim->assertOk();
+        $this->assertSame(1, $claim->json('data.order.table_id'));
+        $this->assertSame([2, 3], $claim->json('data.order.joined_table_ids'));
+    }
+
+    public function test_a_single_table_transfer_carries_an_empty_joined_set(): void
+    {
+        $this->seedCatalogue();
+        $this->device('mdev_a', 100, 10, 'Main POS');
+        $to = $this->device('mdev_b', 100, 10, 'Handheld', 'handheld');
+        $uuid = (string) Str::uuid();
+        $this->assertProcessed($this->push('mdev_a', [$this->transferEvent($uuid, (int) $to->id)]));
+
+        $claim = $this->as('mdev_b')->postJson("/api/v1/device/transfers/{$uuid}/claim");
+        $claim->assertOk();
+        $this->assertSame([], $claim->json('data.order.joined_table_ids'));
+    }
 }

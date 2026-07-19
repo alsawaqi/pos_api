@@ -831,6 +831,8 @@ return new class extends Migration
             $table->decimal('expected_cash', 12, 3)->nullable();
             $table->decimal('variance', 12, 3)->nullable();
             $table->string('status', 32)->default('open');
+            // HH-2 — staff-shared shift (open once a day, any terminal).
+            $table->boolean('is_shared')->default(false);
             $table->text('note')->nullable();
             $table->timestamps();
         });

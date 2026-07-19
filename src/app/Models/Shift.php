@@ -36,6 +36,8 @@ class Shift extends Model
             'variance' => 'decimal:3',
             'opened_at' => 'datetime',
             'closed_at' => 'datetime',
+            // HH-2 — staff-shared shift (open once a day, any terminal).
+            'is_shared' => 'boolean',
         ];
     }
 }

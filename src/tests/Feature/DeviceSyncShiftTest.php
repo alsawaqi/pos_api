@@ -27,10 +27,9 @@ class DeviceSyncShiftTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        // GAP 1 (order.staff_id ownership guard) rejects an order whose staff
-        // isn't in the device's tenant. Every cash sale rung in these shift
-        // tests uses staff 7, so seed it for company 100 / branch 10.
-        $this->seedPosStaff([7]);
+        // Phase 4 — shift.open + the order.create used to ring cash reference
+        // these cashiers; all belong to the device tenant (company 100).
+        $this->seedPosStaff([7, 8, 99]);
     }
 
     private function device(string $token = 'mdev_a', int $company = 100, int $branch = 10): Device
@@ -45,18 +44,25 @@ class DeviceSyncShiftTest extends TestCase
         ]);
     }
 
-    private function openEvent(string $shiftUuid, int $openingBaisas, ?string $openedAt = null): array
+    private function openEvent(string $shiftUuid, int $openingBaisas, ?string $openedAt = null, int $staffId = 7, bool $shared = true): array
     {
+        $payload = [
+            'uuid' => $shiftUuid,
+            'staff_id' => $staffId,
+            'opening_cash_baisas' => $openingBaisas,
+            'opened_at' => $openedAt ?? now()->subHours(2)->toIso8601String(),
+        ];
+        // HH-2 — new builds opt into the staff-shared model; legacy field
+        // builds never send this key ($shared = false models them).
+        if ($shared) {
+            $payload['shared_shift'] = true;
+        }
+
         return [
             'client_event_id' => (string) Str::uuid(),
             'event_type' => 'shift.open',
             'client_timestamp' => now()->toIso8601String(),
-            'payload' => [
-                'uuid' => $shiftUuid,
-                'staff_id' => 7,
-                'opening_cash_baisas' => $openingBaisas,
-                'opened_at' => $openedAt ?? now()->subHours(2)->toIso8601String(),
-            ],
+            'payload' => $payload,
         ];
     }
 
@@ -74,7 +80,7 @@ class DeviceSyncShiftTest extends TestCase
         ];
     }
 
-    private function createEvent(string $orderUuid, int $amountBaisas): array
+    private function createEvent(string $orderUuid, int $amountBaisas, int $staffId = 7): array
     {
         return [
             'client_event_id' => (string) Str::uuid(),
@@ -84,7 +90,7 @@ class DeviceSyncShiftTest extends TestCase
                 'uuid' => $orderUuid,
                 'order_type' => 'quick',
                 'source' => 'main_pos',
-                'staff_id' => 7,
+                'staff_id' => $staffId,
                 'opened_at' => now()->subHour()->toIso8601String(),
                 'subtotal_baisas' => $amountBaisas,
                 'discount_total_baisas' => 0,
@@ -117,10 +123,10 @@ class DeviceSyncShiftTest extends TestCase
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
     }
 
-    private function ringCashSale(string $token, int $amountBaisas): void
+    private function ringCashSale(string $token, int $amountBaisas, int $staffId = 7): void
     {
         $uuid = (string) Str::uuid();
-        $this->push($token, [$this->createEvent($uuid, $amountBaisas)])->assertOk();
+        $this->push($token, [$this->createEvent($uuid, $amountBaisas, $staffId)])->assertOk();
         $this->push($token, [$this->payCashEvent($uuid, $amountBaisas)])->assertOk();
     }
 
@@ -172,6 +178,20 @@ class DeviceSyncShiftTest extends TestCase
         $this->assertSame('failed', $res->json('data.results.0.status'));
         $this->assertStringContainsString('already has an open shift', $res->json('data.results.0.result.error'));
         $this->assertSame(1, Shift::count());
+    }
+
+    public function test_open_rejects_a_staff_member_from_another_company(): void
+    {
+        $this->device(); // company 100
+        // Staff 55 exists, but in another company — a device must not open a
+        // (shared) shift under a foreign staff id.
+        $this->seedPosStaff([55], companyId: 200, branchId: 20);
+
+        $res = $this->push('mdev_a', [$this->openEvent((string) Str::uuid(), 5000, null, 55)])->assertOk();
+
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('staff member outside the device tenant', $res->json('data.results.0.result.error'));
+        $this->assertSame(0, Shift::count());
     }
 
     public function test_closing_an_unknown_shift_fails(): void
@@ -277,7 +297,7 @@ class DeviceSyncShiftTest extends TestCase
         $this->assertSame(1, $gift['count']);
     }
 
-    public function test_close_excludes_cash_taken_on_another_device(): void
+    public function test_close_excludes_another_staffs_cash_on_another_device(): void
     {
         $this->seedProduct();
         $this->device('mdev_a', 100, 10);
@@ -286,10 +306,11 @@ class DeviceSyncShiftTest extends TestCase
         $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000)])->assertOk();
         $this->ringCashSale('mdev_a', 3000); // belongs to this device's shift
 
-        // A second device in the same branch rings its own cash sale.
+        // A DIFFERENT staff member rings cash on a second device in the same
+        // branch — neither this drawer nor this staff, so it stays out.
         Device::factory()->paired('mdev_b')->create(['company_id' => 100, 'branch_id' => 10]);
         $this->app['auth']->forgetGuards();
-        $this->ringCashSale('mdev_b', 5000); // must NOT count toward mdev_a's drawer
+        $this->ringCashSale('mdev_b', 5000, 99); // must NOT count toward mdev_a's drawer
 
         $this->app['auth']->forgetGuards();
         $res = $this->push('mdev_a', [$this->closeEvent($shiftUuid, 13000)])->assertOk();
@@ -297,5 +318,127 @@ class DeviceSyncShiftTest extends TestCase
         // Only mdev_a's 3.000 counts: expected 13.000, variance 0.
         $this->assertSame(13000, $res->json('data.results.0.result.expected_cash_baisas'));
         $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+    }
+
+    /**
+     * HH-2 — one shift a day per staff, shared across their devices: cash the
+     * SAME staff member takes on a second terminal (the handheld) counts
+     * toward the shift they opened on the first, in both the drawer math and
+     * the Z-report summary.
+     */
+    public function test_close_includes_the_shifts_staffs_cash_from_another_device(): void
+    {
+        $this->seedProduct();
+        $this->device('mdev_a', 100, 10);
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000)])->assertOk();
+        $this->ringCashSale('mdev_a', 3000); // on the opening device
+
+        Device::factory()->paired('mdev_b')->create(['company_id' => 100, 'branch_id' => 10]);
+        $this->app['auth']->forgetGuards();
+        $this->ringCashSale('mdev_b', 5000, 7); // SAME staff, other device
+
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftUuid, 18000)])->assertOk();
+
+        // Both sales count: 10.000 + 3.000 + 5.000 = 18.000, variance 0.
+        $this->assertSame(18000, $res->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+
+        $summary = $res->json('data.results.0.result.summary');
+        $this->assertSame(2, $summary['order_count']);
+        $this->assertSame(8000, $summary['grand_total_baisas']);
+        $tenders = collect($summary['tenders']);
+        $this->assertSame(8000, $tenders->firstWhere('method', 'cash')['amount_baisas']);
+    }
+
+    /**
+     * HH-2 — the staff-keyed one-open-shift guard: the same person cannot
+     * open a second float on another device; the client adopts instead (via
+     * GET /device/shift/current?staff_id). A different staff member still
+     * opens their own shift there freely.
+     */
+    public function test_a_staff_member_cannot_open_two_shifts_across_devices(): void
+    {
+        $this->device('mdev_a', 100, 10);
+        Device::factory()->paired('mdev_b')->create(['company_id' => 100, 'branch_id' => 10]);
+
+        $this->push('mdev_a', [$this->openEvent((string) Str::uuid(), 5000)])->assertOk();
+
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_b', [$this->openEvent((string) Str::uuid(), 4000)])->assertOk();
+        $this->assertSame('failed', $res->json('data.results.0.status'));
+        $this->assertStringContainsString('staff already has an open shift', $res->json('data.results.0.result.error'));
+        $this->assertSame(1, Shift::count());
+
+        // A different staff member is free to open on the second device.
+        $res = $this->push('mdev_b', [$this->openEvent((string) Str::uuid(), 4000, null, 8)])->assertOk();
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertSame(2, Shift::count());
+    }
+
+    /**
+     * FIELD COMPAT — a deployed pos_machine build (no shared_shift flag)
+     * keeps the legacy per-device model end-to-end: the same staff member
+     * opens a second per-device shift on another terminal without being
+     * rejected, and each close attributes ONLY that device's cash.
+     */
+    public function test_legacy_opens_without_the_flag_keep_per_device_semantics(): void
+    {
+        $this->seedProduct();
+        $this->device('mdev_a', 100, 10);
+        Device::factory()->paired('mdev_b')->create(['company_id' => 100, 'branch_id' => 10]);
+
+        $shiftA = (string) Str::uuid();
+        $this->push('mdev_a', [$this->openEvent($shiftA, 10000, null, 7, false)])->assertOk();
+        $this->ringCashSale('mdev_a', 3000);
+
+        // Same staff, second legacy device: opens ITS OWN shift (no reject).
+        $this->app['auth']->forgetGuards();
+        $shiftB = (string) Str::uuid();
+        $res = $this->push('mdev_b', [$this->openEvent($shiftB, 2000, null, 7, false)])->assertOk();
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->ringCashSale('mdev_b', 5000);
+
+        // Each close sees only its own device's drawer.
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftA, 13000)])->assertOk();
+        $this->assertSame(13000, $res->json('data.results.0.result.expected_cash_baisas'));
+
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_b', [$this->closeEvent($shiftB, 7000)])->assertOk();
+        $this->assertSame(7000, $res->json('data.results.0.result.expected_cash_baisas'));
+    }
+
+    /**
+     * Two coexisting SHARED shifts stay disjoint even when one cashier rings
+     * a sale on the other's terminal: the order follows its STAFF's shift,
+     * never the device's, so no money is counted twice.
+     */
+    public function test_shared_shifts_stay_disjoint_when_staff_cross_devices(): void
+    {
+        $this->seedProduct();
+        $this->device('mdev_a', 100, 10);
+        Device::factory()->paired('mdev_b')->create(['company_id' => 100, 'branch_id' => 10]);
+
+        $shiftA = (string) Str::uuid(); // staff 7, opened on mdev_a
+        $this->push('mdev_a', [$this->openEvent($shiftA, 10000, null, 7)])->assertOk();
+        $this->app['auth']->forgetGuards();
+        $shiftB = (string) Str::uuid(); // staff 8, opened on mdev_b
+        $this->push('mdev_b', [$this->openEvent($shiftB, 5000, null, 8)])->assertOk();
+
+        // Staff 8 rings a sale ON STAFF 7'S terminal (mdev_a).
+        $this->app['auth']->forgetGuards();
+        $this->ringCashSale('mdev_a', 4000, 8);
+
+        // It belongs to staff 8's shift only.
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftA, 10000)])->assertOk();
+        $this->assertSame(10000, $res->json('data.results.0.result.expected_cash_baisas'));
+
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_b', [$this->closeEvent($shiftB, 9000)])->assertOk();
+        $this->assertSame(9000, $res->json('data.results.0.result.expected_cash_baisas'));
     }
 }

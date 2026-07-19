@@ -22,11 +22,19 @@ use RuntimeException;
  * the drawer reconciliation (§10.8):
  *
  *   expected_cash = opening_cash + Σ(cash tendered − change given) for cash
- *                   payments captured on THIS device during the shift window.
+ *                   payments captured on the shift during the window.
  *   variance      = closing_cash − expected_cash   (negative ⇒ short)
  *
- * Orders carry no shift_id, so the shift's cash is attributed temporally:
- * cash payments on the shift's device between opened_at and closed_at.
+ * Orders carry no shift_id, so attribution is temporal + identity, inside
+ * the shift's own company + branch:
+ *   - SHARED shift (HH-2, is_shared): orders rung BY THE SHIFT'S STAFF on
+ *     any terminal, plus staff-less orders on the opening device. This is
+ *     what makes one shift a day span pos_machine + pos_handheld — the
+ *     person opens once, sells on both, and the close reconciles the
+ *     combined cash they hold. Keying the shared leg on staff (not device)
+ *     also keeps two coexisting shifts disjoint: another cashier's sales on
+ *     this shift's device belong to THEIR shift, never double-counted here.
+ *   - LEGACY shift: pure per-device drawer semantics, unchanged.
  */
 class CloseShiftHandler implements SyncEventHandler
 {
@@ -58,7 +66,7 @@ class CloseShiftHandler implements SyncEventHandler
                 ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
                 ->where('pos_payments.method', Payment::METHOD_CASH)
                 ->where('pos_payments.status', Payment::STATUS_SUCCESS)
-                ->where('pos_orders.device_id', $shift->device_id)
+                ->where($this->orderBelongsToShift($shift))
                 ->whereBetween('pos_payments.captured_at', [$shift->opened_at, $closedAt])
                 ->selectRaw('COALESCE(SUM(pos_payments.amount), 0) as amt, COALESCE(SUM(pos_payments.change_given), 0) as chg')
                 ->first();
@@ -89,11 +97,43 @@ class CloseShiftHandler implements SyncEventHandler
     }
 
     /**
+     * HH-2 — the attribution predicate shared by every close-time query
+     * (see the class doc for the semantics). Everything is wrapped in one
+     * ->where(...) group so the OR never leaks into the surrounding query's
+     * other conditions, and the group is TENANT-SCOPED explicitly: the
+     * staff leg matches pos_orders.staff_id, which is client-asserted, so
+     * without the company/branch bound a foreign or buggy device could
+     * corrupt this shift's reconciliation.
+     *
+     * @return \Closure(\Illuminate\Contracts\Database\Query\Builder): void
+     */
+    private function orderBelongsToShift(Shift $shift): \Closure
+    {
+        return function ($q) use ($shift): void {
+            $q->where('pos_orders.company_id', $shift->company_id)
+                ->where('pos_orders.branch_id', $shift->branch_id)
+                ->where(function ($scope) use ($shift): void {
+                    if ($shift->is_shared && $shift->staff_id !== null) {
+                        $scope->where('pos_orders.staff_id', $shift->staff_id)
+                            ->orWhere(function ($fallback) use ($shift): void {
+                                $fallback
+                                    ->where('pos_orders.device_id', $shift->device_id)
+                                    ->whereNull('pos_orders.staff_id');
+                            });
+                    } else {
+                        $scope->where('pos_orders.device_id', $shift->device_id);
+                    }
+                });
+        };
+    }
+
+    /**
      * Phase C6 — the shift's sales summary (blueprint Phase 9 #88 "Daily
      * sales summary"; Additions §1.2 Shift Report fields), computed inside
      * the close transaction over the same window + attribution the
-     * expected-cash math uses: orders on THIS device, temporally between
-     * opened_at and closed_at. Money = integer baisas on the wire.
+     * expected-cash math uses: orders on the shift's device or by its staff,
+     * temporally between opened_at and closed_at. Money = integer baisas on
+     * the wire.
      *
      * Expenses are BRANCH-scoped (pos_expenses carries no device_id) and
      * informational only — they do not enter the drawer math, matching
@@ -106,7 +146,7 @@ class CloseShiftHandler implements SyncEventHandler
         $window = [$shift->opened_at, $closedAt];
 
         $orders = DB::table('pos_orders')
-            ->where('device_id', $shift->device_id)
+            ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_PAID)
             // P-G7 — confirmed delivery-provider orders never put money in
             // the drawer, and confirmation RE-DATES opened_at to whenever the
@@ -128,7 +168,7 @@ class CloseShiftHandler implements SyncEventHandler
         $tenders = Payment::query()
             ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
             ->where('pos_payments.status', Payment::STATUS_SUCCESS)
-            ->where('pos_orders.device_id', $shift->device_id)
+            ->where($this->orderBelongsToShift($shift))
             ->whereBetween('pos_payments.captured_at', $window)
             ->groupBy('pos_payments.method')
             ->orderBy('pos_payments.method')
@@ -140,16 +180,19 @@ class CloseShiftHandler implements SyncEventHandler
             ->get();
 
         $voids = DB::table('pos_orders')
-            ->where('device_id', $shift->device_id)
+            ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_VOID)
             ->whereBetween('opened_at', $window)
             ->selectRaw('COUNT(*) as cnt, COALESCE(SUM(grand_total), 0) as amt')
             ->first();
 
+        // Round-ups ride their order (order_id NOT NULL), so they follow the
+        // same device-or-staff attribution as every other money line.
         $roundUp = DB::table('pos_roundup_donations')
-            ->where('device_id', $shift->device_id)
-            ->whereBetween('created_at', $window)
-            ->sum('amount');
+            ->join('pos_orders', 'pos_roundup_donations.order_id', '=', 'pos_orders.id')
+            ->where($this->orderBelongsToShift($shift))
+            ->whereBetween('pos_roundup_donations.created_at', $window)
+            ->sum('pos_roundup_donations.amount');
 
         $expenses = DB::table('pos_expenses')
             ->where('branch_id', $shift->branch_id)

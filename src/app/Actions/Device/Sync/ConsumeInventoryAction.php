@@ -302,13 +302,26 @@ class ConsumeInventoryAction
             'created_at' => now(),
         ]);
 
-        $stock = BranchStock::firstOrNew([
-            'branch_id' => $branchId,
-            'ingredient_id' => $ingredientId,
-        ]);
-        $stock->quantity = (float) $stock->quantity + $qty;
-        $stock->last_movement_at = now();
-        $stock->save();
+        // Atomic SQL-expression increment (quantity = quantity + δ), matching
+        // the merchant portal's WriteStockMovementAction and the production
+        // path's locked rows. The previous read-modify-write (firstOrNew +
+        // absolute save) could lose a concurrent settle's delta on the same
+        // (branch, ingredient) row — both movement rows persisted but only
+        // one balance change survived, silently breaking Σ(movements) ==
+        // quantity. firstOrCreate is race-safe (savepoint + retry on the
+        // unique constraint); updated_at must move — the device branch_stock
+        // delta slice keys on it.
+        $stock = BranchStock::query()->firstOrCreate(
+            ['branch_id' => $branchId, 'ingredient_id' => $ingredientId],
+            ['quantity' => 0, 'last_movement_at' => now()],
+        );
+        BranchStock::query()
+            ->whereKey($stock->getKey())
+            ->toBase()
+            ->increment('quantity', $qty, [
+                'last_movement_at' => now(),
+                'updated_at' => now(),
+            ]);
 
         return 1;
     }
@@ -338,17 +351,21 @@ class ConsumeInventoryAction
             return;
         }
 
-        $row = BranchProduct::query()
+        // Atomic SQL-expression increment — same lost-update fix as move().
+        // The whereNotNull keeps the "NULL stock_qty / no row = not unit-
+        // tracked here" no-op semantics (affected 0 → no ledger row either),
+        // and the explicit updated_at bump preserves the delta trigger that
+        // re-emits this product's shelf count to devices.
+        $affected = BranchProduct::query()
             ->where('branch_id', (int) $order->branch_id)
             ->where('product_id', $productId)
-            ->first();
+            ->whereNotNull('stock_qty')
+            ->toBase()
+            ->increment('stock_qty', $qty, ['updated_at' => now()]);
 
-        if ($row === null || $row->stock_qty === null) {
+        if ($affected === 0) {
             return;
         }
-
-        $row->stock_qty = (float) $row->stock_qty + $qty;
-        $row->save();
 
         ProductStockMovement::create([
             'company_id' => (int) $order->company_id,

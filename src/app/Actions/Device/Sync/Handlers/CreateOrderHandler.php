@@ -136,7 +136,10 @@ class CreateOrderHandler implements SyncEventHandler
             $itemIds = [];
             foreach ($order['lines'] as $index => $line) {
                 $productId = (int) $line['product_id'];
-                $product = Product::query()->where('company_id', $device->company_id)->find($productId);
+                // withTrashed keeps the name / stock_mode / recipe snapshots
+                // faithful when the product was deleted while the order sat
+                // in a device's offline outbox.
+                $product = Product::withTrashed()->where('company_id', $device->company_id)->find($productId);
 
                 $item = OrderItem::create([
                     'order_id' => $model->id,
@@ -155,7 +158,7 @@ class CreateOrderHandler implements SyncEventHandler
 
                 foreach ($line['addons'] ?? [] as $addon) {
                     $addOnId = (int) $addon['add_on_id'];
-                    $addOn = AddOn::query()->where('company_id', $device->company_id)->find($addOnId);
+                    $addOn = AddOn::withTrashed()->where('company_id', $device->company_id)->find($addOnId);
                     // PD3b — per-option stock-usage lines, frozen at create.
                     // When present they SUPERSEDE the legacy single-ingredient
                     // trio for this addon (never both — no double-count).
@@ -281,7 +284,11 @@ class CreateOrderHandler implements SyncEventHandler
             static fn (array $line): int => (int) $line['product_id'],
             $order['lines'],
         )));
-        $owned = Product::query()->where('company_id', $companyId)->whereIn('id', $productIds)->pluck('id')->all();
+        // withTrashed: an offline-queued order may land after the merchant
+        // deleted the menu item — the sale still happened and must settle
+        // (the offers + staff guards below already follow this rule). The
+        // guard validates OWNERSHIP, and a trashed row still proves it.
+        $owned = Product::withTrashed()->where('company_id', $companyId)->whereIn('id', $productIds)->pluck('id')->all();
         $foreign = array_diff($productIds, array_map('intval', $owned));
         if ($foreign !== []) {
             throw new RuntimeException('order references product(s) outside the device tenant: '.implode(',', $foreign));
@@ -295,7 +302,8 @@ class CreateOrderHandler implements SyncEventHandler
         }
         $addOnIds = array_values(array_unique($addOnIds));
         if ($addOnIds !== []) {
-            $ownedAddOns = AddOn::query()->where('company_id', $companyId)->whereIn('id', $addOnIds)->pluck('id')->all();
+            // Same withTrashed rationale as the product guard above.
+            $ownedAddOns = AddOn::withTrashed()->where('company_id', $companyId)->whereIn('id', $addOnIds)->pluck('id')->all();
             $foreignAddOns = array_diff($addOnIds, array_map('intval', $ownedAddOns));
             if ($foreignAddOns !== []) {
                 throw new RuntimeException('order references add-on(s) outside the device tenant: '.implode(',', $foreignAddOns));
@@ -712,7 +720,7 @@ class CreateOrderHandler implements SyncEventHandler
             return null;
         }
 
-        $product = Product::query()
+        $product = Product::withTrashed()
             ->where('company_id', $companyId)
             ->find((int) $addOn->linked_product_id);
         if ($product === null) {

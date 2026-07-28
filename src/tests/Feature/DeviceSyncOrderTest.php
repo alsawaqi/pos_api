@@ -580,6 +580,27 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertSame(7, (int) Order::firstWhere('uuid', $uuid)->staff_id);
     }
 
+    public function test_order_create_accepts_a_soft_deleted_product_and_addon(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        // The merchant deleted the menu item + option while the order sat in
+        // a device's offline outbox — the sale still happened and must
+        // settle (the same withTrashed rule as offers + staff). Snapshots
+        // keep the real names and the frozen recipe, not '#id' fallbacks.
+        DB::table('pos_products')->where('id', 1)->update(['deleted_at' => now()]);
+        DB::table('pos_addons')->where('id', 1)->update(['deleted_at' => now()]);
+
+        $uuid = (string) Str::uuid();
+        $r = $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk()->json('data.results.0');
+
+        $this->assertSame('processed', $r['status']);
+        $item = Order::firstWhere('uuid', $uuid)->items()->first();
+        $this->assertSame('Latte', $item->product_name_snapshot);
+        $this->assertNotNull($item->recipe_snapshot_json);
+        $this->assertSame('Extra shot', $item->addons()->first()->add_on_name_snapshot);
+    }
+
     public function test_order_create_records_joined_tables_excluding_the_primary(): void
     {
         $this->seedCatalogue();

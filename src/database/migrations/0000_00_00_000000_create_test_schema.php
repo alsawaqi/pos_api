@@ -913,6 +913,9 @@ return new class extends Migration
             $table->timestamp('reviewed_at')->nullable();
             $table->text('review_note')->nullable();
             $table->timestamp('fulfilled_at')->nullable();
+            // Mirrors pos_admin 2026_08_05_010100 (restock resolution).
+            $table->string('resolution', 16)->nullable();
+            $table->string('resolution_note', 255)->nullable();
             $table->text('note')->nullable();
             $table->timestamps();
         });

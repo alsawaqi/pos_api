@@ -50,10 +50,19 @@ class ConsumeInventoryAction
         $at = $order->closed_at ?? now();
         $count = 0;
 
-        // P-G2 — physical-item components per product, bulk-loaded once.
+        // P-G2 — physical-item components. New orders carry them FROZEN on
+        // the line (component_snapshot_json, written at create like the
+        // recipe) so pay and void move the exact set the order knew. The
+        // live bulk read remains ONLY as the fallback for legacy lines
+        // written before the freeze column existed (snapshot === null).
         // ONE level only: components have no components.
+        $legacyProductIds = $order->items
+            ->filter(static fn ($i): bool => $i->component_snapshot_json === null)
+            ->pluck('product_id')
+            ->filter()
+            ->all();
         $componentsByProduct = DB::table('pos_product_components')
-            ->whereIn('product_id', $order->items->pluck('product_id')->filter()->all() ?: [0])
+            ->whereIn('product_id', $legacyProductIds ?: [0])
             ->get()
             ->groupBy('product_id');
 
@@ -226,9 +235,19 @@ class ConsumeInventoryAction
         }
 
         $products = [];
-        foreach ($componentsByProduct->get($item->product_id) ?? [] as $component) {
-            $id = (int) $component->component_product_id;
-            $products[$id]['base'] = (float) ($products[$id]['base'] ?? 0) + (float) $component->quantity;
+        if (is_array($item->component_snapshot_json)) {
+            // Frozen at create — pay/void replay the exact component set the
+            // order was written with ([] = genuinely no components).
+            foreach ($item->component_snapshot_json as $component) {
+                $id = (int) ($component['product_id'] ?? 0);
+                $products[$id]['base'] = (float) ($products[$id]['base'] ?? 0) + (float) ($component['qty'] ?? 0);
+            }
+        } else {
+            // Legacy line (pre-freeze): live read, the historical behaviour.
+            foreach ($componentsByProduct->get($item->product_id) ?? [] as $component) {
+                $id = (int) $component->component_product_id;
+                $products[$id]['base'] = (float) ($products[$id]['base'] ?? 0) + (float) $component->quantity;
+            }
         }
 
         foreach ($item->addons as $addon) {

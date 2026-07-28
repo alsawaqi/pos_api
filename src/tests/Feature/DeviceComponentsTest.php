@@ -110,6 +110,51 @@ class DeviceComponentsTest extends TestCase
         return $orderUuid;
     }
 
+    /** order.create ONLY — lets a test mutate the catalogue before pay. */
+    private function createCoffee(int $qty): string
+    {
+        $orderUuid = (string) Str::uuid();
+        $this->withToken('mdev_comp')->postJson('/api/v1/device/sync/push', ['events' => [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.create',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => ['order' => [
+                'uuid' => $orderUuid,
+                'order_type' => 'to_go',
+                'source' => 'main_pos',
+                'staff_id' => null,
+                'opened_at' => now()->toIso8601String(),
+                'subtotal_baisas' => 1500 * $qty,
+                'discount_total_baisas' => 0,
+                'tax_total_baisas' => 0,
+                'grand_total_baisas' => 1500 * $qty,
+                'lines' => [[
+                    'product_id' => self::COFFEE,
+                    'qty' => $qty,
+                    'unit_price_baisas' => 1500,
+                    'line_discount_baisas' => 0,
+                    'line_total_baisas' => 1500 * $qty,
+                ]],
+            ]],
+        ]]])->assertOk();
+
+        return $orderUuid;
+    }
+
+    private function payCoffee(string $orderUuid, int $qty): void
+    {
+        $this->withToken('mdev_comp')->postJson('/api/v1/device/sync/push', ['events' => [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.pay',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => [
+                'order_uuid' => $orderUuid,
+                'paid_at' => now()->toIso8601String(),
+                'payments' => [['method' => 'cash', 'amount_baisas' => 1500 * $qty, 'change_given_baisas' => 0]],
+            ],
+        ]]])->assertOk();
+    }
+
     // ------------------------------------------------ config exclusion
 
     public function test_internal_items_never_reach_the_device_config(): void
@@ -184,6 +229,79 @@ class DeviceComponentsTest extends TestCase
 
         $this->assertEqualsWithDelta(10.0, $this->componentQty(self::CUP), 0.001);
         $this->assertEqualsWithDelta(10.0, $this->componentQty(self::NAPKIN), 0.001);
+    }
+
+    // ------------------------------------------------ frozen component set
+
+    public function test_pay_consumes_the_component_set_frozen_at_create_not_a_later_edit(): void
+    {
+        $this->seedComponents();
+        $this->device();
+
+        $orderUuid = $this->createCoffee(1);
+
+        // The merchant re-specs the coffee AFTER the order was written:
+        // napkins per unit 2 -> 5.
+        DB::table('pos_product_components')
+            ->where('product_id', self::COFFEE)
+            ->where('component_product_id', self::NAPKIN)
+            ->update(['quantity' => 5.000]);
+
+        $this->payCoffee($orderUuid, 1);
+
+        // The FROZEN set (1 cup + 2 napkins) is what leaves the shelf.
+        $this->assertEqualsWithDelta(9.0, $this->componentQty(self::CUP), 0.001);
+        $this->assertEqualsWithDelta(8.0, $this->componentQty(self::NAPKIN), 0.001);
+    }
+
+    public function test_void_restores_the_frozen_component_set_after_an_edit(): void
+    {
+        $this->seedComponents();
+        $this->device();
+
+        $orderUuid = $this->sellCoffee(2); // cup 10-2=8, napkin 10-4=6
+
+        // Component edit between pay and void: napkins per unit 2 -> 5.
+        // Before the freeze this reversal would have restocked 10 napkins.
+        DB::table('pos_product_components')
+            ->where('product_id', self::COFFEE)
+            ->where('component_product_id', self::NAPKIN)
+            ->update(['quantity' => 5.000]);
+
+        $this->withToken('mdev_comp')->postJson('/api/v1/device/sync/push', ['events' => [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.void',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => ['order_uuid' => $orderUuid, 'voided_at' => now()->toIso8601String(), 'reason' => 'test'],
+        ]]])->assertOk();
+
+        // Exactly what was consumed comes back — no drift.
+        $this->assertEqualsWithDelta(10.0, $this->componentQty(self::CUP), 0.001);
+        $this->assertEqualsWithDelta(10.0, $this->componentQty(self::NAPKIN), 0.001);
+    }
+
+    public function test_a_legacy_line_without_a_snapshot_falls_back_to_the_live_read(): void
+    {
+        $this->seedComponents();
+        $this->device();
+
+        $orderUuid = $this->createCoffee(1);
+
+        // Simulate an order written BEFORE the freeze column existed.
+        $orderId = DB::table('pos_orders')->where('uuid', $orderUuid)->value('id');
+        DB::table('pos_order_items')->where('order_id', $orderId)
+            ->update(['component_snapshot_json' => null]);
+
+        // Live edit still applies to legacy lines: napkins 2 -> 5.
+        DB::table('pos_product_components')
+            ->where('product_id', self::COFFEE)
+            ->where('component_product_id', self::NAPKIN)
+            ->update(['quantity' => 5.000]);
+
+        $this->payCoffee($orderUuid, 1);
+
+        $this->assertEqualsWithDelta(9.0, $this->componentQty(self::CUP), 0.001);
+        $this->assertEqualsWithDelta(5.0, $this->componentQty(self::NAPKIN), 0.001);
     }
 
     public function test_an_unstocked_component_noops(): void

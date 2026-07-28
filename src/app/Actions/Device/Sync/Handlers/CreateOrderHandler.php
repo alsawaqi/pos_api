@@ -147,6 +147,7 @@ class CreateOrderHandler implements SyncEventHandler
                     'line_discount' => Money::toOmr((int) ($line['line_discount_baisas'] ?? 0)),
                     'line_total' => Money::toOmr((int) $line['line_total_baisas']),
                     'recipe_snapshot_json' => $this->snapshotRecipe($productId, $product),
+                    'component_snapshot_json' => $this->snapshotComponents($productId),
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $line['notes'] ?? null,
                 ]);
@@ -670,6 +671,29 @@ class CreateOrderHandler implements SyncEventHandler
             'unit' => $r->unit_at_set,
             'unit_cost' => (float) ($costs[$r->ingredient_id] ?? 0),
         ])->all();
+    }
+
+    /**
+     * P-G2 hardening — freeze the parent line's physical-item components
+     * ({product_id, qty} per ONE unit, the same shape as the `components`
+     * slice inside product_snapshot_json) so pay AND void consume/restock
+     * the set the order was written with, immune to later component edits.
+     * Empty [] (not NULL) when the product has no components — NULL is
+     * reserved for rows written before this column existed, which
+     * ConsumeInventoryAction still serves via the legacy live read.
+     *
+     * @return list<array{product_id: int, qty: float}>
+     */
+    private function snapshotComponents(int $productId): array
+    {
+        return DB::table('pos_product_components')
+            ->where('product_id', $productId)
+            ->get()
+            ->map(static fn ($c): array => [
+                'product_id' => (int) $c->component_product_id,
+                'qty' => (float) $c->quantity,
+            ])
+            ->all();
     }
 
     /**

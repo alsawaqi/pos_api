@@ -37,6 +37,10 @@ class OrderItem extends Model
             'line_discount' => 'decimal:3',
             'line_total' => 'decimal:3',
             'recipe_snapshot_json' => 'array',
+            // NULL = written before the component freeze → consume falls
+            // back to the live pos_product_components read; [] = the
+            // product had no components at write time.
+            'component_snapshot_json' => 'array',
         ];
     }
 

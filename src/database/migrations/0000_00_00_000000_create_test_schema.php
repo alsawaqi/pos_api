@@ -597,6 +597,9 @@ return new class extends Migration
             $table->decimal('line_discount', 12, 3)->default(0);
             $table->decimal('line_total', 12, 3);
             $table->text('recipe_snapshot_json')->nullable();
+            // P-G2 hardening — frozen parent-line components (mirrors
+            // pos_admin 2026_08_05_010000). NULL = legacy row → live read.
+            $table->text('component_snapshot_json')->nullable();
             $table->string('status', 32)->default('open');
             $table->text('notes')->nullable();
             $table->timestamps();

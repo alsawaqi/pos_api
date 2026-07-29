@@ -272,8 +272,11 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertSame('processed', $res->json('data.results.0.status'));
 
         // Forwarded to the POS round-up endpoint, linking the POS device + branch
-        // with the branch geo + the device's charity commission profile.
-        Http::assertSent(function ($request) use ($device) {
+        // with the branch geo + the device's charity commission profile. The
+        // donation's uuid rides as pos_reference — the charity-side dedupe key
+        // that makes the hourly retry sweep safe to replay.
+        $donationUuid = (string) RoundupDonation::firstOrFail()->uuid;
+        Http::assertSent(function ($request) use ($device, $donationUuid) {
             return str_contains($request->url(), '/api/donations-pos-roundup')
                 && $request['pos_device_id'] === $device->id
                 && $request['pos_branch_id'] === 10
@@ -285,6 +288,7 @@ class DeviceSyncDonationTest extends TestCase
                 && $request['status'] === 'success'
                 && $request['terminal_id'] === 'TID-9'
                 && $request['country_id'] === 1
+                && $request['pos_reference'] === $donationUuid
                 && ($request['receipt']['status'] ?? null) === 'success';
         });
 

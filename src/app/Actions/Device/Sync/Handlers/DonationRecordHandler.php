@@ -159,6 +159,7 @@ class DonationRecordHandler implements SyncEventHandler
 
             return [
                 'roundup_donation_id' => (int) $donation->id,
+                'roundup_donation_uuid' => (string) $donation->uuid,
                 'payment_id' => (int) $payment->id,
                 'status' => $donation->status,
             ];
@@ -175,7 +176,14 @@ class DonationRecordHandler implements SyncEventHandler
         // money not confirmed ⇒ nothing goes to charity yet. forwarded_at
         // stays NULL and pos_admin forwards it on reconciliation approval.
         if (! $orderHasPendingTender) {
-            $forwarded = $this->charityForwarder->forward($device, $branch, $amount, $receipt, $status);
+            $forwarded = $this->charityForwarder->forward(
+                $device,
+                $branch,
+                $amount,
+                $receipt,
+                $status,
+                $result['roundup_donation_uuid'],
+            );
             if ($forwarded) {
                 RoundupDonation::query()
                     ->whereKey($result['roundup_donation_id'])

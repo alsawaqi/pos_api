@@ -47,6 +47,7 @@ class ForwardCharityDonationAction
         string $amountOmr,
         ?array $receipt,
         ?string $status = null,
+        ?string $posReference = null,
     ): bool {
         $baseUrl = rtrim((string) config('services.charity.url'), '/');
         if ($baseUrl === '') {
@@ -75,6 +76,10 @@ class ForwardCharityDonationAction
                     'status' => $status,
                     'terminal_id' => $device->terminal_id,
                     'bank_id' => $device->bank_id,
+                    // The pos_roundup_donations.uuid — the charity endpoint
+                    // dedupes on it, so a RETRY (lost response, hourly sweep)
+                    // can never double-count the customer's round-up.
+                    'pos_reference' => $posReference,
                     // Geo copied from the POS branch (same id-space as charity geo).
                     'country_id' => $branch?->country_id,
                     'region_id' => $branch?->region_id,

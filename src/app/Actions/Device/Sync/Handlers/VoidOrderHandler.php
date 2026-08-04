@@ -232,9 +232,31 @@ class VoidOrderHandler implements SyncEventHandler
      * set) — an issued invoice's total_owed is a frozen bill, so its backing rows
      * must survive a later void (else the merchant is billed for a sale whose
      * statement rows have vanished). Adjusting the bill is a separate admin void.
+     *
+     * ORDER-LEVEL guard: claims stamp only SOME of an order's rows (a payout
+     * claims the merchant residual; an invoice the platform/other rows), but
+     * both documents' statements are DERIVED from ALL of the order's rows.
+     * Deleting the unclaimed siblings of a claimed order (the old per-row
+     * guard) silently zeroed the platform/bank lines of the payout's branch
+     * statement while its frozen header kept the full figures — a statement
+     * that no longer added up. If ANY row of the order is claimed, ALL of its
+     * rows survive the void.
      */
     private function reverseCommission(Order $order): int
     {
+        $orderHasClaimedRow = SaleCommission::query()
+            ->where('order_id', $order->id)
+            ->where(function ($q): void {
+                $q->whereNotNull('payout_id')->orWhereNotNull('invoice_id');
+            })
+            ->exists();
+        if ($orderHasClaimedRow) {
+            return 0;
+        }
+
+        // The DELETE re-checks the claim columns itself (not just the
+        // exists() read above) so a payout/invoice claiming concurrently
+        // under READ COMMITTED can never lose its just-claimed row.
         return SaleCommission::query()
             ->where('order_id', $order->id)
             ->whereNull('payout_id')

@@ -1007,11 +1007,14 @@ class DeviceSyncOrderTest extends TestCase
 
         $res = $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
 
-        // Only the UNCLAIMED platform + bank rows are reversed; the claimed
-        // merchant row survives so the payout snapshot stays backed.
-        $this->assertSame(2, $res->json('data.results.0.result.commission_removed'));
+        // ORDER-LEVEL guard: the payout claims only the merchant row, but its
+        // branch statement is DERIVED from ALL the order's rows — deleting the
+        // unclaimed platform/bank siblings (the old per-row guard) zeroed the
+        // statement's deduction lines under the frozen header. A claimed
+        // order's rows now ALL survive the void.
+        $this->assertSame(0, $res->json('data.results.0.result.commission_removed'));
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNotNull('payout_id')->count());
-        $this->assertSame(0, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNull('payout_id')->count());
+        $this->assertSame(2, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNull('payout_id')->count());
     }
 
     public function test_voiding_keeps_commission_rows_already_claimed_by_an_invoice(): void
@@ -1042,9 +1045,10 @@ class DeviceSyncOrderTest extends TestCase
 
         $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
 
-        // The invoice-claimed platform row survives so the frozen bill stays
-        // backed; the unclaimed merchant/bank rows are reversed.
+        // ORDER-LEVEL guard (mirror of the payout case): the invoice claims
+        // only the platform row, but its branch statement derives from ALL the
+        // order's rows — the merchant/bank siblings survive too.
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNotNull('invoice_id')->count());
-        $this->assertSame(0, DB::table('pos_sale_commissions')->where('order_id', $order->id)->where('party_type', 'merchant')->count());
+        $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->where('party_type', 'merchant')->count());
     }
 }

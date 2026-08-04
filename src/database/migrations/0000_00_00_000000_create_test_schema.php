@@ -999,6 +999,9 @@ return new class extends Migration
             $table->unsignedBigInteger('payout_id')->nullable();
             $table->string('party_type', 20);
             $table->string('party_label', 120);
+            // Mixed-tender apportionment — money channel of the row:
+            // card (platform holds) | cash_bank (merchant holds) | all (legacy).
+            $table->string('channel', 16)->default('all');
             $table->decimal('percent', 5, 2);
             $table->decimal('gross_amount', 12, 3);
             $table->decimal('commission_amount', 12, 3);

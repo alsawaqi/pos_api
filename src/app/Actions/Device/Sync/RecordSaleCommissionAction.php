@@ -36,8 +36,21 @@ use Illuminate\Support\Str;
  * recorded; the merchant simply keeps 100% (the blueprint default).
  * Idempotent: if the order already has a breakdown it is left untouched.
  *
- * Invariant: Σ(rows.commission_amount) == COLLECTED (== grand_total when
- * nothing was gifted; gross_amount still snapshots the full grand_total).
+ * CHANNEL SPLITTING (mixed-tender apportionment): every row is stamped
+ * with the money CHANNEL it belongs to — 'card' (the platform holds this
+ * money; paid to the merchant via payouts) or 'cash_bank' (the merchant
+ * already holds it; the platform bills its cut via invoices). A share
+ * line lands in the channel its base selects; an 'all' line on a MIXED
+ * order splits into one row per non-empty channel; the merchant residual
+ * is computed PER CHANNEL. A pure order therefore emits exactly the same
+ * rows as before, just channel-stamped. This is what lets the payout
+ * claim only card-channel residuals (money the platform actually holds)
+ * — the fix for the mixed-order leak where the whole-order residual was
+ * paid out while the merchant already held the cash slice in the drawer.
+ *
+ * Invariants: Σ(rows.commission_amount) == COLLECTED, and per channel
+ * Σ(channel rows) == that channel's collected slice (gross_amount still
+ * snapshots the full grand_total on every row).
  */
 final readonly class RecordSaleCommissionAction
 {
@@ -80,50 +93,76 @@ final readonly class RecordSaleCommissionAction
         }
         $occurredAt = $order->closed_at ?? now();
 
+        // The two money channels of this order. $cardBaisas ≤ $collectedBaisas
+        // (a gift tender is never a card tender), so the slices partition the
+        // collected amount exactly.
+        $cardSlice = min($cardBaisas, $collectedBaisas);
+        $cashSlice = $collectedBaisas - $cardSlice;
+
         $rows = [];
         $sortOrder = 0;
-        $allocatedBaisas = 0;
+        $allocatedByChannel = [self::APPLIES_CARD => 0, self::APPLIES_CASH_BANK => 0];
 
-        foreach ($profile->shares as $share) {
-            $percent = (float) $share->percent;
-            // Bank (acquirer) cut only on card money. Everyone else on the base
-            // their channel selects: 'all' → collected, 'card' → card money,
-            // 'cash_bank' → non-card collected (cash + bank-POS). Null-safe so
-            // this deploys cleanly before the pos_admin migration adds the
-            // column (a missing attribute reads as 'all' — prior behaviour).
-            // $cardBaisas ≤ $collectedBaisas (a gift tender is never a card
-            // tender), so no slice can exceed its share of the total.
-            $appliesTo = (string) ($share->applies_to ?? self::APPLIES_ALL);
-            if ($share->party_type === self::PARTY_BANK || $appliesTo === self::APPLIES_CARD) {
-                $base = $cardBaisas;
-            } elseif ($appliesTo === self::APPLIES_CASH_BANK) {
-                $base = max(0, $collectedBaisas - $cardBaisas);
-            } else {
-                $base = $collectedBaisas;
-            }
-            $amountBaisas = (int) round($base * $percent / 100);
-            $allocatedBaisas += $amountBaisas;
-
+        $emit = function (object $share, string $channel, int $base) use (&$rows, &$sortOrder, &$allocatedByChannel): void {
+            $amountBaisas = (int) round($base * (float) $share->percent / 100);
+            $allocatedByChannel[$channel] += $amountBaisas;
             $rows[] = [
                 'party_type' => $share->party_type,
                 'party_label' => $share->label,
-                'percent' => $percent,
+                'channel' => $channel,
+                'percent' => (float) $share->percent,
                 'amount_baisas' => $amountBaisas,
                 'sort_order' => $sortOrder++,
             ];
+        };
+
+        foreach ($profile->shares as $share) {
+            // Bank (acquirer) cut only on card money. Everyone else on the base
+            // their channel selects: 'all' → collected, 'card' → card money,
+            // 'cash_bank' → non-card collected (cash + bank-POS). Null-safe on
+            // applies_to (a missing attribute reads as 'all' — prior
+            // behaviour); the channel COLUMN has its own hasColumn fallback.
+            $appliesTo = (string) ($share->applies_to ?? self::APPLIES_ALL);
+            if ($share->party_type === self::PARTY_BANK || $appliesTo === self::APPLIES_CARD) {
+                // Charged on card money; a 0-amount bank row on a cash sale is
+                // deliberate (prior behaviour — the row documents the 0 cut).
+                $emit($share, self::APPLIES_CARD, $cardSlice);
+            } elseif ($appliesTo === self::APPLIES_CASH_BANK) {
+                $emit($share, self::APPLIES_CASH_BANK, $cashSlice);
+            } elseif ($cardSlice > 0 && $cashSlice > 0) {
+                // 'all' on a MIXED order: one row per channel, each on its
+                // slice, so each channel's books balance independently.
+                $emit($share, self::APPLIES_CARD, $cardSlice);
+                $emit($share, self::APPLIES_CASH_BANK, $cashSlice);
+            } else {
+                // 'all' on a pure order: single row in the only channel —
+                // identical to the pre-split behaviour, channel-stamped.
+                $emit($share, $cardSlice > 0 ? self::APPLIES_CARD : self::APPLIES_CASH_BANK, $collectedBaisas);
+            }
         }
 
-        // The merchant takes the exact remainder — guarantees the rows sum
-        // to the COLLECTED amount even after rounding each share
-        // independently (== grand_total when nothing was gifted).
-        $merchantBaisas = $collectedBaisas - $allocatedBaisas;
-        $rows[] = [
-            'party_type' => 'merchant',
-            'party_label' => 'Merchant',
-            'percent' => (float) $profile->merchant_percent,
-            'amount_baisas' => $merchantBaisas,
-            'sort_order' => $sortOrder,
-        ];
+        // The merchant takes the exact remainder PER CHANNEL — guarantees
+        // Σ(channel rows) == that channel's collected slice even after
+        // rounding each share independently, which is what payouts (card
+        // channel) and invoices (cash channel) rely on. A pure order emits
+        // one merchant row, exactly as before.
+        $merchantChannels = [];
+        if ($cardSlice > 0) {
+            $merchantChannels[] = [self::APPLIES_CARD, $cardSlice - $allocatedByChannel[self::APPLIES_CARD]];
+        }
+        if ($cashSlice > 0) {
+            $merchantChannels[] = [self::APPLIES_CASH_BANK, $cashSlice - $allocatedByChannel[self::APPLIES_CASH_BANK]];
+        }
+        foreach ($merchantChannels as [$channel, $merchantBaisas]) {
+            $rows[] = [
+                'party_type' => 'merchant',
+                'party_label' => 'Merchant',
+                'channel' => $channel,
+                'percent' => (float) $profile->merchant_percent,
+                'amount_baisas' => $merchantBaisas,
+                'sort_order' => $sortOrder++,
+            ];
+        }
 
         $ids = [];
         foreach ($rows as $row) {
@@ -137,6 +176,7 @@ final readonly class RecordSaleCommissionAction
                 'commission_profile_id' => $profile->id,
                 'party_type' => $row['party_type'],
                 'party_label' => $row['party_label'],
+                ...(self::channelColumnExists() ? ['channel' => $row['channel']] : []),
                 'percent' => $row['percent'],
                 'gross_amount' => Money::toOmr($grossBaisas),
                 'commission_amount' => Money::toOmr($row['amount_baisas']),
@@ -149,5 +189,18 @@ final readonly class RecordSaleCommissionAction
         }
 
         return $ids;
+    }
+    /**
+     * Deploy-window safety: the shared-DB `channel` column ships in a
+     * pos_admin migration. If this app ever runs against a DB where that
+     * migration has not landed yet, recording must fall back to legacy
+     * 'all' rows (column default) instead of failing every paid order.
+     * Cached per process; refreshed on deploy restart.
+     */
+    private static function channelColumnExists(): bool
+    {
+        static $exists = null;
+
+        return $exists ??= \Illuminate\Support\Facades\Schema::hasColumn('pos_sale_commissions', 'channel');
     }
 }

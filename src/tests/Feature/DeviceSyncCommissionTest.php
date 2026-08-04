@@ -251,12 +251,26 @@ class DeviceSyncCommissionTest extends TestCase
 
         $rows = $this->breakdownFor($uuid);
 
-        // Platform 2% of 3.000 = 0.060; bank 3% of the 1.000 card part = 0.030.
-        $this->assertEqualsWithDelta(0.060, (float) $rows[0]->commission_amount, 1e-9);
-        $this->assertEqualsWithDelta(0.030, (float) $rows[1]->commission_amount, 1e-9);
-        // Merchant = 3.000 - 0.060 - 0.030 = 2.910.
-        $this->assertEqualsWithDelta(2.910, (float) $rows[2]->commission_amount, 1e-9);
+        // Channel-split: the 'all' platform line lands one row per channel
+        // (2% of 1.000 card = 0.020 + 2% of 2.000 cash = 0.040 — still 0.060
+        // total); bank 3% of the 1.000 card part = 0.030 (card channel); the
+        // merchant residual is per channel so each channel's books balance:
+        // card 1.000−0.020−0.030 = 0.950, cash 2.000−0.040 = 1.960.
+        $this->assertCount(5, $rows);
+        $byChannel = $rows->groupBy(fn ($r) => $r->party_type.':'.$r->channel);
+        $this->assertEqualsWithDelta(0.020, (float) $byChannel['platform:card'][0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.040, (float) $byChannel['platform:cash_bank'][0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.030, (float) $byChannel['bank:card'][0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(0.950, (float) $byChannel['merchant:card'][0]->commission_amount, 1e-9);
+        $this->assertEqualsWithDelta(1.960, (float) $byChannel['merchant:cash_bank'][0]->commission_amount, 1e-9);
+
+        // Party totals and the whole-order invariant are unchanged.
+        $this->assertEqualsWithDelta(0.060, $rows->where('party_type', 'platform')->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+        $this->assertEqualsWithDelta(2.910, $rows->where('party_type', 'merchant')->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
         $this->assertEqualsWithDelta(3.0, $rows->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+        // Per-channel invariant: Σ(channel rows) == that channel's slice.
+        $this->assertEqualsWithDelta(1.0, $rows->where('channel', 'card')->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
+        $this->assertEqualsWithDelta(2.0, $rows->where('channel', 'cash_bank')->sum(fn ($r): float => (float) $r->commission_amount), 1e-9);
     }
 
     /**
@@ -434,12 +448,52 @@ class DeviceSyncCommissionTest extends TestCase
             ['method' => 'cash', 'amount_baisas' => 4000, 'change_given_baisas' => 0],
         ])])->assertOk();
 
-        $rows = $this->breakdownFor($uuid)->keyBy('party_label');
-        $this->assertSame('0.060', number_format((float) $rows['Mithqal card']->commission_amount, 3, '.', ''));
-        $this->assertSame('0.080', number_format((float) $rows['Mithqal cash']->commission_amount, 3, '.', ''));
-        $this->assertSame('9.860', number_format((float) $rows['Merchant']->commission_amount, 3, '.', ''));
+        $rows = $this->breakdownFor($uuid);
+        $byLabel = $rows->keyBy('party_label');
+        $this->assertSame('0.060', number_format((float) $byLabel['Mithqal card']->commission_amount, 3, '.', ''));
+        $this->assertSame('card', $byLabel['Mithqal card']->channel);
+        $this->assertSame('0.080', number_format((float) $byLabel['Mithqal cash']->commission_amount, 3, '.', ''));
+        $this->assertSame('cash_bank', $byLabel['Mithqal cash']->channel);
+
+        // The merchant residual is PER CHANNEL on a mixed order: card
+        // 6.000−0.060 = 5.940 (paid via payout — money the platform holds),
+        // cash 4.000−0.080 = 3.920 (already in the merchant's drawer).
+        // Together they are the old whole-order 9.860.
+        $merchant = $rows->where('party_type', 'merchant')->keyBy('channel');
+        $this->assertSame('5.940', number_format((float) $merchant['card']->commission_amount, 3, '.', ''));
+        $this->assertSame('3.920', number_format((float) $merchant['cash_bank']->commission_amount, 3, '.', ''));
         // Σ(rows) == collected, to the baisa.
-        $this->assertSame('10.000', number_format((float) $this->breakdownFor($uuid)->sum('commission_amount'), 3, '.', ''));
+        $this->assertSame('10.000', number_format((float) $rows->sum('commission_amount'), 3, '.', ''));
+    }
+
+    public function test_pure_orders_are_channel_stamped_not_legacy_all(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $this->seedCommission([
+            ['party_type' => 'platform', 'label' => 'Platform', 'percent' => 2],
+            ['party_type' => 'bank', 'label' => 'Acme Bank', 'percent' => 3],
+        ]);
+
+        // Pure CARD: every row (incl. the merchant residual) lives in the
+        // card channel — a regression to 'all' would silently re-route these
+        // through the legacy predicates while every amount-sum stays green.
+        $cardUuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($cardUuid)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($cardUuid, $this->card(3000))])->assertOk();
+        foreach ($this->breakdownFor($cardUuid) as $row) {
+            $this->assertSame('card', $row->channel, $row->party_type);
+        }
+
+        // Pure CASH: platform + merchant in cash_bank; the deliberate
+        // 0-amount bank row documents its cut in the (empty) card channel.
+        $cashUuid = (string) Str::uuid();
+        $this->push('mdev_com', [$this->createEvent($cashUuid)])->assertOk();
+        $this->push('mdev_com', [$this->payEvent($cashUuid, $this->cash(3000))])->assertOk();
+        $rows = $this->breakdownFor($cashUuid)->keyBy('party_type');
+        $this->assertSame('cash_bank', $rows['platform']->channel);
+        $this->assertSame('card', $rows['bank']->channel);
+        $this->assertSame('cash_bank', $rows['merchant']->channel);
     }
 
     public function test_no_profile_records_no_breakdown(): void

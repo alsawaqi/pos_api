@@ -257,19 +257,13 @@ class BuildDeviceConfigAction
         // its slider set wholesale — so item/target edits propagate without
         // per-row delta bookkeeping or a deleted.sliders purge list. Small by
         // nature (a handful of loops, a few items each).
+        // "Live + in this device's loop" lives on the model as ONE pair of
+        // scopes, shared with the slider.display impression gate — the two
+        // must never drift again (see MarketingSlider::scopeLiveAt).
         $now = now();
         $sliders = MarketingSlider::query()
-            ->where('status', 'active')
-            ->where(fn (Builder $q) => $q->whereNull('starts_at')->orWhere('starts_at', '<=', $now))
-            ->where(fn (Builder $q) => $q->whereNull('ends_at')->orWhere('ends_at', '>=', $now))
-            ->where(function (Builder $q) use ($device, $branchId): void {
-                $q->whereHas('targets', function (Builder $t) use ($device, $branchId): void {
-                    $t->where('device_id', $device->id)
-                        ->orWhere(function (Builder $w) use ($branchId): void {
-                            $w->whereNull('device_id')->where('branch_id', $branchId);
-                        });
-                })->orWhereDoesntHave('targets');
-            })
+            ->liveAt($now)
+            ->servedToDevice($device)
             ->with(['items' => fn ($q) => $q->orderBy('sort_order'), 'items.contentAsset'])
             ->orderBy('id')
             ->get();

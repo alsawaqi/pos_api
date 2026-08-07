@@ -52,6 +52,13 @@ return [
     // DEVICE can reach (dev: localhost:8089; prod: the public marketing URL).
     'marketing' => [
         'public_url' => env('MARKETING_PUBLIC_URL', 'http://localhost:8089'),
+
+        // Plausibility ceiling on ad plays one screen may report in a day.
+        // Advertiser CPM invoices are billed on the raw impression count, so
+        // without a bound the bill is whatever the fleet reports. A 4s loop
+        // yields ~21,600 plays/day, so the default is generous for a real
+        // device while still capping a scripted one. Tune per hardware.
+        'max_plays_per_device_per_day' => (int) env('MARKETING_MAX_PLAYS_PER_DEVICE_PER_DAY', 25000),
     ],
 
 ];

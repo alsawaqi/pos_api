@@ -220,7 +220,9 @@ class DeviceSyncSliderTest extends TestCase
         ])])->assertOk();
 
         $this->assertSame('failed', $res->json('data.results.0.status'));
-        $this->assertStringContainsString('not served to this device', $res->json('data.results.0.result.error'));
+        // Message widened when the gate started checking the campaign is live
+        // at play time, not just targeted (see DeviceSyncSliderBillingIntegrityTest).
+        $this->assertStringContainsString('not live on this device', $res->json('data.results.0.result.error'));
         $this->assertDatabaseCount('pos_marketing_impressions', 0);
     }
 

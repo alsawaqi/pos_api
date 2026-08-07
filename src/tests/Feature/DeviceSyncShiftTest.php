@@ -101,7 +101,7 @@ class DeviceSyncShiftTest extends TestCase
         ];
     }
 
-    private function payCashEvent(string $orderUuid, int $amountBaisas): array
+    private function payCashEvent(string $orderUuid, int $amountBaisas, int $changeGivenBaisas = 0): array
     {
         return [
             'client_event_id' => (string) Str::uuid(),
@@ -110,7 +110,11 @@ class DeviceSyncShiftTest extends TestCase
             'payload' => [
                 'order_uuid' => $orderUuid,
                 'paid_at' => now()->subHour()->toIso8601String(),
-                'payments' => [['method' => 'cash', 'amount_baisas' => $amountBaisas]],
+                'payments' => [[
+                    'method' => 'cash',
+                    'amount_baisas' => $amountBaisas,
+                    'change_given_baisas' => $changeGivenBaisas,
+                ]],
             ],
         ];
     }
@@ -123,11 +127,45 @@ class DeviceSyncShiftTest extends TestCase
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
     }
 
-    private function ringCashSale(string $token, int $amountBaisas, int $staffId = 7): void
+    private function ringCashSale(string $token, int $amountBaisas, int $staffId = 7, int $changeGivenBaisas = 0): void
     {
         $uuid = (string) Str::uuid();
         $this->push($token, [$this->createEvent($uuid, $amountBaisas, $staffId)])->assertOk();
-        $this->push($token, [$this->payCashEvent($uuid, $amountBaisas)])->assertOk();
+        $this->push($token, [$this->payCashEvent($uuid, $amountBaisas, $changeGivenBaisas)])->assertOk();
+    }
+
+    /**
+     * An over-tendered cash sale must NOT reduce expected cash.
+     *
+     * `amount` is the NET amount applied to the bill — PayOrderHandler
+     * rejects any pay whose tender sum deviates from grand_total, so change
+     * is already excluded and rides `change_given` purely as an audit datum.
+     * Subtracting it again understated expected_cash by exactly the change
+     * given on every handheld cash sale, reading as a phantom drawer OVER
+     * (and masking real shortages of the same size). Every other test in this
+     * file sends change 0, which is why the defect shipped.
+     */
+    public function test_close_ignores_change_given_when_computing_expected_cash(): void
+    {
+        $this->seedProduct();
+        $this->device();
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000)])->assertOk();
+        // 3.000 bill, customer hands 5.000, 2.000 change back to them.
+        $this->ringCashSale('mdev_a', 3000, changeGivenBaisas: 2000);
+
+        // The drawer holds 10.000 float + the 3.000 bill = 13.000.
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftUuid, 13000)])->assertOk();
+
+        $this->assertSame(13000, $res->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+
+        // The Z tender line reports the same net cash, not cash minus change.
+        $cash = collect($res->json('data.results.0.result.summary.tenders') ?? [])
+            ->firstWhere('method', 'cash');
+        $this->assertNotNull($cash, 'Z report has no cash tender line');
+        $this->assertSame(3000, (int) $cash['amount_baisas']);
     }
 
     public function test_open_creates_an_open_shift(): void

@@ -21,9 +21,19 @@ use RuntimeException;
  * Resolves the shift scoped to the device's company + branch, then computes
  * the drawer reconciliation (§10.8):
  *
- *   expected_cash = opening_cash + Σ(cash tendered − change given) for cash
- *                   payments captured on the shift during the window.
+ *   expected_cash = opening_cash + Σ(cash payment amount) for cash payments
+ *                   captured on the shift during the window.
  *   variance      = closing_cash − expected_cash   (negative ⇒ short)
+ *
+ * `pos_payments.amount` is the NET amount a tender applies to the bill, so
+ * change is ALREADY excluded and must not be subtracted again. That is
+ * guaranteed by the wire contract, not by convention: PayOrderHandler
+ * rejects any pay whose tender sum deviates from grand_total by more than
+ * one baisa, so an over-tendered cash sale records the bill amount and
+ * carries the cash handed back in `change_given` purely as an audit datum.
+ * Subtracting it here understated expected_cash by exactly the change given
+ * on every handheld cash sale (the machine never sends the field), reading
+ * as a phantom drawer OVER — and masking real shortages of equal size.
  *
  * Orders carry no shift_id, so attribution is temporal + identity, inside
  * the shift's own company + branch:
@@ -68,10 +78,11 @@ class CloseShiftHandler implements SyncEventHandler
                 ->where('pos_payments.status', Payment::STATUS_SUCCESS)
                 ->where($this->orderBelongsToShift($shift))
                 ->whereBetween('pos_payments.captured_at', [$shift->opened_at, $closedAt])
-                ->selectRaw('COALESCE(SUM(pos_payments.amount), 0) as amt, COALESCE(SUM(pos_payments.change_given), 0) as chg')
+                ->selectRaw('COALESCE(SUM(pos_payments.amount), 0) as amt')
                 ->first();
 
-            $netCashBaisas = Money::toBaisas($cash->amt ?? 0) - Money::toBaisas($cash->chg ?? 0);
+            // amount is already net of change (see the class docblock).
+            $netCashBaisas = Money::toBaisas($cash->amt ?? 0);
             $expectedBaisas = Money::toBaisas($shift->opening_cash) + $netCashBaisas;
             $varianceBaisas = $closingBaisas - $expectedBaisas;
 
@@ -173,8 +184,10 @@ class CloseShiftHandler implements SyncEventHandler
             ->groupBy('pos_payments.method')
             ->orderBy('pos_payments.method')
             ->selectRaw(
+                // amount is already net of change (see the class docblock) —
+                // subtracting change_given here understated the Z tender line.
                 'pos_payments.method,'
-                .' COALESCE(SUM(pos_payments.amount - COALESCE(pos_payments.change_given, 0)), 0) as amt,'
+                .' COALESCE(SUM(pos_payments.amount), 0) as amt,'
                 .' COUNT(*) as cnt'
             )
             ->get();

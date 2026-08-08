@@ -20,11 +20,11 @@ use RuntimeException;
  * {@see Handlers\PayOrderHandler} when the pay event carries a
  * `loyalty_redeem` block.
  *
- * Unlike earn (best-effort), redemption is STRICT: a redeem with no customer,
- * an unknown rule, no account, or an over-balance spend throws — failing the
- * pay event — because the bill was already reduced and a silent miss would
- * desync the books. (Reconciling an optimistic over-redeem with a customer
- * note, per §9.1.6, is a later refinement.)
+ * Missing customer, rule, or account data remains strict because no valid
+ * ledger can own the debit. API-001 narrows one expected failure: when a valid
+ * account's server balance no longer covers the device's optimistic spend,
+ * the pay handler catches that specific conflict and reconciles it against the
+ * locked available balance.
  */
 class ApplyLoyaltyRedeemAction
 {
@@ -68,5 +68,55 @@ class ApplyLoyaltyRedeemAction
             'redeemed at sale',
             $order->closed_at,
         );
+    }
+
+    /**
+     * Resolve only a confirmed insufficient-balance conflict. The same strict
+     * customer/rule/account checks are repeated so a concurrent deletion or
+     * tenant mismatch cannot be converted into a successful sale.
+     *
+     * @return array{
+     *     redeem: LoyaltyTransaction|null,
+     *     adjustment: LoyaltyTransaction|null,
+     *     points_applied: int,
+     *     stamps_applied: int,
+     *     points_shortfall: int,
+     *     stamps_shortfall: int,
+     *     warning: string|null
+     * }
+     */
+    public function reconcileInsufficientBalance(
+        Order $order,
+        int $loyaltyRuleId,
+        int $pointsRequested,
+        int $stampsRequested,
+        string $failureReason,
+    ): array {
+        $customerId = $order->customer_id !== null ? (int) $order->customer_id : null;
+        if ($customerId === null) {
+            throw new RuntimeException('cannot redeem loyalty without a customer on the order');
+        }
+
+        $rule = LoyaltyRule::query()
+            ->where('company_id', $order->company_id)
+            ->findOrFail($loyaltyRuleId);
+        $account = LoyaltyAccount::query()
+            ->where('customer_id', $customerId)
+            ->where('loyalty_rule_id', $rule->id)
+            ->firstOrFail();
+
+        $result = $this->writer->writeClampedRedemption(
+            $account,
+            $pointsRequested,
+            $stampsRequested,
+            (int) $order->id,
+            $failureReason,
+            $order->closed_at,
+        );
+
+        return [
+            ...$result,
+            'warning' => $result['adjustment']?->reason,
+        ];
     }
 }

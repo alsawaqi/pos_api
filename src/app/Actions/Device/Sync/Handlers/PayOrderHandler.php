@@ -10,6 +10,7 @@ use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Exceptions\InsufficientLoyaltyBalanceException;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -219,16 +220,38 @@ class PayOrderHandler implements SyncEventHandler
                 }
             }
 
-            // Loyalty redemption: record the points/stamps SPENT (their value
-            // is already on the order as a snapshot discount).
-            $redeemTxn = $loyaltyRedeem !== null && isset($loyaltyRedeem['rule_id'])
-                ? $this->loyaltyRedeem->apply(
-                    $order,
-                    (int) $loyaltyRedeem['rule_id'],
-                    (int) ($loyaltyRedeem['points'] ?? 0),
-                    (int) ($loyaltyRedeem['stamps'] ?? 0),
-                )
-                : null;
+            // Loyalty redemption: the strict path records the requested spend.
+            // API-001 contains only the expected insufficient-balance conflict:
+            // the sale still settles, while the locked server balance is
+            // debited as far as possible and the shortfall is review-flagged.
+            $redeemTxn = null;
+            $redeemAdjustment = null;
+            $redeemWarning = null;
+            if ($loyaltyRedeem !== null && isset($loyaltyRedeem['rule_id'])) {
+                $ruleId = (int) $loyaltyRedeem['rule_id'];
+                $pointsRequested = (int) ($loyaltyRedeem['points'] ?? 0);
+                $stampsRequested = (int) ($loyaltyRedeem['stamps'] ?? 0);
+
+                try {
+                    $redeemTxn = $this->loyaltyRedeem->apply(
+                        $order,
+                        $ruleId,
+                        $pointsRequested,
+                        $stampsRequested,
+                    );
+                } catch (InsufficientLoyaltyBalanceException $exception) {
+                    $reconciled = $this->loyaltyRedeem->reconcileInsufficientBalance(
+                        $order,
+                        $ruleId,
+                        $pointsRequested,
+                        $stampsRequested,
+                        $exception->getMessage(),
+                    );
+                    $redeemTxn = $reconciled['redeem'];
+                    $redeemAdjustment = $reconciled['adjustment'];
+                    $redeemWarning = $reconciled['warning'];
+                }
+            }
 
             return [
                 'order_id' => (int) $order->id,
@@ -240,6 +263,8 @@ class PayOrderHandler implements SyncEventHandler
                 'loyalty_transaction_id' => $loyaltyTxnIds[0] ?? null,
                 'loyalty_transaction_ids' => $loyaltyTxnIds,
                 'loyalty_redeem_transaction_id' => $redeemTxn?->id,
+                'loyalty_redeem_adjustment_id' => $redeemAdjustment?->id,
+                'loyalty_redeem_warning' => $redeemWarning,
             ];
         });
     }

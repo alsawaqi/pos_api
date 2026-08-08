@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Device\Sync\SyncEventDispatchLock;
 use App\Models\Device;
 use App\Models\Expense;
 use App\Models\RestockRequestLine;
 use App\Models\SyncEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -160,7 +160,7 @@ class DeviceSyncExpenseRestockTest extends TestCase
             'result_json' => ['error' => 'deadlock'],
         ]);
 
-        $retryLock = Cache::lock('device-sync:failed-retry:'.$syncEvent->id, 300);
+        $retryLock = app(SyncEventDispatchLock::class)->forEvent($syncEvent);
         $this->assertTrue($retryLock->get());
 
         try {

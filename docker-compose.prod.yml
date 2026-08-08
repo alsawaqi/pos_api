@@ -19,6 +19,28 @@ services:
     networks:
       - charity_net
 
+  # ── Laravel scheduler (API-002 stranded-event recovery) ──────────────────
+  # This API is a separate image from pos_admin, so an admin scheduler cannot
+  # execute its sync sweeper. No migrations run here; it only evaluates this
+  # application's registered schedule once per minute.
+  scheduler:
+    image: pos_api-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_CHANNEL: stderr
+    command: ["php", "artisan", "schedule:work"]
+    depends_on:
+      - pos_api_redis
+    networks:
+      - charity_net
+
   # ── nginx (fronts php-fpm; Nginx Proxy Manager forwards to it by alias) ───
   nginx:
     image: nginx:1.25-alpine

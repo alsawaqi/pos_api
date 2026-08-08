@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace App\Actions\Device;
 
 use App\Actions\Device\Sync\SyncEventDispatcher;
+use App\Actions\Device\Sync\SyncEventDispatchLock;
 use App\Models\Device;
 use App\Models\SyncEvent;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * Phase 8.2 — ingests a batch of device sync events into the
@@ -37,12 +37,9 @@ use Illuminate\Support\Facades\Cache;
  */
 class IngestSyncEventsAction
 {
-    private const FAILED_RETRY_LOCK_SECONDS = 300;
-
-    private const FAILED_RETRY_LOCK_PREFIX = 'device-sync:failed-retry:';
-
     public function __construct(
         private readonly SyncEventDispatcher $dispatcher,
+        private readonly SyncEventDispatchLock $dispatchLock,
     ) {}
 
     /**
@@ -67,10 +64,7 @@ class IngestSyncEventsAction
                 // prevents a second row, but cannot stop two requests that both
                 // read this existing failed row from dispatching its side effect.
                 if ($existing->ack_status === SyncEvent::STATUS_FAILED) {
-                    $lock = Cache::lock(
-                        $this->failedRetryLockName($existing),
-                        self::FAILED_RETRY_LOCK_SECONDS,
-                    );
+                    $lock = $this->dispatchLock->forEvent($existing);
 
                     if (! $lock->get()) {
                         $existing->refresh();
@@ -118,8 +112,9 @@ class IngestSyncEventsAction
                 ]);
 
                 // 8.3: process the event inline (order.create/pay/void) so
-                // the ACK carries the settled state + server refs. Unknown
-                // types stay `received`; duplicates never reach here.
+                // the ACK carries the settled state + server refs. The known
+                // handler-less sync.noop stays `received`; duplicates never
+                // reach here. Unknown types are rejected by SyncPushRequest.
                 $this->dispatcher->dispatch($row, $device);
 
                 $accepted++;
@@ -171,10 +166,5 @@ class IngestSyncEventsAction
             'processed_at' => $row->processed_at?->toIso8601String(),
             'result' => $row->result_json,
         ];
-    }
-
-    private function failedRetryLockName(SyncEvent $row): string
-    {
-        return self::FAILED_RETRY_LOCK_PREFIX.$row->getKey();
     }
 }

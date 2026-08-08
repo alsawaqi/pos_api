@@ -55,9 +55,14 @@ class SyncEventDispatcher
         private readonly SliderDisplayHandler $sliderDisplay,
     ) {}
 
-    public function dispatch(SyncEvent $event, Device $device): void
+    /**
+     * The canonical handler registry used by both inline ingest and recovery.
+     *
+     * @return array<string, SyncEventHandler>
+     */
+    private function handlers(): array
     {
-        $handler = match ($event->event_type) {
+        return [
             'order.create' => $this->createOrder,
             'order.hold' => $this->holdOrder,
             'order.transfer' => $this->transferOrder,
@@ -72,8 +77,25 @@ class SyncEventDispatcher
             'stock.count' => $this->stockCount,
             'product.waste' => $this->productWaste,
             'slider.display' => $this->sliderDisplay,
-            default => null,
-        };
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function handledEventTypes(): array
+    {
+        return array_keys($this->handlers());
+    }
+
+    public function handles(string $eventType): bool
+    {
+        return isset($this->handlers()[$eventType]);
+    }
+
+    public function dispatch(SyncEvent $event, Device $device): void
+    {
+        $handler = $this->handlers()[$event->event_type] ?? null;
 
         if ($handler === null) {
             return;

@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Models\Device;
 use App\Models\Payment;
 use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
+use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -120,6 +123,7 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertDatabaseHas('pos_roundup_donations', [
             'company_id' => 100, 'branch_id' => 10, 'order_id' => $orderId, 'payment_id' => $paymentId,
             'bank_id' => 5, 'terminal_id' => 'TID-9', 'commission_profile_id' => 7,
+            'organization_id' => 3, 'branch_name' => 'Main',
             'source' => 'pos_roundup', 'status' => 'success',
             'country_id' => 1, 'region_id' => 2, 'district_id' => 3, 'city_id' => 4,
         ]);
@@ -261,6 +265,25 @@ class DeviceSyncDonationTest extends TestCase
             'server_received_at' => now()->subMinutes(11),
         ]);
 
+        // Reassignment and branch edits after the sale must not rewrite who
+        // receives the donation or the origin shown in charity reporting.
+        $device->forceFill([
+            'bank_id' => 105,
+            'terminal_id' => 'CURRENT-TID',
+            'commission_profile_id' => 107,
+            'organization_id' => 103,
+        ])->save();
+        DB::table('pos_branches')->where('id', 10)->update([
+            'name' => 'Current Branch',
+            'country_id' => 11,
+            'region_id' => 12,
+            'district_id' => 13,
+            'city_id' => 14,
+            'latitude' => 24.0000000,
+            'longitude' => 59.0000000,
+            'updated_at' => now(),
+        ]);
+
         config(['services.charity.url' => 'http://charity.test']);
         $statusWhenForwarded = null;
         $transactionLevelWhenForwarded = null;
@@ -280,12 +303,30 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertSame(SyncEvent::STATUS_PROCESSED, $syncEvent->ack_status);
         $this->assertSame((int) $donation->id, (int) $syncEvent->result_json['roundup_donation_id']);
         $this->assertSame(SyncEvent::STATUS_PROCESSED, $statusWhenForwarded);
-        $this->assertSame($baselineTransactionLevel, $transactionLevelWhenForwarded);
+        // The event stamp is already committed, but the bounded idempotent
+        // forward holds a new order/donation serialization transaction.
+        $this->assertSame($baselineTransactionLevel + 1, $transactionLevelWhenForwarded);
         $this->assertNotNull($donation->forwarded_at);
         $this->assertDatabaseCount('pos_roundup_donations', 1);
         Http::assertSentCount(1);
         Http::assertSent(
-            fn ($request): bool => (string) $request['pos_reference'] === (string) $donation->uuid,
+            fn ($request): bool => $request['pos_device_id'] === $device->id
+                && $request['pos_branch_id'] === 10
+                && $request['pos_branch_name'] === 'Main'
+                && $request['commission_profile_id'] === 7
+                && $request['organization_id'] === 3
+                && $request['amount'] === '0.200'
+                && $request['status'] === 'success'
+                && $request['terminal_id'] === 'TID-9'
+                && $request['bank_id'] === 5
+                && (string) $request['pos_reference'] === (string) $donation->uuid
+                && $request['country_id'] === 1
+                && $request['region_id'] === 2
+                && $request['district_id'] === 3
+                && $request['city_id'] === 4
+                && $request['latitude'] === '23.5880000'
+                && $request['longitude'] === '58.4060000'
+                && ($request['receipt']['status'] ?? null) === 'success',
         );
 
         // If an operator encounters the same ambiguous ledger state again,
@@ -361,6 +402,55 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertSame((int) $donation->id, (int) $syncEvent->result_json['roundup_donation_id']);
         $this->assertSame('void', $syncEvent->result_json['status']);
         $this->assertDatabaseCount('pos_roundup_donations', 1);
+        Http::assertNothingSent();
+    }
+
+    public function test_stranded_donation_cannot_be_created_after_the_order_was_voided(): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $device = $this->device();
+        $device->forceFill(['assigned_at' => now()->subHour()])->save();
+        $this->seedBranch();
+        [, $paymentId] = $this->seedOrderAndCard();
+        $event = $this->donationEvent();
+
+        // The event reached the durable ledger, then its worker died before
+        // running the handler. A later order.void is now the terminal decision.
+        $syncEvent = SyncEvent::create([
+            'client_event_id' => $event['client_event_id'],
+            'device_id' => $device->id,
+            'event_type' => $event['event_type'],
+            'payload_json' => $event['payload'],
+            'client_timestamp' => now()->subMinutes(12),
+            'server_received_at' => now()->subMinutes(11),
+            'ack_status' => SyncEvent::STATUS_RECEIVED,
+        ]);
+
+        $this->push('mdev_x', [[
+            'client_event_id' => (string) Str::uuid(),
+            'event_type' => 'order.void',
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => [
+                'order_uuid' => 'order-uuid-1',
+                'reason' => 'customer cancellation',
+            ],
+        ]])
+            ->assertOk()
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_PROCESSED);
+
+        $this->artisan('sync:sweep-stranded-events', ['--older-than' => 10, '--limit' => 1])
+            ->expectsOutput('processed=0 failed=1 skipped=0')
+            ->assertSuccessful();
+
+        $syncEvent->refresh();
+        $payment = Payment::findOrFail($paymentId);
+        $this->assertSame(SyncEvent::STATUS_FAILED, $syncEvent->ack_status);
+        $this->assertStringContainsString('order already void', (string) $syncEvent->result_json['error']);
+        $this->assertDatabaseCount('pos_roundup_donations', 0);
+        $this->assertNull($payment->roundup_amount);
+        $this->assertNull($payment->charity_transaction_id);
         Http::assertNothingSent();
     }
 
@@ -470,6 +560,47 @@ class DeviceSyncDonationTest extends TestCase
         $this->assertNotNull(RoundupDonation::firstOrFail()->forwarded_at);
     }
 
+    public function test_inline_forward_rechecks_void_after_its_unlocked_candidate_read(): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $device = $this->device();
+        $this->seedBranch();
+        [, $paymentId] = $this->seedOrderAndCard();
+        $voidTriggered = false;
+
+        // Deterministically interleave a real void immediately after the
+        // post-commit candidate is hydrated but before the locked recheck.
+        RoundupDonation::retrieved(function (RoundupDonation $_candidate) use (&$voidTriggered, $device): void {
+            if ($voidTriggered) {
+                return;
+            }
+
+            $voidTriggered = true;
+            $voidEvent = new SyncEvent;
+            $voidEvent->payload_json = [
+                'order_uuid' => 'order-uuid-1',
+                'reason' => 'void won before charity forward',
+            ];
+
+            app(VoidOrderHandler::class)->handle($voidEvent, $device);
+        });
+
+        $this->push('mdev_x', [$this->donationEvent()])
+            ->assertOk()
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_PROCESSED);
+
+        $donation = RoundupDonation::firstOrFail();
+        $payment = Payment::findOrFail($paymentId);
+        $this->assertTrue($voidTriggered);
+        $this->assertSame('void', $donation->status);
+        $this->assertNull($donation->forwarded_at);
+        $this->assertNull($payment->roundup_amount);
+        $this->assertNull($payment->charity_transaction_id);
+        Http::assertNothingSent();
+    }
+
     /**
      * P-F7 — the round-up rides a force-recorded (pending_reconciliation)
      * card charge: the donation row is still created, but the charity
@@ -497,6 +628,53 @@ class DeviceSyncDonationTest extends TestCase
         // …but nothing went to charity: money not confirmed yet.
         Http::assertNothingSent();
         $this->assertNull(RoundupDonation::firstOrFail()->forwarded_at);
+    }
+
+    public function test_pending_approval_at_the_local_transaction_boundary_is_observed(): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $this->device();
+        $this->seedBranch();
+        [, $paymentId] = $this->seedOrderAndCard(pending: true);
+        $transactionBegins = 0;
+        $approvalApplied = false;
+
+        // The first begin is the dispatcher transaction. Apply approval at the
+        // handler's nested transaction boundary: an unlocked pre-read remains
+        // stale/pending, while the locked payment snapshot observes success.
+        Event::listen(TransactionBeginning::class, function () use (
+            &$transactionBegins,
+            &$approvalApplied,
+            $paymentId,
+        ): void {
+            $transactionBegins++;
+            if ($transactionBegins !== 2) {
+                return;
+            }
+
+            DB::table('pos_payments')->where('id', $paymentId)->update([
+                'status' => Payment::STATUS_SUCCESS,
+                'pending_reconciliation' => false,
+                'reconciled_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $approvalApplied = true;
+        });
+
+        $response = $this->push('mdev_x', [$this->donationEvent()])->assertOk();
+
+        $response
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_PROCESSED)
+            ->assertJsonPath('data.results.0.result.status', 'success');
+        $donation = RoundupDonation::firstOrFail();
+        $this->assertTrue($approvalApplied);
+        $this->assertGreaterThanOrEqual(2, $transactionBegins);
+        $this->assertSame('success', $donation->status);
+        $this->assertNotNull($donation->forwarded_at);
+        $this->assertFalse(Payment::findOrFail($paymentId)->pending_reconciliation);
+        Http::assertSentCount(1);
     }
 
     public function test_a_charity_forward_failure_never_breaks_the_roundup(): void

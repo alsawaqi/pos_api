@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Device\Sync\SyncEventDispatcher;
 use App\Actions\Device\Sync\SyncEventDispatchLock;
 use App\Models\Device;
 use App\Models\Expense;
 use App\Models\RestockRequestLine;
 use App\Models\SyncEvent;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -172,6 +175,91 @@ class DeviceSyncExpenseRestockTest extends TestCase
             'client_event_id' => $clientEventId,
             'ack_status' => SyncEvent::STATUS_FAILED,
         ]);
+    }
+
+    public function test_dispatcher_rechecks_the_locked_ledger_row_before_running_a_stale_candidate(): void
+    {
+        $device = $this->device();
+        $event = $this->expenseEvent();
+        $candidate = SyncEvent::create([
+            'client_event_id' => $event['client_event_id'],
+            'device_id' => $device->id,
+            'event_type' => $event['event_type'],
+            'payload_json' => $event['payload'],
+            'client_timestamp' => now(),
+            'server_received_at' => now(),
+            'ack_status' => SyncEvent::STATUS_RECEIVED,
+        ]);
+        $winnerResult = ['expense_id' => 424242];
+
+        // Model a contender that committed while this caller still held its
+        // stale received model. The dispatcher must lock and reload the durable
+        // row, observe processed, and return without a second handler effect.
+        DB::table('pos_sync_events')
+            ->where('id', $candidate->id)
+            ->update([
+                'ack_status' => SyncEvent::STATUS_PROCESSED,
+                'processed_at' => now(),
+                'result_json' => json_encode($winnerResult, JSON_THROW_ON_ERROR),
+            ]);
+
+        app(SyncEventDispatcher::class)->dispatch($candidate, $device);
+
+        $settled = $candidate->fresh();
+        $this->assertSame(SyncEvent::STATUS_PROCESSED, $settled->ack_status);
+        $this->assertSame($winnerResult, $settled->result_json);
+        $this->assertDatabaseCount('pos_expenses', 0);
+    }
+
+    public function test_a_late_dispatch_failure_never_overwrites_a_processed_winner(): void
+    {
+        $device = $this->device();
+        $event = $this->expenseEvent(['category' => 'bogus']);
+        $syncEvent = SyncEvent::create([
+            'client_event_id' => $event['client_event_id'],
+            'device_id' => $device->id,
+            'event_type' => $event['event_type'],
+            'payload_json' => $event['payload'],
+            'client_timestamp' => now(),
+            'server_received_at' => now(),
+            'ack_status' => SyncEvent::STATUS_RECEIVED,
+        ]);
+        $winnerResult = ['expense_id' => 434343];
+        $winnerCommitted = false;
+
+        // The failing dispatch releases its row lock when its handler
+        // transaction rolls back. Commit a contender's processed result in
+        // that exact gap, before the failing worker records its rejection.
+        Event::listen(TransactionRolledBack::class, function () use (
+            $syncEvent,
+            $winnerResult,
+            &$winnerCommitted,
+        ): void {
+            if ($winnerCommitted) {
+                return;
+            }
+
+            $winnerCommitted = true;
+            DB::table('pos_sync_events')
+                ->where('id', $syncEvent->id)
+                ->update([
+                    'ack_status' => SyncEvent::STATUS_PROCESSED,
+                    'processed_at' => now(),
+                    'result_json' => json_encode($winnerResult, JSON_THROW_ON_ERROR),
+                ]);
+        });
+
+        try {
+            app(SyncEventDispatcher::class)->dispatch($syncEvent, $device);
+        } finally {
+            Event::forget(TransactionRolledBack::class);
+        }
+
+        $settled = $syncEvent->fresh();
+        $this->assertTrue($winnerCommitted);
+        $this->assertSame(SyncEvent::STATUS_PROCESSED, $settled->ack_status);
+        $this->assertSame($winnerResult, $settled->result_json);
+        $this->assertDatabaseCount('pos_expenses', 0);
     }
 
     public function test_a_failed_expense_retry_is_not_dispatched_while_another_retry_owns_the_lock(): void

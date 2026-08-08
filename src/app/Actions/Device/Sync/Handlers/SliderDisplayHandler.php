@@ -69,12 +69,16 @@ class SliderDisplayHandler implements SyncEventHandler
      * accrue a fresh billable day on every push. Server time is the honest
      * answer: it is when we actually heard about it.
      */
-    private function resolvePlayedAt(?CarbonInterface $reported): Carbon
-    {
-        $now = Carbon::now();
+    private function resolvePlayedAt(
+        ?CarbonInterface $reported,
+        CarbonInterface $serverReceivedAt,
+    ): Carbon {
+        // Recovery may run minutes after receipt. Anchor billing validation to
+        // when the server observed the event, not when the sweeper replays it.
+        $receipt = Carbon::parse($serverReceivedAt)->utc();
 
         if ($reported === null) {
-            return $now;
+            return $receipt;
         }
 
         // UTC-normalise FIRST. Carbon keeps whatever offset the payload
@@ -83,9 +87,9 @@ class SliderDisplayHandler implements SyncEventHandler
         // stored DATE by a day and slip straight past every check below.
         $candidate = Carbon::parse($reported)->utc();
 
-        return $candidate->diffInMinutes($now, absolute: true) <= self::REPORT_TOLERANCE_MINUTES
+        return $candidate->diffInMinutes($receipt, absolute: true) <= self::REPORT_TOLERANCE_MINUTES
             ? $candidate
-            : $now;
+            : $receipt;
     }
 
     /**
@@ -129,6 +133,7 @@ class SliderDisplayHandler implements SyncEventHandler
             $payload['played_at'] ?? null
                 ? Carbon::parse((string) $payload['played_at'])
                 : $event->client_timestamp,
+            $event->server_received_at,
         );
 
         // Phase 4 — billing integrity. Impressions feed advertiser billing and

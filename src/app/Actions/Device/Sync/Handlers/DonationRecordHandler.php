@@ -13,6 +13,7 @@ use App\Models\Payment;
 use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -63,84 +64,88 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
             throw new RuntimeException('invalid donation.record payload: '.implode('; ', $validator->errors()->all()));
         }
 
-        // Resolve the order scoped to the device's tenant + branch.
-        $order = Order::query()
-            ->where('uuid', $payload['order_uuid'])
-            ->where('company_id', $device->company_id)
-            ->where('branch_id', $device->branch_id)
-            ->first();
-        if ($order === null) {
-            throw new RuntimeException('order not found for donation.record: '.$payload['order_uuid']);
-        }
-
-        // The round-up rides a CARD payment (blueprint §9.6.1) — attach to it.
-        $payment = $this->resolveCardPayment(
-            (int) $order->id,
-            $payload['payment_uuid'] ?? null,
-            array_key_exists('payment_index', $payload) && $payload['payment_index'] !== null
-                ? (int) $payload['payment_index']
-                : null,
-        );
-        if ($payment === null) {
-            throw new RuntimeException('no card payment to attach the round-up to for order: '.$payload['order_uuid']);
-        }
-        if ($payment->method !== Payment::METHOD_CARD) {
-            // A round-up can only ride card money — an index pointing at a
-            // cash/bank-POS leg is a device bug, not a choice. Fail loud so
-            // the charity amount is never mis-attributed.
-            throw new RuntimeException('round-up payment_index does not address a card tender for order: '.$payload['order_uuid']);
-        }
-
-        // P-F7 — when the round-up rides a force-recorded (ambiguous) card
-        // charge, the money is not confirmed yet: the linked payment — or any
-        // other tender on the order — sits pending_reconciliation. The
-        // pos_roundup_donations row is still created below, but the charity
-        // forwarding is DEFERRED (forwarded_at stays NULL) until the platform
-        // admin approves the order against the bank file (pos_admin
-        // ApprovePendingReconciliationAction — the twin that forwards it).
-        $orderHasPendingTender = (bool) $payment->pending_reconciliation
-            || Payment::query()
-                ->where('order_id', $order->id)
-                ->where('pending_reconciliation', true)
-                ->exists();
-
         $branch = Branch::query()->find($device->branch_id);
-
-        // The device does NOT resend the bank receipt on donation.record — the
-        // authoritative Soft POS receipt lives on the CARD payment this round-up
-        // rides. Use it so the pos_roundup_donations row (and the forwarded
-        // charity_transaction) store the real bank response, falling back to any
-        // receipt the payload did carry.
-        $receipt = is_array($payment->bank_response)
-            ? $payment->bank_response
-            : (is_array($payload['receipt'] ?? null) ? $payload['receipt'] : null);
-
-        // A round-up is only forwarded once the money is confirmed. A settled
-        // ride ⇒ 'success'; a still-pending ride ⇒ 'pending' until the platform
-        // admin approves it (pos_admin ReconcileDeferredEffectsAction flips it to
-        // 'success' when it forwards). This replaces the old receipt-derived
-        // status that always fell through to 'pending' (the device sends no
-        // receipt) and mis-filed every forwarded round-up as 'fail' at charity.
-        $status = $orderHasPendingTender ? 'pending' : 'success';
         $amount = Money::toOmr((int) $payload['amount_baisas']);
+        $paymentUuid = isset($payload['payment_uuid']) ? (string) $payload['payment_uuid'] : null;
+        $paymentIndex = array_key_exists('payment_index', $payload) && $payload['payment_index'] !== null
+            ? (int) $payload['payment_index']
+            : null;
 
-        $result = DB::transaction(function () use ($payload, $event, $device, $order, $payment, $branch, $receipt, $status, $amount): array {
+        return DB::transaction(function () use ($payload, $event, $device, $branch, $amount, $paymentUuid, $paymentIndex): array {
+            // order.void takes the order lock before touching donations or
+            // payment breadcrumbs. Use the same root lock, then freeze every
+            // tender in id order so a concurrent pending-reconciliation
+            // approval linearizes either wholly before or wholly after this
+            // donation snapshot.
+            $order = Order::query()
+                ->where('uuid', $payload['order_uuid'])
+                ->where('company_id', $device->company_id)
+                ->where('branch_id', $device->branch_id)
+                ->lockForUpdate()
+                ->first();
+            if ($order === null) {
+                throw new RuntimeException('order not found for donation.record: '.$payload['order_uuid']);
+            }
+
+            /** @var Collection<int, Payment> $payments */
+            $payments = Payment::query()
+                ->where('order_id', $order->id)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+
+            // The round-up rides a CARD payment (blueprint §9.6.1) — attach to it.
+            $payment = $this->resolveCardPayment($payments, $paymentUuid, $paymentIndex);
+            if ($payment === null) {
+                throw new RuntimeException('no card payment to attach the round-up to for order: '.$payload['order_uuid']);
+            }
+            if ($payment->method !== Payment::METHOD_CARD) {
+                // A round-up can only ride card money — an index pointing at a
+                // cash/bank-POS leg is a device bug, not a choice. Fail loud so
+                // the charity amount is never mis-attributed.
+                throw new RuntimeException('round-up payment_index does not address a card tender for order: '.$payload['order_uuid']);
+            }
+
+            // P-F7 — freeze the WHOLE split tender set while deciding whether
+            // money is confirmed. If admin approval wins the payment locks we
+            // observe success; if this handler wins, approval waits until the
+            // pending donation is present and can forward it after settlement.
+            $orderHasPendingTender = $payments->contains(
+                fn (Payment $candidate): bool => (bool) $candidate->pending_reconciliation,
+            );
+
+            // The authoritative Soft POS receipt lives on the selected card.
+            $receipt = is_array($payment->bank_response)
+                ? $payment->bank_response
+                : (is_array($payload['receipt'] ?? null) ? $payload['receipt'] : null);
+            $status = $orderHasPendingTender ? 'pending' : 'success';
+
             $donation = RoundupDonation::query()
                 ->where('client_event_id', $event->client_event_id)
                 ->lockForUpdate()
                 ->first();
 
             if ($donation === null) {
+                // A stranded donation.record may be replayed after a later
+                // order.void. It must never resurrect charity money after that
+                // terminal decision. An already-existing void donation remains
+                // replayable below so its original ACK can still settle.
+                if ($order->status === Order::STATUS_VOID) {
+                    throw new RuntimeException('order already void for donation.record: '.$payload['order_uuid']);
+                }
+
                 $donation = RoundupDonation::create([
                     'uuid' => (string) Str::uuid(),
                     'company_id' => $device->company_id,
                     'branch_id' => $device->branch_id,
+                    'branch_name' => $branch?->name,
                     'device_id' => $device->getKey(),
                     'order_id' => $order->id,
                     'payment_id' => $payment->id,
                     'bank_id' => $device->bank_id,
                     'terminal_id' => $device->terminal_id,
                     'commission_profile_id' => $device->commission_profile_id,
+                    'organization_id' => $device->organization_id,
                     'amount' => $amount,
                     'bank_response' => $receipt,
                     'status' => $status,
@@ -164,6 +169,10 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
                 ])->save();
             } else {
                 $this->assertExistingDonationMatches($donation, $device, $order, $payment, $amount);
+
+                if ($order->status === Order::STATUS_VOID && $donation->status !== 'void') {
+                    throw new RuntimeException('order already void for donation.record: '.$payload['order_uuid']);
+                }
             }
 
             return [
@@ -173,8 +182,6 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
                 'status' => $donation->status,
             ];
         });
-
-        return $result;
     }
 
     /**
@@ -194,34 +201,51 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
             return;
         }
 
-        $donation = RoundupDonation::query()
+        // Candidate lookup supplies the order id without taking locks out of
+        // order. Every mutable eligibility predicate is rechecked below.
+        $candidate = RoundupDonation::query()
             ->whereKey($donationId)
             ->where('client_event_id', $event->client_event_id)
             ->where('device_id', $device->getKey())
-            ->first();
-
-        if ($donation === null
-            || $donation->forwarded_at !== null
-            || $donation->status !== 'success') {
+            ->first(['id', 'order_id']);
+        if ($candidate === null) {
             return;
         }
 
-        $branch = Branch::query()->find($donation->branch_id);
-        $forwarded = $this->charityForwarder->forward(
-            $device,
-            $branch,
-            (string) $donation->amount,
-            is_array($donation->bank_response) ? $donation->bank_response : null,
-            (string) $donation->status,
-            (string) $donation->uuid,
-        );
+        DB::transaction(function () use ($candidate, $event, $device): void {
+            // order.void uses this same order → donation lock order. Keep both
+            // locks through the bounded (8s), charity-idempotent HTTP call and
+            // forwarded_at stamp: either the forward linearizes first and void
+            // follows, or a committed void wins and this path sends nothing.
+            $order = Order::query()
+                ->whereKey($candidate->order_id)
+                ->where('company_id', $device->company_id)
+                ->where('branch_id', $device->branch_id)
+                ->lockForUpdate()
+                ->first();
+            if ($order === null || $order->status === Order::STATUS_VOID) {
+                return;
+            }
 
-        if ($forwarded) {
-            RoundupDonation::query()
-                ->whereKey($donation->id)
+            $donation = RoundupDonation::query()
+                ->whereKey($candidate->id)
+                ->where('order_id', $order->id)
+                ->where('client_event_id', $event->client_event_id)
+                ->where('device_id', $device->getKey())
                 ->whereNull('forwarded_at')
-                ->update(['forwarded_at' => now()]);
-        }
+                ->where('status', 'success')
+                ->lockForUpdate()
+                ->first();
+            if ($donation === null) {
+                return;
+            }
+
+            $forwarded = $this->charityForwarder->forwardSnapshot($donation);
+
+            if ($forwarded) {
+                $donation->forceFill(['forwarded_at' => now()])->save();
+            }
+        });
     }
 
     private function assertExistingDonationMatches(
@@ -250,31 +274,24 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
         }
     }
 
-    private function resolveCardPayment(int $orderId, ?string $paymentUuid, ?int $paymentIndex): ?Payment
+    /**
+     * @param  Collection<int, Payment>  $payments  order payments already
+     *                                              locked in ascending id order
+     */
+    private function resolveCardPayment(Collection $payments, ?string $paymentUuid, ?int $paymentIndex): ?Payment
     {
         if ($paymentUuid !== null && $paymentUuid !== '') {
-            return Payment::query()
-                ->where('uuid', $paymentUuid)
-                ->where('order_id', $orderId)
-                ->first();
+            return $payments->firstWhere('uuid', $paymentUuid);
         }
 
         // Positional address: PayOrderHandler inserts one row per tender in
         // array order (ascending ids), so payments-ordered-by-id[index] is the
         // exact leg the device rounded. Out-of-range ⇒ null (caller throws).
         if ($paymentIndex !== null) {
-            return Payment::query()
-                ->where('order_id', $orderId)
-                ->orderBy('id')
-                ->skip($paymentIndex)
-                ->first();
+            return $payments->get($paymentIndex);
         }
 
         // Legacy devices (no index): the latest card payment.
-        return Payment::query()
-            ->where('order_id', $orderId)
-            ->where('method', Payment::METHOD_CARD)
-            ->latest('id')
-            ->first();
+        return $payments->where('method', Payment::METHOD_CARD)->last();
     }
 }

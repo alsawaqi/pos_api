@@ -6,6 +6,7 @@ namespace App\Actions\Device\Sync;
 
 use App\Models\Branch;
 use App\Models\Device;
+use App\Models\RoundupDonation;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -49,6 +50,61 @@ class ForwardCharityDonationAction
         ?string $status = null,
         ?string $posReference = null,
     ): bool {
+        return $this->forwardPayload([
+            'pos_device_id' => $device->getKey(),
+            'pos_branch_id' => $device->branch_id,
+            'pos_branch_name' => $branch?->name,
+            'commission_profile_id' => $device->commission_profile_id,
+            'organization_id' => $device->organization_id,
+            'amount' => $amountOmr,
+            'receipt' => $receipt,
+            'status' => $status,
+            'terminal_id' => $device->terminal_id,
+            'bank_id' => $device->bank_id,
+            'pos_reference' => $posReference,
+            'country_id' => $branch?->country_id,
+            'region_id' => $branch?->region_id,
+            'district_id' => $branch?->district_id,
+            'city_id' => $branch?->city_id,
+            'latitude' => $branch?->latitude,
+            'longitude' => $branch?->longitude,
+        ]);
+    }
+
+    /**
+     * Forward using the attribution captured on the durable donation row.
+     *
+     * Recovery can happen after the originating terminal or branch has been
+     * reassigned, renamed, or soft-deleted. No mutable origin is read here.
+     */
+    public function forwardSnapshot(RoundupDonation $donation): bool
+    {
+        return $this->forwardPayload([
+            'pos_device_id' => $donation->device_id,
+            'pos_branch_id' => $donation->branch_id,
+            'pos_branch_name' => $donation->branch_name,
+            'commission_profile_id' => $donation->commission_profile_id,
+            'organization_id' => $donation->organization_id,
+            'amount' => (string) $donation->amount,
+            'receipt' => is_array($donation->bank_response) ? $donation->bank_response : null,
+            'status' => (string) $donation->status,
+            'terminal_id' => $donation->terminal_id,
+            'bank_id' => $donation->bank_id,
+            'pos_reference' => (string) $donation->uuid,
+            'country_id' => $donation->country_id,
+            'region_id' => $donation->region_id,
+            'district_id' => $donation->district_id,
+            'city_id' => $donation->city_id,
+            'latitude' => $donation->latitude,
+            'longitude' => $donation->longitude,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function forwardPayload(array $payload): bool
+    {
         $baseUrl = rtrim((string) config('services.charity.url'), '/');
         if ($baseUrl === '') {
             return false; // not configured → nothing to forward
@@ -58,40 +114,11 @@ class ForwardCharityDonationAction
             $response = Http::timeout((int) config('services.charity.timeout', 8))
                 ->acceptJson()
                 ->asJson()
-                ->post($baseUrl.'/api/donations-pos-roundup', [
-                    'pos_device_id' => $device->getKey(),
-                    'pos_branch_id' => $device->branch_id,
-                    // Snapshot the merchant branch NAME so charity reporting can
-                    // show it without joining the pos-owned pos_branches table.
-                    'pos_branch_name' => $branch?->name,
-                    // The device's CHARITY commission profile drives the shares;
-                    // organization_id is the beneficiary org assigned in pos_admin.
-                    'commission_profile_id' => $device->commission_profile_id,
-                    'organization_id' => $device->organization_id,
-                    'amount' => $amountOmr,
-                    'receipt' => $receipt,
-                    // Confirmed settlement outcome — wins over receipt['status']
-                    // on the charity side so a settled round-up is never mis-filed
-                    // as 'fail' when the device didn't resend the bank receipt.
-                    'status' => $status,
-                    'terminal_id' => $device->terminal_id,
-                    'bank_id' => $device->bank_id,
-                    // The pos_roundup_donations.uuid — the charity endpoint
-                    // dedupes on it, so a RETRY (lost response, hourly sweep)
-                    // can never double-count the customer's round-up.
-                    'pos_reference' => $posReference,
-                    // Geo copied from the POS branch (same id-space as charity geo).
-                    'country_id' => $branch?->country_id,
-                    'region_id' => $branch?->region_id,
-                    'district_id' => $branch?->district_id,
-                    'city_id' => $branch?->city_id,
-                    'latitude' => $branch?->latitude,
-                    'longitude' => $branch?->longitude,
-                ]);
+                ->post($baseUrl.'/api/donations-pos-roundup', $payload);
 
             if (! $response->successful()) {
                 Log::info('charity roundup forward skipped', [
-                    'pos_device_id' => $device->getKey(),
+                    'pos_device_id' => $payload['pos_device_id'] ?? null,
                     'status' => $response->status(),
                     'body' => $response->json('message') ?? $response->body(),
                 ]);
@@ -102,7 +129,7 @@ class ForwardCharityDonationAction
             return true;
         } catch (\Throwable $e) {
             Log::warning('charity roundup forward failed: '.$e->getMessage(), [
-                'pos_device_id' => $device->getKey(),
+                'pos_device_id' => $payload['pos_device_id'] ?? null,
             ]);
 
             return false;

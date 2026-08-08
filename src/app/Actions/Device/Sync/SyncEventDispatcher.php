@@ -103,9 +103,27 @@ class SyncEventDispatcher
         }
 
         try {
-            $result = DB::transaction(function () use ($handler, $event, $device): array {
-                $result = $handler->handle($event, $device);
-                $event->update([
+            $settlement = DB::transaction(function () use ($handler, $event, $device): ?array {
+                // The cache lease used by recovery callers is only an admission
+                // optimization: it can expire, and initial ingest does not own
+                // one. The ledger row is the durable serialization boundary for
+                // every caller. A contender waits here, then observes the status
+                // committed by the winner instead of running the handler twice.
+                $lockedEvent = SyncEvent::query()
+                    ->whereKey($event->getKey())
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($lockedEvent === null
+                    || ! in_array($lockedEvent->ack_status, [
+                        SyncEvent::STATUS_RECEIVED,
+                        SyncEvent::STATUS_FAILED,
+                    ], true)) {
+                    return null;
+                }
+
+                $result = $handler->handle($lockedEvent, $device);
+                $lockedEvent->update([
                     'ack_status' => SyncEvent::STATUS_PROCESSED,
                     'processed_at' => now(),
                     'result_json' => $result,
@@ -115,17 +133,49 @@ class SyncEventDispatcher
             });
         } catch (Throwable $e) {
             // The handler effect and attempted processed stamp have both
-            // rolled back. Refresh the in-memory model before recording the
-            // durable rejection outside that failed transaction.
-            $event->refresh();
-            $event->update([
-                'ack_status' => SyncEvent::STATUS_FAILED,
-                'processed_at' => now(),
-                'result_json' => ['error' => $e->getMessage()],
-            ]);
+            // rolled back. Re-lock before recording the durable rejection:
+            // a waiting contender may have processed the event after our
+            // rollback released its row lock, and processed is terminal.
+            $eventExists = DB::transaction(function () use ($event, $e): bool {
+                $lockedEvent = SyncEvent::query()
+                    ->whereKey($event->getKey())
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($lockedEvent === null) {
+                    return false;
+                }
+
+                if (in_array($lockedEvent->ack_status, [
+                    SyncEvent::STATUS_RECEIVED,
+                    SyncEvent::STATUS_FAILED,
+                ], true)) {
+                    $lockedEvent->update([
+                        'ack_status' => SyncEvent::STATUS_FAILED,
+                        'processed_at' => now(),
+                        'result_json' => ['error' => $e->getMessage()],
+                    ]);
+                }
+
+                return true;
+            });
+
+            if ($eventExists) {
+                $event->refresh();
+            }
 
             return;
         }
+
+        // A contender that waited for an already-processed winner returns
+        // without post-commit work or a second broadcast. Refresh the caller's
+        // model so its ACK reflects that durable winner.
+        $event->refresh();
+        if ($settlement === null) {
+            return;
+        }
+
+        $result = $settlement;
 
         // External work must never run before the effect + ACK transaction
         // commits, and must never turn an already-processed event failed.

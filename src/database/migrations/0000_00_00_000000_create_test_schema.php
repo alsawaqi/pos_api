@@ -957,12 +957,14 @@ return new class extends Migration
             $table->uuid('uuid')->unique();
             $table->unsignedBigInteger('company_id');
             $table->unsignedBigInteger('branch_id');
+            $table->string('branch_name')->nullable();
             $table->unsignedBigInteger('device_id');
             $table->unsignedBigInteger('order_id');
             $table->unsignedBigInteger('payment_id');
             $table->unsignedBigInteger('bank_id')->nullable();
             $table->string('terminal_id')->nullable();
             $table->unsignedBigInteger('commission_profile_id')->nullable();
+            $table->unsignedBigInteger('organization_id')->nullable();
             $table->decimal('amount', 12, 3);
             $table->json('bank_response')->nullable();
             $table->string('status', 30)->default('pending');

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
 use App\Models\Device;
 use App\Models\SyncEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -177,6 +178,55 @@ class DeviceSyncSliderBillingIntegrityTest extends TestCase
         );
     }
 
+    public function test_a_stranded_play_keeps_the_billing_time_observed_at_server_receipt(): void
+    {
+        $recoveryAt = Carbon::parse('2026-08-08T12:30:00Z');
+        Carbon::setTestNow($recoveryAt);
+
+        try {
+            $receivedAt = $recoveryAt->copy()->subMinutes(30);
+            $reportedAt = $receivedAt->copy()->subMinutes(3);
+            $device = $this->device();
+            $device->forceFill(['assigned_at' => $receivedAt->copy()->subDay()])->save();
+            $this->seedSlider([
+                'starts_at' => $receivedAt->copy()->subHour(),
+                // Live when the server received the play, ended before recovery.
+                'ends_at' => $receivedAt->copy()->addMinutes(5),
+            ]);
+
+            $event = SyncEvent::query()->create([
+                'device_id' => $device->id,
+                'client_event_id' => (string) Str::uuid(),
+                'event_type' => 'slider.display',
+                'client_timestamp' => $reportedAt,
+                'server_received_at' => $receivedAt,
+                'payload_json' => [
+                    'slider_id' => 5,
+                    'slider_item_id' => 51,
+                    'content_asset_id' => 900,
+                    'advertiser_id' => 7,
+                    'duration_ms' => 8000,
+                    'played_at' => $reportedAt->toIso8601String(),
+                ],
+                'ack_status' => SyncEvent::STATUS_RECEIVED,
+            ]);
+            config(['sync.stranded_sweep_after_id' => 0]);
+
+            $this->artisan('sync:sweep-stranded-events')
+                ->expectsOutput('processed=1 failed=0 skipped=0')
+                ->assertSuccessful();
+
+            $this->assertSame(SyncEvent::STATUS_PROCESSED, $event->fresh()->ack_status);
+            $this->assertSame(
+                $reportedAt->format('Y-m-d H:i:s'),
+                Carbon::parse(DB::table('pos_marketing_impressions')->value('played_at'))
+                    ->format('Y-m-d H:i:s'),
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_a_replay_cannot_move_the_billing_anchor(): void
     {
         $device = $this->device();
@@ -192,6 +242,7 @@ class DeviceSyncSliderBillingIntegrityTest extends TestCase
             'client_event_id' => (string) Str::uuid(),
             'event_type' => 'slider.display',
             'client_timestamp' => now(),
+            'server_received_at' => now(),
             'payload_json' => [
                 'slider_id' => 5,
                 'slider_item_id' => 51,
@@ -203,7 +254,7 @@ class DeviceSyncSliderBillingIntegrityTest extends TestCase
             'ack_status' => 'failed',
         ]);
 
-        $handler = app(\App\Actions\Device\Sync\Handlers\SliderDisplayHandler::class);
+        $handler = app(SliderDisplayHandler::class);
         $handler->handle($event, $device);
         $first = DB::table('pos_marketing_impressions')->value('played_at');
         $firstDuration = DB::table('pos_marketing_impressions')->value('play_duration_ms');

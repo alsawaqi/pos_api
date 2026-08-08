@@ -24,8 +24,20 @@ class RoundupDonation extends Model
     protected function casts(): array
     {
         return [
+            'company_id' => 'integer',
+            'branch_id' => 'integer',
+            'device_id' => 'integer',
+            'order_id' => 'integer',
+            'payment_id' => 'integer',
+            'bank_id' => 'integer',
+            'commission_profile_id' => 'integer',
+            'organization_id' => 'integer',
             'amount' => 'decimal:3',
             'bank_response' => 'array',
+            'country_id' => 'integer',
+            'region_id' => 'integer',
+            'district_id' => 'integer',
+            'city_id' => 'integer',
             'latitude' => 'decimal:7',
             'longitude' => 'decimal:7',
             'occurred_at' => 'datetime',

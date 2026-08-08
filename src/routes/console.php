@@ -12,4 +12,5 @@ Schedule::command('sync:sweep-stranded-events')
     ->everyMinute()
     ->name('sweep-stranded-sync-events')
     ->withoutOverlapping(30)
-    ->onOneServer();
+    ->onOneServer()
+    ->when(static fn (): bool => config('sync.stranded_sweep_enabled') === true);

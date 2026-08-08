@@ -1,3 +1,10 @@
+x-pos-api-runtime-environment: &pos-api-runtime-environment
+  APP_ENV: production
+  APP_DEBUG: "false"
+  LOG_CHANNEL: stderr
+  CACHE_STORE: redis
+  REDIS_HOST: pos_api_redis
+
 services:
   # ── PHP-FPM application (the device-facing JSON API) ──────────────────────
   pos_api:
@@ -11,9 +18,7 @@ services:
       - storage-data:/var/www/html/storage
       - cache-data:/var/www/html/bootstrap/cache
     environment:
-      APP_ENV: production
-      APP_DEBUG: "false"
-      LOG_CHANNEL: stderr
+      <<: *pos-api-runtime-environment
     depends_on:
       - pos_api_redis
     networks:
@@ -32,9 +37,7 @@ services:
       - storage-data:/var/www/html/storage
       - cache-data:/var/www/html/bootstrap/cache
     environment:
-      APP_ENV: production
-      APP_DEBUG: "false"
-      LOG_CHANNEL: stderr
+      <<: *pos-api-runtime-environment
     command: ["php", "artisan", "schedule:work"]
     depends_on:
       - pos_api_redis
@@ -141,6 +144,8 @@ services:
     profiles: ["deploy"]
     image: pos_api-app
     working_dir: /var/www/html
+    environment:
+      <<: *pos-api-runtime-environment
     volumes:
       - ./src:/var/www/html:ro
       - storage-data:/var/www/html/storage
@@ -166,6 +171,8 @@ services:
         php artisan route:cache
         php artisan view:cache
     restart: "no"
+    depends_on:
+      - pos_api_redis
     networks:
       - charity_net
 

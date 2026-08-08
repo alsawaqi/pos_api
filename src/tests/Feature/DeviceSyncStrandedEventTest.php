@@ -26,7 +26,10 @@ class DeviceSyncStrandedEventTest extends TestCase
         $this->seedPosStaff([7]);
 
         // This suite creates a fresh ledger with no historical quarantine.
-        config(['sync.stranded_sweep_after_id' => 0]);
+        config([
+            'sync.stranded_sweep_after_id' => 0,
+            'sync.stranded_sweep_enabled' => false,
+        ]);
     }
 
     private function device(string $token = 'mdev_stranded'): Device
@@ -253,6 +256,52 @@ class DeviceSyncStrandedEventTest extends TestCase
         $this->assertDatabaseCount('pos_expenses', 1);
     }
 
+    public function test_production_runtime_keeps_scheduler_and_cached_config_on_one_stable_contract(): void
+    {
+        $compose = file_get_contents(base_path('../docker-compose.prod.yml'));
+        $deploy = file_get_contents(base_path('../deploy/deploy.sh'));
+
+        $this->assertIsString($compose);
+        $this->assertIsString($deploy);
+
+        $servicesMarker = strpos($compose, "\nservices:\n");
+        $this->assertNotFalse($servicesMarker);
+
+        $anchor = substr($compose, 0, $servicesMarker);
+        foreach ([
+            'APP_ENV: production',
+            'APP_DEBUG: "false"',
+            'LOG_CHANNEL: stderr',
+            'CACHE_STORE: redis',
+            'REDIS_HOST: pos_api_redis',
+        ] as $setting) {
+            $this->assertStringContainsString($setting, $anchor);
+        }
+
+        $this->assertStringNotContainsString('SYNC_STRANDED_SWEEP_', $anchor);
+        $this->assertStringNotContainsString('BROADCAST_CONNECTION', $anchor);
+        $this->assertStringNotContainsString('QUEUE_CONNECTION', $anchor);
+        $this->assertSame(3, substr_count($compose, '<<: *pos-api-runtime-environment'));
+        $this->assertStringContainsString('command: ["php", "artisan", "schedule:work"]', $compose);
+        $this->assertStringContainsString('docker compose -f "$C" restart pos_api', $deploy);
+        $this->assertStringNotContainsString('docker restart ', $deploy);
+        $this->assertStringNotContainsString('restart scheduler', $deploy);
+        $this->assertStringContainsString('for service in pos_api scheduler; do', $deploy);
+        $this->assertStringContainsString(
+            'logs --since "$deploy_restart_since" --no-color pos_api scheduler',
+            $deploy,
+        );
+        $this->assertStringContainsString('if ! code=$(curl', $deploy);
+        $this->assertStringContainsString('[[ "$code" =~ ^[1-4][0-9]{2}$ ]]', $deploy);
+        $this->assertStringNotContainsString('[ "$code" -lt 500 ]', $deploy);
+
+        $cacheBuild = strpos($deploy, 'timeout 300 docker compose -f "$C" --profile deploy run --rm deploy');
+        $runtimeStart = strpos($deploy, 'docker compose -f "$C" up -d');
+        $this->assertNotFalse($cacheBuild);
+        $this->assertNotFalse($runtimeStart);
+        $this->assertLessThan($runtimeStart, $cacheBuild);
+    }
+
     public function test_sweeper_is_registered_every_minute_with_overlap_guards(): void
     {
         $scheduled = collect(app(Schedule::class)->events())
@@ -263,5 +312,11 @@ class DeviceSyncStrandedEventTest extends TestCase
         $this->assertTrue($scheduled->withoutOverlapping);
         $this->assertSame(30, $scheduled->expiresAt);
         $this->assertTrue($scheduled->onOneServer);
+
+        $this->assertFalse($scheduled->filtersPass(app()));
+
+        config(['sync.stranded_sweep_enabled' => true]);
+
+        $this->assertTrue($scheduled->filtersPass(app()));
     }
 }

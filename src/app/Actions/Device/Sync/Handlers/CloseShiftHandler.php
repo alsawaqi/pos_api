@@ -11,6 +11,7 @@ use App\Models\Payment;
 use App\Models\Shift;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use Illuminate\Contracts\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -44,6 +45,9 @@ use RuntimeException;
  *     combined cash they hold. Keying the shared leg on staff (not device)
  *     also keeps two coexisting shifts disjoint: another cashier's sales on
  *     this shift's device belong to THEIR shift, never double-counted here.
+ *     As an MC-003 safety net, identified staff on the opening device whose
+ *     activity is not covered by any shared shift are attributed to this
+ *     physical drawer instead of disappearing from every close.
  *   - LEGACY shift: pure per-device drawer semantics, unchanged.
  */
 class CloseShiftHandler implements SyncEventHandler
@@ -76,7 +80,7 @@ class CloseShiftHandler implements SyncEventHandler
                 ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
                 ->where('pos_payments.method', Payment::METHOD_CASH)
                 ->where('pos_payments.status', Payment::STATUS_SUCCESS)
-                ->where($this->orderBelongsToShift($shift))
+                ->where($this->orderBelongsToShift($shift, 'pos_payments.captured_at'))
                 ->whereBetween('pos_payments.captured_at', [$shift->opened_at, $closedAt])
                 ->selectRaw('COALESCE(SUM(pos_payments.amount), 0) as amt')
                 ->first();
@@ -116,14 +120,23 @@ class CloseShiftHandler implements SyncEventHandler
      * without the company/branch bound a foreign or buggy device could
      * corrupt this shift's reconciliation.
      *
-     * @return \Closure(\Illuminate\Contracts\Database\Query\Builder): void
+     * A final safety leg prevents a sale from disappearing when an identified
+     * cashier rings on this drawer without holding a shared shift. It applies
+     * only when no shared shift for that cashier covers the activity time, so
+     * the normal staff leg of another shift remains authoritative and the sale
+     * can land in exactly one close. DB-001's explicit shift_id supersedes this
+     * temporal fallback.
+     *
+     * @return \Closure(Builder): void
      */
-    private function orderBelongsToShift(Shift $shift): \Closure
-    {
-        return function ($q) use ($shift): void {
+    private function orderBelongsToShift(
+        Shift $shift,
+        string $activityAtColumn = 'pos_orders.opened_at',
+    ): \Closure {
+        return function ($q) use ($shift, $activityAtColumn): void {
             $q->where('pos_orders.company_id', $shift->company_id)
                 ->where('pos_orders.branch_id', $shift->branch_id)
-                ->where(function ($scope) use ($shift): void {
+                ->where(function ($scope) use ($shift, $activityAtColumn): void {
                     if ($shift->is_shared && $shift->staff_id !== null) {
                         $scope->where('pos_orders.staff_id', $shift->staff_id)
                             ->orWhere(function ($fallback) use ($shift): void {
@@ -131,6 +144,31 @@ class CloseShiftHandler implements SyncEventHandler
                                     ->where('pos_orders.device_id', $shift->device_id)
                                     ->whereNull('pos_orders.staff_id');
                             });
+
+                        // Unlike SQL equality, Laravel turns a null value into
+                        // IS NULL. A deleted opening device must not make this
+                        // shift claim every unrelated null-device order.
+                        if ($shift->device_id !== null) {
+                            $scope->orWhere(function ($fallback) use ($shift, $activityAtColumn): void {
+                                $fallback
+                                    ->where('pos_orders.device_id', $shift->device_id)
+                                    ->whereNotNull('pos_orders.staff_id')
+                                    ->where('pos_orders.staff_id', '!=', $shift->staff_id)
+                                    ->whereNotExists(function ($covering) use ($activityAtColumn): void {
+                                        $covering->selectRaw('1')
+                                            ->from('pos_shifts as covering_shift')
+                                            ->whereColumn('covering_shift.company_id', 'pos_orders.company_id')
+                                            ->whereColumn('covering_shift.branch_id', 'pos_orders.branch_id')
+                                            ->whereColumn('covering_shift.staff_id', 'pos_orders.staff_id')
+                                            ->where('covering_shift.is_shared', true)
+                                            ->whereColumn('covering_shift.opened_at', '<=', $activityAtColumn)
+                                            ->where(function ($end) use ($activityAtColumn): void {
+                                                $end->whereNull('covering_shift.closed_at')
+                                                    ->orWhereColumn('covering_shift.closed_at', '>=', $activityAtColumn);
+                                            });
+                                    });
+                            });
+                        }
                     } else {
                         $scope->where('pos_orders.device_id', $shift->device_id);
                     }
@@ -179,7 +217,7 @@ class CloseShiftHandler implements SyncEventHandler
         $tenders = Payment::query()
             ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
             ->where('pos_payments.status', Payment::STATUS_SUCCESS)
-            ->where($this->orderBelongsToShift($shift))
+            ->where($this->orderBelongsToShift($shift, 'pos_payments.captured_at'))
             ->whereBetween('pos_payments.captured_at', $window)
             ->groupBy('pos_payments.method')
             ->orderBy('pos_payments.method')
@@ -203,7 +241,7 @@ class CloseShiftHandler implements SyncEventHandler
         // same device-or-staff attribution as every other money line.
         $roundUp = DB::table('pos_roundup_donations')
             ->join('pos_orders', 'pos_roundup_donations.order_id', '=', 'pos_orders.id')
-            ->where($this->orderBelongsToShift($shift))
+            ->where($this->orderBelongsToShift($shift, 'pos_roundup_donations.created_at'))
             ->whereBetween('pos_roundup_donations.created_at', $window)
             ->sum('pos_roundup_donations.amount');
 

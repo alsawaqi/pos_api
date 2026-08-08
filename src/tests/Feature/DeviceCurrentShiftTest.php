@@ -152,6 +152,40 @@ class DeviceCurrentShiftTest extends TestCase
         $this->assertSame(99, $res->json('data.shift.staff_id'));
     }
 
+    /**
+     * MC-003-aware clients opt out of shared-drawer inheritance. If this
+     * cashier has no shared shift, another cashier's shared shift on the
+     * device must not be returned as though it belonged to them.
+     */
+    public function test_strict_staff_probe_does_not_fall_back_to_another_staffs_shared_shift(): void
+    {
+        $device = $this->device('mdev_shift', 100, 10);
+        $this->shift($device, ['staff_id' => 99]);
+
+        $res = $this->withToken('mdev_shift')
+            ->getJson('/api/v1/device/shift/current?staff_id=7&shared_staff_only=1')
+            ->assertOk();
+
+        $this->assertNull($res->json('data.shift'));
+    }
+
+    /**
+     * The strict probe changes only shared shifts. A legacy per-device drawer
+     * remains recoverable on its opening device so field clients can coexist.
+     */
+    public function test_strict_staff_probe_keeps_the_legacy_device_fallback(): void
+    {
+        $device = $this->device('mdev_shift', 100, 10);
+        $shift = $this->shift($device, ['staff_id' => 99, 'is_shared' => false]);
+
+        $res = $this->withToken('mdev_shift')
+            ->getJson('/api/v1/device/shift/current?staff_id=7&shared_staff_only=1')
+            ->assertOk();
+
+        $this->assertSame($shift->uuid, $res->json('data.shift.uuid'));
+        $this->assertSame(99, $res->json('data.shift.staff_id'));
+    }
+
     public function test_staff_param_is_scoped_to_the_branch(): void
     {
         $this->device('mdev_shift', 100, 10);

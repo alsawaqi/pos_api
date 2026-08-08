@@ -66,32 +66,40 @@ class DeviceSyncShiftTest extends TestCase
         ];
     }
 
-    private function closeEvent(string $shiftUuid, int $closingBaisas): array
+    private function closeEvent(string $shiftUuid, int $closingBaisas, ?string $closedAt = null): array
     {
+        $closedAt ??= now()->toIso8601String();
+
         return [
             'client_event_id' => (string) Str::uuid(),
             'event_type' => 'shift.close',
-            'client_timestamp' => now()->toIso8601String(),
+            'client_timestamp' => $closedAt,
             'payload' => [
                 'shift_uuid' => $shiftUuid,
                 'closing_cash_baisas' => $closingBaisas,
-                'closed_at' => now()->toIso8601String(),
+                'closed_at' => $closedAt,
             ],
         ];
     }
 
-    private function createEvent(string $orderUuid, int $amountBaisas, int $staffId = 7): array
-    {
+    private function createEvent(
+        string $orderUuid,
+        int $amountBaisas,
+        int $staffId = 7,
+        ?string $openedAt = null,
+    ): array {
+        $openedAt ??= now()->subHour()->toIso8601String();
+
         return [
             'client_event_id' => (string) Str::uuid(),
             'event_type' => 'order.create',
-            'client_timestamp' => now()->subHour()->toIso8601String(),
+            'client_timestamp' => $openedAt,
             'payload' => ['order' => [
                 'uuid' => $orderUuid,
                 'order_type' => 'quick',
                 'source' => 'main_pos',
                 'staff_id' => $staffId,
-                'opened_at' => now()->subHour()->toIso8601String(),
+                'opened_at' => $openedAt,
                 'subtotal_baisas' => $amountBaisas,
                 'discount_total_baisas' => 0,
                 'tax_total_baisas' => 0,
@@ -101,15 +109,21 @@ class DeviceSyncShiftTest extends TestCase
         ];
     }
 
-    private function payCashEvent(string $orderUuid, int $amountBaisas, int $changeGivenBaisas = 0): array
-    {
+    private function payCashEvent(
+        string $orderUuid,
+        int $amountBaisas,
+        int $changeGivenBaisas = 0,
+        ?string $paidAt = null,
+    ): array {
+        $paidAt ??= now()->subHour()->toIso8601String();
+
         return [
             'client_event_id' => (string) Str::uuid(),
             'event_type' => 'order.pay',
-            'client_timestamp' => now()->subHour()->toIso8601String(),
+            'client_timestamp' => $paidAt,
             'payload' => [
                 'order_uuid' => $orderUuid,
-                'paid_at' => now()->subHour()->toIso8601String(),
+                'paid_at' => $paidAt,
                 'payments' => [[
                     'method' => 'cash',
                     'amount_baisas' => $amountBaisas,
@@ -356,6 +370,159 @@ class DeviceSyncShiftTest extends TestCase
         // Only mdev_a's 3.000 counts: expected 13.000, variance 0.
         $this->assertSame(13000, $res->json('data.results.0.result.expected_cash_baisas'));
         $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+    }
+
+    /**
+     * MC-003 safety net — if staff B rings cash on staff A's opening device
+     * without holding a shared shift of their own, the physical cash is in
+     * A's drawer. It must therefore land in A's close exactly once instead of
+     * disappearing from every shift's expected cash and Z summary.
+     */
+    public function test_shiftless_staff_cash_on_the_opening_device_lands_in_that_shared_close(): void
+    {
+        $this->seedProduct();
+        $this->device('mdev_a', 100, 10);
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000, null, 7)])->assertOk();
+        $this->ringCashSale('mdev_a', 4000, 8);
+
+        $this->assertFalse(Shift::query()
+            ->where('staff_id', 8)
+            ->where('status', Shift::STATUS_OPEN)
+            ->exists());
+
+        $res = $this->push('mdev_a', [$this->closeEvent($shiftUuid, 14000)])->assertOk();
+
+        $this->assertSame(14000, $res->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+
+        $summary = $res->json('data.results.0.result.summary');
+        $this->assertSame(1, $summary['order_count']);
+        $this->assertSame(4000, $summary['grand_total_baisas']);
+        $cash = collect($summary['tenders'])->firstWhere('method', 'cash');
+        $this->assertSame(4000, $cash['amount_baisas']);
+        $this->assertSame(1, $cash['count']);
+    }
+
+    /**
+     * The order and its tender can cross a shift boundary. B creates while
+     * shiftless on A's drawer, then opens a shared shift elsewhere before
+     * taking payment and the linked round-up. Closing B first makes the
+     * covering shift closed before A reconciles; its timestamps must still
+     * keep every money row in exactly one close.
+     */
+    public function test_closed_covering_shift_keeps_cross_boundary_order_and_tender_disjoint(): void
+    {
+        $this->seedProduct();
+        $this->device('mdev_a', 100, 10);
+        $deviceB = $this->device('mdev_b', 100, 10);
+
+        $aOpenedAt = now()->subHours(4);
+        $orderOpenedAt = now()->subHours(3);
+        $bOpenedAt = now()->subHours(2);
+        $paidAt = now()->subHour();
+        $bClosedAt = now()->subMinutes(30);
+        $aClosedAt = now();
+
+        $shiftA = (string) Str::uuid();
+        $this->push('mdev_a', [
+            $this->openEvent($shiftA, 10000, $aOpenedAt->toIso8601String(), 7),
+        ])->assertOk();
+
+        $orderUuid = (string) Str::uuid();
+        $this->push('mdev_a', [
+            $this->createEvent($orderUuid, 4000, 8, $orderOpenedAt->toIso8601String()),
+        ])->assertOk();
+
+        $this->app['auth']->forgetGuards();
+        $shiftB = (string) Str::uuid();
+        $this->push('mdev_b', [
+            $this->openEvent($shiftB, 5000, $bOpenedAt->toIso8601String(), 8),
+        ])->assertOk();
+        $this->push('mdev_b', [
+            $this->payCashEvent($orderUuid, 4000, 0, $paidAt->toIso8601String()),
+        ])->assertOk();
+
+        $orderId = (int) DB::table('pos_orders')->where('uuid', $orderUuid)->value('id');
+        $paymentId = (int) DB::table('pos_payments')->where('order_id', $orderId)->value('id');
+        $this->assertGreaterThan(0, $orderId);
+        $this->assertGreaterThan(0, $paymentId);
+
+        DB::table('pos_roundup_donations')->insert([
+            'uuid' => (string) Str::uuid(),
+            'company_id' => 100,
+            'branch_id' => 10,
+            'device_id' => $deviceB->getKey(),
+            'order_id' => $orderId,
+            'payment_id' => $paymentId,
+            'amount' => '0.500',
+            'status' => 'success',
+            'source' => 'pos_roundup',
+            'occurred_at' => $paidAt,
+            'created_at' => $paidAt,
+            'updated_at' => $paidAt,
+        ]);
+
+        $resB = $this->push('mdev_b', [
+            $this->closeEvent($shiftB, 9000, $bClosedAt->toIso8601String()),
+        ])->assertOk();
+        $summaryB = $resB->json('data.results.0.result.summary');
+
+        $this->assertSame(9000, $resB->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $resB->json('data.results.0.result.variance_baisas'));
+        $this->assertSame(0, $summaryB['order_count']);
+        $this->assertSame(0, $summaryB['grand_total_baisas']);
+        $cashB = collect($summaryB['tenders'])->firstWhere('method', 'cash');
+        $this->assertNotNull($cashB);
+        $this->assertSame(4000, $cashB['amount_baisas']);
+        $this->assertSame(1, $cashB['count']);
+        $this->assertSame(500, $summaryB['round_up_baisas']);
+
+        $this->app['auth']->forgetGuards();
+        $resA = $this->push('mdev_a', [
+            $this->closeEvent($shiftA, 10000, $aClosedAt->toIso8601String()),
+        ])->assertOk();
+        $summaryA = $resA->json('data.results.0.result.summary');
+
+        $this->assertSame(10000, $resA->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $resA->json('data.results.0.result.variance_baisas'));
+        $this->assertSame(1, $summaryA['order_count']);
+        $this->assertSame(4000, $summaryA['grand_total_baisas']);
+        $this->assertNull(collect($summaryA['tenders'])->firstWhere('method', 'cash'));
+        $this->assertSame(0, $summaryA['round_up_baisas']);
+    }
+
+    /**
+     * A hard-deleted opening device nulls both foreign keys. SQL must not
+     * interpret that loss of identity as equality and pull an identified
+     * cashier's unrelated null-device order into this shared drawer.
+     */
+    public function test_null_opening_device_does_not_trigger_the_identified_staff_fallback(): void
+    {
+        $this->seedProduct();
+        $this->device('mdev_a', 100, 10);
+        $this->device('mdev_b', 100, 10);
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [$this->openEvent($shiftUuid, 10000, null, 7)])->assertOk();
+
+        $orderUuid = (string) Str::uuid();
+        $this->push('mdev_a', [$this->createEvent($orderUuid, 4000, 8)])->assertOk();
+        $this->push('mdev_a', [$this->payCashEvent($orderUuid, 4000)])->assertOk();
+
+        DB::table('pos_orders')->where('uuid', $orderUuid)->update(['device_id' => null]);
+        DB::table('pos_shifts')->where('uuid', $shiftUuid)->update(['device_id' => null]);
+
+        $this->app['auth']->forgetGuards();
+        $res = $this->push('mdev_b', [$this->closeEvent($shiftUuid, 10000)])->assertOk();
+        $summary = $res->json('data.results.0.result.summary');
+
+        $this->assertSame(10000, $res->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+        $this->assertSame(0, $summary['order_count']);
+        $this->assertSame(0, $summary['grand_total_baisas']);
+        $this->assertSame([], $summary['tenders']);
     }
 
     /**

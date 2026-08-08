@@ -24,8 +24,10 @@ use Illuminate\Http\Request;
  * first, whichever device opened it: the same person opens one shift a day
  * and both pos_machine and pos_handheld share it. Falls back to this device's
  * own open shift (the legacy drawer-inheritance model) when the staff has
- * none. Omitting staff_id keeps the pure device-keyed behavior for deployed
- * clients.
+ * none. MC-003-aware clients additionally pass ?shared_staff_only=1 so that
+ * fallback cannot hand them another staff member's shared drawer; legacy
+ * per-device shifts remain recoverable. Omitting the opt-in keeps the exact
+ * behavior deployed clients already use.
  */
 class DeviceShiftController
 {
@@ -42,6 +44,7 @@ class DeviceShiftController
         }
 
         $staffId = (int) $request->query('staff_id', '0');
+        $sharedStaffOnly = $request->boolean('shared_staff_only');
 
         $shift = null;
         if ($staffId > 0) {
@@ -61,6 +64,10 @@ class DeviceShiftController
         $shift ??= Shift::query()
             ->where('device_id', $device->getKey())
             ->where('status', Shift::STATUS_OPEN)
+            ->when(
+                $staffId > 0 && $sharedStaffOnly,
+                fn ($query) => $query->where('is_shared', false)
+            )
             ->latest('opened_at')
             ->first();
 

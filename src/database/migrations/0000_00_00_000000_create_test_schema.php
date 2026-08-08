@@ -821,6 +821,24 @@ return new class extends Migration
             $table->timestamp('created_at')->useCurrent();
         });
 
+        // Merchant resolution trail for API-001 shortfall markers. Production
+        // is owned by pos_admin; this is only the isolated test mirror.
+        Schema::create('pos_loyalty_shortfall_reviews', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('loyalty_transaction_id');
+            $table->unsignedBigInteger('resolved_by_user_id')->nullable();
+            $table->text('resolution_note');
+            $table->timestamp('resolved_at');
+            $table->timestamp('created_at')->useCurrent();
+            $table->unique('loyalty_transaction_id', 'pos_loyalty_shortfall_reviews_txn_unique');
+            $table->index(
+                ['company_id', 'resolved_at'],
+                'pos_loyalty_shortfall_reviews_company_resolved_idx',
+            );
+        });
+
         // ---- Phase 8.5 shifts slice ----
 
         Schema::create('pos_shifts', function (Blueprint $table): void {
@@ -1229,6 +1247,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_customer_vehicle_plates');
         Schema::dropIfExists('pos_staff');
         Schema::dropIfExists('pos_shifts');
+        Schema::dropIfExists('pos_loyalty_shortfall_reviews');
         Schema::dropIfExists('pos_loyalty_transactions');
         Schema::dropIfExists('pos_loyalty_accounts');
         Schema::dropIfExists('pos_order_comps');

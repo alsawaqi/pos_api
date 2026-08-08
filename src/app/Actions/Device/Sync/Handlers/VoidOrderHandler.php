@@ -157,39 +157,66 @@ class VoidOrderHandler implements SyncEventHandler
         $txns = LoyaltyTransaction::query()
             ->where('order_id', $order->id)
             ->whereIn('type', [LoyaltyTransaction::TYPE_EARN, LoyaltyTransaction::TYPE_REDEEM])
+            ->orderBy('loyalty_account_id')
+            ->orderBy('id')
             ->get();
 
+        $groups = $txns
+            ->groupBy(fn (LoyaltyTransaction $txn): int => (int) $txn->loyalty_account_id)
+            ->sortKeys();
+
         $count = 0;
-        foreach ($txns as $txn) {
-            $account = LoyaltyAccount::query()->find($txn->loyalty_account_id);
+        foreach ($groups as $accountId => $accountTxns) {
+            $account = LoyaltyAccount::query()->lockForUpdate()->find((int) $accountId);
             if ($account === null) {
                 continue;
             }
 
-            $points = -(int) $txn->points_delta;
-            $stamps = -(int) $txn->stamps_delta;
-
-            // Clamp negative clawbacks to the balance still on hand.
-            if ($points < 0) {
-                $points = -min(-$points, (int) $account->point_balance);
-            }
-            if ($stamps < 0) {
-                $stamps = -min(-$stamps, (int) $account->stamp_count);
-            }
-            if ($points === 0 && $stamps === 0) {
-                continue;
+            $currentPoints = (int) $account->point_balance;
+            $currentStamps = (int) $account->stamp_count;
+            if ($currentPoints < 0 || $currentStamps < 0) {
+                throw new RuntimeException('Cannot reverse a negative loyalty account balance.');
             }
 
-            $this->loyalty->write(
-                $account,
-                LoyaltyTransaction::TYPE_ADJUST,
-                $points,
-                $stamps,
-                (int) $order->id,
-                'reversed from void',
-                $voidedAt,
-            );
-            $count++;
+            // Restore this sale's redemptions before clawing back its earnings.
+            // This preserves the pre-sale balance when both rows share an account.
+            $ordered = $accountTxns
+                ->where('type', LoyaltyTransaction::TYPE_REDEEM)
+                ->sortBy('id')
+                ->concat(
+                    $accountTxns
+                        ->where('type', LoyaltyTransaction::TYPE_EARN)
+                        ->sortBy('id'),
+                );
+
+            foreach ($ordered as $txn) {
+                $points = -(int) $txn->points_delta;
+                $stamps = -(int) $txn->stamps_delta;
+
+                // Clamp negative clawbacks to the locked balance still on hand.
+                if ($points < 0) {
+                    $points = -min(-$points, $currentPoints);
+                }
+                if ($stamps < 0) {
+                    $stamps = -min(-$stamps, $currentStamps);
+                }
+                if ($points === 0 && $stamps === 0) {
+                    continue;
+                }
+
+                $reversal = $this->loyalty->write(
+                    $account,
+                    LoyaltyTransaction::TYPE_ADJUST,
+                    $points,
+                    $stamps,
+                    (int) $order->id,
+                    'reversed from void',
+                    $voidedAt,
+                );
+                $currentPoints = (int) $reversal->balance_after_points;
+                $currentStamps = (int) $reversal->balance_after_stamps;
+                $count++;
+            }
         }
 
         return $count;

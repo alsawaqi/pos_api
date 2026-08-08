@@ -9,6 +9,7 @@ use App\Models\Device;
 use App\Models\SyncEvent;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Phase 8.2 — ingests a batch of device sync events into the
@@ -36,6 +37,10 @@ use Illuminate\Support\Carbon;
  */
 class IngestSyncEventsAction
 {
+    private const FAILED_RETRY_LOCK_SECONDS = 300;
+
+    private const FAILED_RETRY_LOCK_PREFIX = 'device-sync:failed-retry:';
+
     public function __construct(
         private readonly SyncEventDispatcher $dispatcher,
     ) {}
@@ -57,19 +62,40 @@ class IngestSyncEventsAction
                 ->first();
 
             if ($existing !== null) {
-                // A previously FAILED event is RETRIED, not swallowed. Its
-                // handler ran in one transaction that rolled back atomically on
-                // error (no partial settlement), so a transient fault (deadlock
-                // / lock-wait timeout / DB blip) would otherwise strand a real
-                // sale UNPAID with zero inventory deducted while the device's
-                // legitimate re-push is ACKed as a no-op duplicate. Re-dispatch
-                // it; if it now settles it stamps `processed`. received/processed
-                // events still ACK as the duplicate they are.
+                // A previously FAILED event is RETRIED, not swallowed. Serialize
+                // retries across API workers: the ledger's UNIQUE constraint
+                // prevents a second row, but cannot stop two requests that both
+                // read this existing failed row from dispatching its side effect.
                 if ($existing->ack_status === SyncEvent::STATUS_FAILED) {
-                    $this->dispatcher->dispatch($existing, $device);
-                    $existing->refresh();
-                    $existing->ack_status === SyncEvent::STATUS_PROCESSED ? $accepted++ : $duplicates++;
-                    $results[] = $this->ack($existing, duplicate: true);
+                    $lock = Cache::lock(
+                        $this->failedRetryLockName($existing),
+                        self::FAILED_RETRY_LOCK_SECONDS,
+                    );
+
+                    if (! $lock->get()) {
+                        $existing->refresh();
+                        $duplicates++;
+                        $results[] = $this->ack($existing, duplicate: true);
+
+                        continue;
+                    }
+
+                    try {
+                        // The winner may have settled this row before this caller
+                        // acquired the lock, so re-read before deciding to dispatch.
+                        $existing->refresh();
+                        if ($existing->ack_status === SyncEvent::STATUS_FAILED) {
+                            $this->dispatcher->dispatch($existing, $device);
+                            $existing->refresh();
+                            $existing->ack_status === SyncEvent::STATUS_PROCESSED ? $accepted++ : $duplicates++;
+                        } else {
+                            $duplicates++;
+                        }
+
+                        $results[] = $this->ack($existing, duplicate: true);
+                    } finally {
+                        $lock->release();
+                    }
 
                     continue;
                 }
@@ -145,5 +171,10 @@ class IngestSyncEventsAction
             'processed_at' => $row->processed_at?->toIso8601String(),
             'result' => $row->result_json,
         ];
+    }
+
+    private function failedRetryLockName(SyncEvent $row): string
+    {
+        return self::FAILED_RETRY_LOCK_PREFIX.$row->getKey();
     }
 }

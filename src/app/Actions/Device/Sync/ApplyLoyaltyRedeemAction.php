@@ -34,6 +34,10 @@ class ApplyLoyaltyRedeemAction
 
     public function apply(Order $order, int $loyaltyRuleId, int $pointsRedeemed, int $stampsRedeemed): ?LoyaltyTransaction
     {
+        if ($pointsRedeemed < 0 || $stampsRedeemed < 0) {
+            throw new RuntimeException('invalid loyalty redemption: points and stamps must be non-negative');
+        }
+
         if ($pointsRedeemed <= 0 && $stampsRedeemed <= 0) {
             return null;
         }

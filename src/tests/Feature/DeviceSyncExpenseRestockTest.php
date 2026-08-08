@@ -7,7 +7,9 @@ namespace Tests\Feature;
 use App\Models\Device;
 use App\Models\Expense;
 use App\Models\RestockRequestLine;
+use App\Models\SyncEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -140,6 +142,50 @@ class DeviceSyncExpenseRestockTest extends TestCase
         $res = $this->push('mdev_x', [$event])->assertOk();
 
         $res->assertJsonPath('data.summary.duplicates', 1);
+        $this->assertDatabaseCount('pos_expenses', 1);
+    }
+
+    public function test_a_failed_expense_retry_is_not_dispatched_while_another_retry_owns_the_lock(): void
+    {
+        $device = $this->device();
+        $event = $this->expenseEvent();
+        $syncEvent = SyncEvent::create([
+            'client_event_id' => $event['client_event_id'],
+            'device_id' => $device->id,
+            'event_type' => $event['event_type'],
+            'payload_json' => $event['payload'],
+            'client_timestamp' => now(),
+            'server_received_at' => now(),
+            'ack_status' => SyncEvent::STATUS_FAILED,
+            'result_json' => ['error' => 'deadlock'],
+        ]);
+
+        $retryLock = Cache::lock('device-sync:failed-retry:'.$syncEvent->id, 300);
+        $this->assertTrue($retryLock->get());
+
+        try {
+            $contending = $this->push('mdev_x', [$event])->assertOk();
+
+            $contending
+                ->assertJsonPath('data.results.0.duplicate', true)
+                ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_FAILED)
+                ->assertJsonPath('data.results.0.result.error', 'deadlock')
+                ->assertJsonPath('data.summary.accepted', 0)
+                ->assertJsonPath('data.summary.duplicates', 1);
+            $this->assertDatabaseCount('pos_sync_events', 1);
+            $this->assertDatabaseCount('pos_expenses', 0);
+        } finally {
+            $retryLock->release();
+        }
+
+        $retry = $this->push('mdev_x', [$event])->assertOk();
+
+        $retry
+            ->assertJsonPath('data.results.0.duplicate', true)
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_PROCESSED)
+            ->assertJsonPath('data.summary.accepted', 1)
+            ->assertJsonPath('data.summary.duplicates', 0);
+        $this->assertDatabaseCount('pos_sync_events', 1);
         $this->assertDatabaseCount('pos_expenses', 1);
     }
 

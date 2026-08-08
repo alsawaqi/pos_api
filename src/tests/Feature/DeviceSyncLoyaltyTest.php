@@ -484,6 +484,46 @@ class DeviceSyncLoyaltyTest extends TestCase
         $this->assertSame('open', Order::firstWhere('uuid', $uuid)->status);
     }
 
+    public function test_negative_loyalty_redemption_counts_are_rejected(): void
+    {
+        $this->seedLoyalty();
+        $this->device();
+        $this->seedAccount(2, points: 100, stamps: 100);
+
+        $cases = [
+            'mixed negative points' => ['rule_id' => 2, 'points' => -1, 'stamps' => 10],
+            'mixed negative stamps' => ['rule_id' => 2, 'points' => 10, 'stamps' => -1],
+            'negative points only' => ['rule_id' => 2, 'points' => -1, 'stamps' => 0],
+            'negative stamps only' => ['rule_id' => 2, 'points' => 0, 'stamps' => -1],
+            'both negative' => ['rule_id' => 2, 'points' => -1, 'stamps' => -1],
+            'negative with unaffordable positive leg' => ['rule_id' => 2, 'points' => -1, 'stamps' => 101],
+        ];
+
+        foreach ($cases as $label => $redeem) {
+            $uuid = (string) Str::uuid();
+            $this->push('mdev_ord', [$this->createEvent($uuid, 1)])->assertOk();
+            $res = $this->push('mdev_ord', [$this->payEvent($uuid, null, $redeem)])->assertOk();
+
+            $this->assertSame('failed', $res->json('data.results.0.status'), $label);
+            $this->assertStringContainsString(
+                'points and stamps must be non-negative',
+                $res->json('data.results.0.result.error'),
+                $label,
+            );
+            $this->assertSame(Order::STATUS_OPEN, Order::firstWhere('uuid', $uuid)->status, $label);
+
+            $account = LoyaltyAccount::where([
+                'customer_id' => 1,
+                'loyalty_rule_id' => 2,
+            ])->firstOrFail();
+            $this->assertSame(100, $account->point_balance, $label);
+            $this->assertSame(100, $account->stamp_count, $label);
+        }
+
+        $this->assertDatabaseCount('pos_payments', 0);
+        $this->assertDatabaseCount('pos_loyalty_transactions', 0);
+    }
+
     public function test_zero_available_stamp_balance_settles_with_a_marker_only(): void
     {
         $this->seedLoyalty();
@@ -524,7 +564,7 @@ class DeviceSyncLoyaltyTest extends TestCase
 
         $this->push('mdev_ord', [$this->createEvent($uuid, 1)])->assertOk();
         $res = $this->push('mdev_ord', [
-            $this->payEvent($uuid, 2, ['rule_id' => 2, 'points' => 60, 'stamps' => 3]),
+            $this->payEvent($uuid, 2, ['rule_id' => 2, 'points' => 50, 'stamps' => 3]),
         ])->assertOk();
 
         $this->assertSame('processed', $res->json('data.results.0.status'));
@@ -549,10 +589,35 @@ class DeviceSyncLoyaltyTest extends TestCase
             'balance_after_stamps' => 0,
         ]);
         $marker = LoyaltyTransaction::where('type', LoyaltyTransaction::TYPE_ADJUST)->firstOrFail();
-        $this->assertStringContainsString('requested points=60 stamps=3', (string) $marker->reason);
+        $this->assertStringContainsString('requested points=50 stamps=3', (string) $marker->reason);
         $this->assertStringContainsString('applied points=50 stamps=1', (string) $marker->reason);
-        $this->assertStringContainsString('shortfall points=10 stamps=2', (string) $marker->reason);
+        $this->assertStringContainsString('shortfall points=0 stamps=2', (string) $marker->reason);
         $this->assertDatabaseCount('pos_loyalty_transactions', 3);
+
+        $order = Order::firstWhere('uuid', $uuid);
+        $void = $this->push('mdev_ord', [$this->voidEvent($uuid)])->assertOk();
+        $this->assertSame('voided', $void->json('data.results.0.result.status'));
+        $this->assertSame(2, $void->json('data.results.0.result.loyalty_reversed'));
+        $this->assertSame(20, $account->fresh()->point_balance);
+        $this->assertSame(1, $account->fresh()->stamp_count);
+
+        $reversals = LoyaltyTransaction::query()
+            ->where('order_id', $order->id)
+            ->where('reason', 'reversed from void')
+            ->orderBy('id')
+            ->get();
+        $this->assertCount(2, $reversals);
+        $this->assertSame(50, $reversals[0]->points_delta);
+        $this->assertSame(1, $reversals[0]->stamps_delta);
+        $this->assertSame(50, $reversals[0]->balance_after_points);
+        $this->assertSame(1, $reversals[0]->balance_after_stamps);
+        $this->assertSame(-30, $reversals[1]->points_delta);
+        $this->assertSame(0, $reversals[1]->stamps_delta);
+        $this->assertSame(20, $reversals[1]->balance_after_points);
+        $this->assertSame(1, $reversals[1]->balance_after_stamps);
+        $this->assertSame(0, $marker->fresh()->points_delta);
+        $this->assertSame(0, $marker->fresh()->stamps_delta);
+        $this->assertDatabaseCount('pos_loyalty_transactions', 5);
     }
 
     public function test_a_preexisting_failed_over_redemption_heals_from_its_frozen_payload(): void

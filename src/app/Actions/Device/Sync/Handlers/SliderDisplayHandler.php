@@ -13,6 +13,7 @@ use App\Models\SyncEvent;
 use Carbon\CarbonInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use RuntimeException;
 
@@ -215,7 +216,12 @@ class SliderDisplayHandler implements SyncEventHandler
         );
 
         try {
-            $impression->save();
+            // The dispatcher owns the outer transaction that couples this
+            // billing write to the sync event's processed stamp. PostgreSQL
+            // leaves that transaction aborted after a unique violation, so
+            // isolate the contested INSERT in a nested transaction/savepoint.
+            // The catch below can then safely re-read the concurrent winner.
+            DB::transaction(fn () => $impression->save());
         } catch (UniqueConstraintViolationException) {
             // Two concurrent re-pushes of the same failed event both saw "not
             // exists". The winner's row is authoritative — re-read it rather

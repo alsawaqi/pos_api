@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\Device;
+use App\Models\MarketingImpression;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -93,6 +94,32 @@ class DeviceSyncSliderTest extends TestCase
             'advertiser_id' => 7,
             'play_duration_ms' => 8000,
         ]);
+    }
+
+    public function test_impression_insert_uses_a_savepoint_inside_the_atomic_dispatch(): void
+    {
+        $this->device();
+        $this->seedServedSlider();
+
+        // RefreshDatabase owns the baseline test transaction. A new impression
+        // must be created two levels deeper: the dispatcher's effect+ACK
+        // transaction, then the handler's savepoint protecting its caught
+        // unique-constraint race on PostgreSQL.
+        $baselineLevel = DB::transactionLevel();
+        $creatingLevel = null;
+        $event = $this->displayEvent();
+        MarketingImpression::creating(function (MarketingImpression $impression) use (&$creatingLevel, $event): void {
+            if ($impression->client_event_id === $event['client_event_id']) {
+                $creatingLevel = DB::transactionLevel();
+            }
+        });
+
+        $this->push('mdev_slider', [$event])
+            ->assertOk()
+            ->assertJsonPath('data.results.0.status', 'processed');
+
+        $this->assertSame($baselineLevel + 2, $creatingLevel);
+        $this->assertDatabaseCount('pos_marketing_impressions', 1);
     }
 
     public function test_replaying_a_display_does_not_double_count(): void

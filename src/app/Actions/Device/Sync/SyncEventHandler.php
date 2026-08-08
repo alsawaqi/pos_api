@@ -12,9 +12,9 @@ use App\Models\SyncEvent;
  *
  * The {@see SyncEventDispatcher} routes a freshly-ingested {@see SyncEvent}
  * (ack_status=received) to the handler registered for its event_type. The
- * handler does the domain work in its own DB transaction and RETURNS the
- * result_json payload (e.g. the server order id) on success, or THROWS to
- * signal failure — the dispatcher records processed/failed accordingly.
+ * dispatcher owns the outer transaction that couples the handler's database
+ * work to the processed event stamp. A handler returns result_json on success
+ * or throws to roll back the whole effect before the dispatcher stamps failed.
  */
 interface SyncEventHandler
 {

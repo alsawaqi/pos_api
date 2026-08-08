@@ -22,6 +22,8 @@ use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
 use App\Models\SyncEvent;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -29,12 +31,11 @@ use Throwable;
  *
  * After {@see IngestSyncEventsAction} records a NEW
  * event (ack_status=received), it hands the row here. We route by
- * event_type to the registered handler, run it, and stamp the event
- * processed (with the handler's result_json) or failed (with the error) —
- * which the per-event ACK then reflects. Event types without a handler
- * (donation.record, expense.log, shift.*, …) stay `received` for a later
- * sub-phase. Replayed/duplicate events never reach here (deduped upstream),
- * so processing runs exactly once per event.
+ * event_type to the registered handler, then commit the handler's database
+ * effect and processed result as one transaction. A failure rolls that whole
+ * transaction back before the event is durably stamped failed. Registered
+ * post-commit work and broadcasting run only after successful settlement;
+ * known handlerless types stay received for the recovery contract.
  */
 class SyncEventDispatcher
 {
@@ -102,13 +103,21 @@ class SyncEventDispatcher
         }
 
         try {
-            $result = $handler->handle($event, $device);
-            $event->update([
-                'ack_status' => SyncEvent::STATUS_PROCESSED,
-                'processed_at' => now(),
-                'result_json' => $result,
-            ]);
+            $result = DB::transaction(function () use ($handler, $event, $device): array {
+                $result = $handler->handle($event, $device);
+                $event->update([
+                    'ack_status' => SyncEvent::STATUS_PROCESSED,
+                    'processed_at' => now(),
+                    'result_json' => $result,
+                ]);
+
+                return $result;
+            });
         } catch (Throwable $e) {
+            // The handler effect and attempted processed stamp have both
+            // rolled back. Refresh the in-memory model before recording the
+            // durable rejection outside that failed transaction.
+            $event->refresh();
             $event->update([
                 'ack_status' => SyncEvent::STATUS_FAILED,
                 'processed_at' => now(),
@@ -116,6 +125,20 @@ class SyncEventDispatcher
             ]);
 
             return;
+        }
+
+        // External work must never run before the effect + ACK transaction
+        // commits, and must never turn an already-processed event failed.
+        if ($handler instanceof AfterSyncEventCommitHandler) {
+            try {
+                $handler->afterSyncEventCommit($event, $device, $result);
+            } catch (Throwable $e) {
+                Log::warning('sync event post-commit hook failed', [
+                    'event_id' => $event->getKey(),
+                    'event_type' => $event->event_type,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         // §11.5 — real-time push to the branch's other terminals (a second

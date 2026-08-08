@@ -145,6 +145,35 @@ class DeviceSyncExpenseRestockTest extends TestCase
         $this->assertDatabaseCount('pos_expenses', 1);
     }
 
+    public function test_handler_effect_rolls_back_when_the_processed_stamp_cannot_commit(): void
+    {
+        $this->device();
+        $event = $this->expenseEvent();
+        $clientEventId = $event['client_event_id'];
+
+        // Model the fatal window API-002 now recovers: the domain handler has
+        // returned, but persisting the final processed ACK fails. The expense
+        // and the ACK must be one commit, otherwise a later sweep repeats the
+        // already-recorded money movement.
+        SyncEvent::updating(function (SyncEvent $syncEvent) use ($clientEventId): void {
+            if ($syncEvent->client_event_id === $clientEventId
+                && $syncEvent->ack_status === SyncEvent::STATUS_PROCESSED) {
+                throw new \RuntimeException('simulated processed stamp failure');
+            }
+        });
+
+        $response = $this->push('mdev_x', [$event])->assertOk();
+
+        $response
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_FAILED)
+            ->assertJsonPath('data.results.0.result.error', 'simulated processed stamp failure');
+        $this->assertDatabaseCount('pos_expenses', 0);
+        $this->assertDatabaseHas('pos_sync_events', [
+            'client_event_id' => $clientEventId,
+            'ack_status' => SyncEvent::STATUS_FAILED,
+        ]);
+    }
+
     public function test_a_failed_expense_retry_is_not_dispatched_while_another_retry_owns_the_lock(): void
     {
         $device = $this->device();

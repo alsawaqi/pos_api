@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\Sync\AfterSyncEventCommitHandler;
 use App\Actions\Device\Sync\ForwardCharityDonationAction;
-use App\Actions\Device\Sync\SyncEventHandler;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -37,7 +37,7 @@ use RuntimeException;
  * (+ shares) is created linked to this POS device + branch — see
  * {@see ForwardCharityDonationAction}.
  */
-class DonationRecordHandler implements SyncEventHandler
+class DonationRecordHandler implements AfterSyncEventCommitHandler
 {
     public function __construct(
         private readonly ForwardCharityDonationAction $charityForwarder,
@@ -125,37 +125,46 @@ class DonationRecordHandler implements SyncEventHandler
         $amount = Money::toOmr((int) $payload['amount_baisas']);
 
         $result = DB::transaction(function () use ($payload, $event, $device, $order, $payment, $branch, $receipt, $status, $amount): array {
-            $donation = RoundupDonation::create([
-                'uuid' => (string) Str::uuid(),
-                'company_id' => $device->company_id,
-                'branch_id' => $device->branch_id,
-                'device_id' => $device->getKey(),
-                'order_id' => $order->id,
-                'payment_id' => $payment->id,
-                'bank_id' => $device->bank_id,
-                'terminal_id' => $device->terminal_id,
-                'commission_profile_id' => $device->commission_profile_id,
-                'amount' => $amount,
-                'bank_response' => $receipt,
-                'status' => $status,
-                'source' => 'pos_roundup',
-                'country_id' => $branch?->country_id,
-                'region_id' => $branch?->region_id,
-                'district_id' => $branch?->district_id,
-                'city_id' => $branch?->city_id,
-                'latitude' => $branch?->latitude,
-                'longitude' => $branch?->longitude,
-                'client_event_id' => $event->client_event_id,
-                'occurred_at' => isset($payload['occurred_at'])
-                    ? Carbon::parse((string) $payload['occurred_at'])
-                    : $event->client_timestamp,
-            ]);
+            $donation = RoundupDonation::query()
+                ->where('client_event_id', $event->client_event_id)
+                ->lockForUpdate()
+                ->first();
 
-            // Breadcrumb on the card payment: how much went to charity + the link.
-            $payment->forceFill([
-                'roundup_amount' => $amount,
-                'charity_transaction_id' => $donation->id,
-            ])->save();
+            if ($donation === null) {
+                $donation = RoundupDonation::create([
+                    'uuid' => (string) Str::uuid(),
+                    'company_id' => $device->company_id,
+                    'branch_id' => $device->branch_id,
+                    'device_id' => $device->getKey(),
+                    'order_id' => $order->id,
+                    'payment_id' => $payment->id,
+                    'bank_id' => $device->bank_id,
+                    'terminal_id' => $device->terminal_id,
+                    'commission_profile_id' => $device->commission_profile_id,
+                    'amount' => $amount,
+                    'bank_response' => $receipt,
+                    'status' => $status,
+                    'source' => 'pos_roundup',
+                    'country_id' => $branch?->country_id,
+                    'region_id' => $branch?->region_id,
+                    'district_id' => $branch?->district_id,
+                    'city_id' => $branch?->city_id,
+                    'latitude' => $branch?->latitude,
+                    'longitude' => $branch?->longitude,
+                    'client_event_id' => $event->client_event_id,
+                    'occurred_at' => isset($payload['occurred_at'])
+                        ? Carbon::parse((string) $payload['occurred_at'])
+                        : $event->client_timestamp,
+                ]);
+
+                // Breadcrumb on the card payment: amount plus durable link.
+                $payment->forceFill([
+                    'roundup_amount' => $amount,
+                    'charity_transaction_id' => $donation->id,
+                ])->save();
+            } else {
+                $this->assertExistingDonationMatches($donation, $device, $order, $payment, $amount);
+            }
 
             return [
                 'roundup_donation_id' => (int) $donation->id,
@@ -165,33 +174,80 @@ class DonationRecordHandler implements SyncEventHandler
             ];
         });
 
-        // After the POS round-up has durably committed, forward it to the
-        // charity app (best-effort — never fails the round-up) so a real
-        // charity_transaction + shares are created, linked to this POS device +
-        // branch with the branch's geo copied across. A successful forward
-        // stamps forwarded_at so the admin reconciliation paths never forward
-        // the same round-up twice.
-        //
-        // P-F7 — SKIPPED when the order has a pending_reconciliation tender:
-        // money not confirmed ⇒ nothing goes to charity yet. forwarded_at
-        // stays NULL and pos_admin forwards it on reconciliation approval.
-        if (! $orderHasPendingTender) {
-            $forwarded = $this->charityForwarder->forward(
-                $device,
-                $branch,
-                $amount,
-                $receipt,
-                $status,
-                $result['roundup_donation_uuid'],
-            );
-            if ($forwarded) {
-                RoundupDonation::query()
-                    ->whereKey($result['roundup_donation_id'])
-                    ->update(['forwarded_at' => now()]);
-            }
+        return $result;
+    }
+
+    /**
+     * Forward only after the local donation, payment breadcrumb, and processed
+     * sync stamp commit together. A failed forward leaves forwarded_at null for
+     * the admin retry path; a lost success reuses the same charity-side UUID.
+     *
+     * Pending-reconciliation donations stay local until approval changes their
+     * status and the existing admin recovery path forwards them.
+     *
+     * @param  array<string, mixed>  $result
+     */
+    public function afterSyncEventCommit(SyncEvent $event, Device $device, array $result): void
+    {
+        $donationId = (int) ($result['roundup_donation_id'] ?? 0);
+        if ($donationId <= 0) {
+            return;
         }
 
-        return $result;
+        $donation = RoundupDonation::query()
+            ->whereKey($donationId)
+            ->where('client_event_id', $event->client_event_id)
+            ->where('device_id', $device->getKey())
+            ->first();
+
+        if ($donation === null
+            || $donation->forwarded_at !== null
+            || $donation->status !== 'success') {
+            return;
+        }
+
+        $branch = Branch::query()->find($donation->branch_id);
+        $forwarded = $this->charityForwarder->forward(
+            $device,
+            $branch,
+            (string) $donation->amount,
+            is_array($donation->bank_response) ? $donation->bank_response : null,
+            (string) $donation->status,
+            (string) $donation->uuid,
+        );
+
+        if ($forwarded) {
+            RoundupDonation::query()
+                ->whereKey($donation->id)
+                ->whereNull('forwarded_at')
+                ->update(['forwarded_at' => now()]);
+        }
+    }
+
+    private function assertExistingDonationMatches(
+        RoundupDonation $donation,
+        Device $device,
+        Order $order,
+        Payment $payment,
+        string $amount,
+    ): void {
+        $matches = (int) $donation->company_id === (int) $device->company_id
+            && (int) $donation->branch_id === (int) $device->branch_id
+            && (int) $donation->device_id === (int) $device->getKey()
+            && (int) $donation->order_id === (int) $order->id
+            && (int) $donation->payment_id === (int) $payment->id
+            && (string) $donation->amount === $amount;
+
+        $breadcrumbsMatch = $donation->status === 'void'
+            ? $payment->roundup_amount === null && $payment->charity_transaction_id === null
+            : (string) $payment->roundup_amount === $amount
+                && (int) $payment->charity_transaction_id === (int) $donation->id;
+
+        if (! $matches || ! $breadcrumbsMatch) {
+            throw new RuntimeException(
+                'existing donation.record does not match this device event',
+            );
+        }
     }
 
     private function resolveCardPayment(int $orderId, ?string $paymentUuid, ?int $paymentIndex): ?Payment

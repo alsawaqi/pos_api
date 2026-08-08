@@ -25,6 +25,14 @@ class DeviceSyncDonationTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // This suite creates a fresh ledger with no historical quarantine.
+        config(['sync.stranded_sweep_after_id' => 0]);
+    }
+
     private function device(string $token = 'mdev_x'): Device
     {
         return Device::factory()->paired($token)->create([

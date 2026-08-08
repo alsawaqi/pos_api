@@ -35,6 +35,11 @@ class SweepStrandedSyncEvents extends Command
 
     public function handle(): int
     {
+        $sweepAfterId = $this->sweepAfterId();
+        if ($sweepAfterId === null) {
+            return self::INVALID;
+        }
+
         $olderThan = $this->integerOption('older-than', minimum: 10);
         $limit = $this->integerOption('limit', minimum: 1);
 
@@ -46,6 +51,7 @@ class SweepStrandedSyncEvents extends Command
         // margin above the API's five-minute upstream request timeout.
         $cutoff = now()->subMinutes($olderThan);
         $events = SyncEvent::query()
+            ->where('id', '>', $sweepAfterId)
             ->where('ack_status', SyncEvent::STATUS_RECEIVED)
             ->where('server_received_at', '<=', $cutoff)
             ->whereIn('event_type', $this->dispatcher->handledEventTypes())
@@ -125,6 +131,7 @@ class SweepStrandedSyncEvents extends Command
             'processed' => $processed,
             'failed' => $failed,
             'skipped' => $skipped,
+            'sweep_after_id' => $sweepAfterId,
             'cutoff' => $cutoff->toIso8601String(),
         ];
         if ($processed + $failed + $skipped > 0) {
@@ -134,6 +141,27 @@ class SweepStrandedSyncEvents extends Command
         $this->info("processed={$processed} failed={$failed} skipped={$skipped}");
 
         return self::SUCCESS;
+    }
+
+    private function sweepAfterId(): ?int
+    {
+        $configured = config('sync.stranded_sweep_after_id');
+        $isCanonicalInteger = is_int($configured)
+            || (is_string($configured) && preg_match('/^(0|[1-9][0-9]*)$/D', $configured) === 1);
+        $value = $isCanonicalInteger
+            ? filter_var($configured, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]])
+            : false;
+
+        if ($value === false) {
+            $this->error('SYNC_STRANDED_SWEEP_AFTER_ID must be configured as a nonnegative integer.');
+            Log::error('Stranded sync event sweep aborted because its historical quarantine floor is missing or invalid', [
+                'config_key' => 'sync.stranded_sweep_after_id',
+            ]);
+
+            return null;
+        }
+
+        return $value;
     }
 
     private function integerOption(string $name, int $minimum): ?int

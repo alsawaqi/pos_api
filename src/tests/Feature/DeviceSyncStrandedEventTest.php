@@ -24,6 +24,9 @@ class DeviceSyncStrandedEventTest extends TestCase
     {
         parent::setUp();
         $this->seedPosStaff([7]);
+
+        // This suite creates a fresh ledger with no historical quarantine.
+        config(['sync.stranded_sweep_after_id' => 0]);
     }
 
     private function device(string $token = 'mdev_stranded'): Device
@@ -53,6 +56,69 @@ class DeviceSyncStrandedEventTest extends TestCase
             'server_received_at' => now()->subMinutes(11),
             'ack_status' => SyncEvent::STATUS_RECEIVED,
         ], $overrides));
+    }
+
+    public function test_sweep_fails_closed_when_the_historical_floor_is_missing(): void
+    {
+        $event = $this->event($this->device());
+        config(['sync.stranded_sweep_after_id' => null]);
+        Log::spy();
+
+        $this->artisan('sync:sweep-stranded-events')
+            ->expectsOutput('SYNC_STRANDED_SWEEP_AFTER_ID must be configured as a nonnegative integer.')
+            ->assertExitCode(Command::INVALID);
+
+        $this->assertSame(SyncEvent::STATUS_RECEIVED, $event->fresh()->ack_status);
+        $this->assertDatabaseCount('pos_expenses', 0);
+        Log::shouldHaveReceived('error')
+            ->once()
+            ->with(
+                'Stranded sync event sweep aborted because its historical quarantine floor is missing or invalid',
+                ['config_key' => 'sync.stranded_sweep_after_id'],
+            );
+    }
+
+    public function test_sweep_fails_closed_when_the_historical_floor_is_invalid(): void
+    {
+        $event = $this->event($this->device());
+        Log::spy();
+
+        foreach ([-1, 'not-an-integer', true] as $invalidFloor) {
+            config(['sync.stranded_sweep_after_id' => $invalidFloor]);
+
+            $this->artisan('sync:sweep-stranded-events')
+                ->expectsOutput('SYNC_STRANDED_SWEEP_AFTER_ID must be configured as a nonnegative integer.')
+                ->assertExitCode(Command::INVALID);
+        }
+
+        $this->assertSame(SyncEvent::STATUS_RECEIVED, $event->fresh()->ack_status);
+        $this->assertDatabaseCount('pos_expenses', 0);
+        Log::shouldHaveReceived('error')
+            ->times(3)
+            ->with(
+                'Stranded sync event sweep aborted because its historical quarantine floor is missing or invalid',
+                ['config_key' => 'sync.stranded_sweep_after_id'],
+            );
+    }
+
+    public function test_sweep_quarantines_ids_at_or_below_the_floor_and_processes_only_newer_events(): void
+    {
+        $device = $this->device();
+        $belowFloor = $this->event($device);
+        $atFloor = $this->event($device);
+        $aboveFloor = $this->event($device);
+        config(['sync.stranded_sweep_after_id' => $atFloor->id]);
+
+        $this->artisan('sync:sweep-stranded-events')
+            ->expectsOutput('processed=1 failed=0 skipped=0')
+            ->assertSuccessful();
+
+        $this->assertLessThan($atFloor->id, $belowFloor->id);
+        $this->assertGreaterThan($atFloor->id, $aboveFloor->id);
+        $this->assertSame(SyncEvent::STATUS_RECEIVED, $belowFloor->fresh()->ack_status);
+        $this->assertSame(SyncEvent::STATUS_RECEIVED, $atFloor->fresh()->ack_status);
+        $this->assertSame(SyncEvent::STATUS_PROCESSED, $aboveFloor->fresh()->ack_status);
+        $this->assertDatabaseCount('pos_expenses', 1);
     }
 
     public function test_sweep_processes_only_old_received_events_with_registered_handlers(): void

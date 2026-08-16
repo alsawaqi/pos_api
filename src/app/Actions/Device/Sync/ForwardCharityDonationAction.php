@@ -29,8 +29,9 @@ use Illuminate\Support\Facades\Log;
  *
  * P-F7 — returns TRUE only when the charity app actually accepted the
  * forward, so the caller can stamp pos_roundup_donations.forwarded_at (the
- * "already forwarded" marker). A FALSE (unset URL / non-2xx / exception)
- * leaves the marker NULL and the admin reconciliation paths retry later.
+ * "already forwarded" marker). A FALSE (unset URL / non-2xx / missing or
+ * negative receiver acknowledgement / exception) leaves the marker NULL
+ * and the admin reconciliation paths retry later.
  */
 class ForwardCharityDonationAction
 {
@@ -116,11 +117,15 @@ class ForwardCharityDonationAction
                 ->asJson()
                 ->post($baseUrl.'/api/donations-pos-roundup', $payload);
 
-            if (! $response->successful()) {
-                Log::info('charity roundup forward skipped', [
+            $receiverSuccess = $response->json('success');
+            $receiverAccepted = $receiverSuccess === true;
+            if (! $response->successful() || ! $receiverAccepted) {
+                Log::info('charity roundup forward not accepted', [
                     'pos_device_id' => $payload['pos_device_id'] ?? null,
                     'status' => $response->status(),
-                    'body' => $response->json('message') ?? $response->body(),
+                    // Log only the explicit contract field, never the full
+                    // untrusted response body.
+                    'receiver_success' => $receiverSuccess,
                 ]);
 
                 return false;

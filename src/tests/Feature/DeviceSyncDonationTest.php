@@ -107,6 +107,41 @@ class DeviceSyncDonationTest extends TestCase
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
     }
 
+    private function assertUnacceptedCharityResponseLeavesDonationRetriable(mixed $charityResponse): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => $charityResponse]);
+
+        $this->device();
+        $this->seedBranch();
+        [, $paymentId] = $this->seedOrderAndCard();
+        $event = $this->donationEvent();
+
+        $response = $this->push('mdev_x', [$event])->assertOk();
+
+        // Charity acceptance is best-effort and post-commit. An ambiguous or
+        // negative reply must not roll back the sale, local donation, payment
+        // breadcrumb, or processed ACK; only the durable forward marker stays
+        // NULL so the admin sweep can safely retry the same donation UUID.
+        $response
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_PROCESSED)
+            ->assertJsonPath('data.results.0.result.status', 'success');
+
+        $donation = RoundupDonation::query()
+            ->where('client_event_id', $event['client_event_id'])
+            ->firstOrFail();
+        $payment = Payment::findOrFail($paymentId);
+
+        $this->assertSame('success', $donation->status);
+        $this->assertNull($donation->forwarded_at);
+        $this->assertSame((int) $donation->id, (int) $payment->charity_transaction_id);
+        $this->assertSame(
+            SyncEvent::STATUS_PROCESSED,
+            SyncEvent::query()->where('client_event_id', $event['client_event_id'])->value('ack_status'),
+        );
+        Http::assertSentCount(1);
+    }
+
     public function test_donation_record_writes_a_roundup_donation_and_links_the_payment(): void
     {
         $this->device();
@@ -238,7 +273,6 @@ class DeviceSyncDonationTest extends TestCase
     public function test_stranded_donation_reuses_its_committed_row_and_forwards_after_processing(): void
     {
         config(['services.charity.url' => null]);
-        Http::fake();
 
         $device = $this->device();
         $device->forceFill(['assigned_at' => now()->subHour()])->save();
@@ -558,6 +592,34 @@ class DeviceSyncDonationTest extends TestCase
         // the admin reconciliation paths never forward it twice (P-F7).
         $this->assertDatabaseCount('pos_roundup_donations', 1);
         $this->assertNotNull(RoundupDonation::firstOrFail()->forwarded_at);
+    }
+
+    public function test_a_2xx_charity_refusal_leaves_the_donation_retriable(): void
+    {
+        $this->assertUnacceptedCharityResponseLeavesDonationRetriable(
+            Http::response(['success' => false, 'message' => 'receiver validation failed'], 200),
+        );
+    }
+
+    public function test_a_2xx_charity_reply_missing_success_leaves_the_donation_retriable(): void
+    {
+        $this->assertUnacceptedCharityResponseLeavesDonationRetriable(
+            Http::response(['message' => 'ambiguous acknowledgement'], 200),
+        );
+    }
+
+    public function test_a_2xx_malformed_charity_reply_leaves_the_donation_retriable(): void
+    {
+        $this->assertUnacceptedCharityResponseLeavesDonationRetriable(
+            Http::response('{not-json', 200, ['Content-Type' => 'application/json']),
+        );
+    }
+
+    public function test_a_2xx_charity_reply_with_a_non_boolean_success_leaves_the_donation_retriable(): void
+    {
+        $this->assertUnacceptedCharityResponseLeavesDonationRetriable(
+            Http::response(['success' => 'true'], 200),
+        );
     }
 
     public function test_inline_forward_rechecks_void_after_its_unlocked_candidate_read(): void

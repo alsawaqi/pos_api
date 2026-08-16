@@ -212,6 +212,8 @@ class PayOrderHandler implements SyncEventHandler
             if ($giftBaisas >= $grandBaisas && $grandBaisas > 0) {
                 $loyaltyRuleIds = [];
             }
+            $this->assertLoyaltyEarnCanBeAttributed($order, $loyaltyRuleIds);
+
             $loyaltyTxnIds = [];
             foreach ($loyaltyRuleIds as $ruleId) {
                 $txn = $this->loyalty->apply($order, $ruleId);
@@ -290,6 +292,76 @@ class PayOrderHandler implements SyncEventHandler
             array_map(static fn ($v): int => (int) $v, $raw),
             static fn (int $v): bool => $v > 0,
         )));
+    }
+
+    /**
+     * @param  list<int>  $loyaltyRuleIds
+     */
+    private function assertLoyaltyEarnCanBeAttributed(Order $order, array $loyaltyRuleIds): void
+    {
+        if ($loyaltyRuleIds === []
+            || $order->customer_id !== null
+            || $this->wasCreatedAsAnonymousWalkIn($order)) {
+            return;
+        }
+
+        // EXIT-05 / IMP-2 - a production hard-delete nulls
+        // pos_orders.customer_id. Without proven walk-in provenance, an
+        // explicit earn request must park instead of silently losing value.
+        throw new RuntimeException('cannot earn loyalty without a customer on the order');
+    }
+
+    /**
+     * Prove that a NULL-customer order was born anonymous rather than losing
+     * its customer later through the production FK's nullOnDelete action.
+     *
+     * order.create, order.hold and order.transfer persist their current source
+     * event id on the order; the referenced event retains the nested payload.
+     * Missing or ambiguous provenance is deliberately not treated as proof of
+     * a walk-in: explicit earn context must then park for operator review
+     * instead of silently discarding the promised earn.
+     */
+    private function wasCreatedAsAnonymousWalkIn(Order $order): bool
+    {
+        $clientEventId = is_string($order->client_event_id)
+            ? trim($order->client_event_id)
+            : '';
+        if ($clientEventId === '') {
+            return false;
+        }
+
+        $sourceDeviceIds = array_values(array_unique(array_map(
+            static fn (mixed $id): int => (int) $id,
+            array_filter([
+                $order->device_id,
+                $order->transferred_from_device_id,
+                $order->transferred_to_device_id,
+            ], static fn (mixed $id): bool => $id !== null),
+        )));
+        if ($sourceDeviceIds === []) {
+            return false;
+        }
+
+        $originEvents = SyncEvent::query()
+            ->where('client_event_id', $clientEventId)
+            ->whereIn('device_id', $sourceDeviceIds)
+            ->whereIn('event_type', ['order.create', 'order.hold', 'order.transfer'])
+            ->get()
+            ->filter(
+                static fn (SyncEvent $candidate): bool => (string) data_get(
+                    $candidate->payload_json,
+                    'order.uuid',
+                ) === (string) $order->uuid,
+            );
+
+        if ($originEvents->count() !== 1) {
+            return false;
+        }
+
+        $originEvent = $originEvents->first();
+
+        return $originEvent instanceof SyncEvent
+            && data_get($originEvent->payload_json, 'order.customer_id') === null;
     }
 
     /**

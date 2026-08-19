@@ -26,6 +26,7 @@ class OrderComp extends Model
     {
         return [
             'amount' => 'decimal:3',
+            'qty' => 'decimal:3',
             'applied_at' => 'datetime',
         ];
     }

@@ -165,6 +165,7 @@ class DeviceSyncCompVoidReasonTest extends TestCase
                 'line_index' => 0,
                 'staff_id' => 9,
                 'note' => 'regular customer',
+                'qty' => 1,
             ]],
         ])])->assertOk();
 
@@ -176,10 +177,62 @@ class DeviceSyncCompVoidReasonTest extends TestCase
             'reason_code_snapshot' => 'staff_meal',
             'reason_name_snapshot' => 'Staff Meal',
             'amount' => '1.500',
+            'qty' => '1.000',
             'approved_by_pos_staff_id' => 9,
+            'note' => 'regular customer',
         ]);
         // The line comp ties to the created order item.
         $this->assertNotNull(DB::table('pos_order_comps')->value('order_item_id'));
+    }
+
+    public function test_malformed_comp_qty_is_sanitized_without_failing_the_event(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+
+        $cases = [
+            'gift row' => ['is_gift' => true, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => 1],
+            'without line index' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'qty' => 1],
+            'unresolvable line index' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 99, 'qty' => 1],
+            'equal to line qty' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => 2],
+            'exceeds line qty' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => 3],
+            'zero' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => 0],
+            'negative' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => -1],
+            'non-integer number' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => 1.5],
+            'string garbage' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => 'garbage'],
+            'array type error' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0, 'qty' => [1]],
+            'legacy absent key' => ['comp_reason_id' => 2, 'amount_baisas' => 1500, 'line_index' => 0],
+        ];
+
+        $uuids = [];
+        $events = [];
+        foreach ($cases as $name => $comp) {
+            $uuid = (string) Str::uuid();
+            $uuids[$name] = $uuid;
+            $events[] = $this->createEvent($uuid, [
+                'comp_total_baisas' => 1500,
+                'grand_total_baisas' => 1500,
+                'comps' => [$comp],
+            ]);
+        }
+
+        $res = $this->push('mdev_cv', $events)->assertOk();
+
+        $this->assertCount(count($cases), $res->json('data.results'));
+        foreach ($res->json('data.results') as $result) {
+            $this->assertSame('processed', $result['status']);
+        }
+
+        $storedQtyByOrder = DB::table('pos_order_comps as comps')
+            ->join('pos_orders as orders', 'orders.id', '=', 'comps.order_id')
+            ->whereIn('orders.uuid', array_values($uuids))
+            ->pluck('comps.qty', 'orders.uuid');
+
+        $this->assertCount(count($cases), $storedQtyByOrder);
+        foreach ($uuids as $name => $uuid) {
+            $this->assertNull($storedQtyByOrder[$uuid], $name.' qty was not sanitized');
+        }
     }
 
     public function test_comp_rejects_an_approver_from_another_company(): void

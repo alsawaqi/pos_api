@@ -509,6 +509,15 @@ class CreateOrderHandler implements SyncEventHandler
             TenantReferenceGuard::assertStaffInTenant($device, $approverId, 'comp references an approver outside the device tenant: '.$approverId);
 
             $lineIndex = isset($c['line_index']) ? (int) $c['line_index'] : null;
+            $qty = filter_var($c['qty'] ?? null, FILTER_VALIDATE_INT);
+            $qty = $qty !== false
+                && $qty >= 1
+                && ! $isGift
+                && $lineIndex !== null
+                && isset($itemIds[$lineIndex], $order['lines'][$lineIndex]['qty'])
+                && $qty < (float) $order['lines'][$lineIndex]['qty']
+                    ? $qty
+                    : null;
             OrderComp::create([
                 'company_id' => $device->company_id,
                 'branch_id' => $device->branch_id,
@@ -519,6 +528,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'reason_name_snapshot' => $reason->name ?? 'Gift',
                 'is_gift' => $isGift,
                 'amount' => Money::toOmr($amountBaisas),
+                'qty' => $qty,
                 'approved_by_pos_staff_id' => $c['staff_id'] ?? null,
                 'note' => $c['note'] ?? null,
                 'applied_at' => $model->opened_at,
@@ -614,6 +624,7 @@ class CreateOrderHandler implements SyncEventHandler
             'comps.*.line_index' => ['nullable', 'integer', 'min:0'],
             'comps.*.staff_id' => ['nullable', 'integer'],
             'comps.*.note' => ['nullable', 'string'],
+            'comps.*.qty' => ['nullable'],
         ]);
 
         if ($validator->fails()) {

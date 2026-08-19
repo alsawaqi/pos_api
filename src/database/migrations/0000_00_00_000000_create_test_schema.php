@@ -695,6 +695,7 @@ return new class extends Migration
             // P-F5 — a gifted line: 100% write-off, NO reason, NO cap.
             $table->boolean('is_gift')->default(false);
             $table->decimal('amount', 12, 3)->default(0);
+            $table->decimal('qty', 12, 3)->nullable();
             $table->unsignedBigInteger('approved_by_pos_staff_id')->nullable();
             $table->text('note')->nullable();
             $table->timestamp('applied_at')->nullable();

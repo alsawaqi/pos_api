@@ -1,0 +1,36 @@
+{
+  "name": "loyalty_redemption_slot",
+  "description": "A loyalty redemption occupies the SINGLE order-discount slot as a fixed amount (0.500 for 100 points under rule 9) — mutually exclusive with a manual discount or an order rule. The core prices the slot like any fixed discount; the points/stamps metadata rides through for order.pay's loyalty_redeem. Subtotal 3500, grand 3500.",
+  "input": {
+    "lines": [
+      { "productId": 15, "categoryId": 91, "unitPriceBaisas": 4000, "qty": 1 }
+    ],
+    "orderDiscount": {
+      "kind": "fixed",
+      "fixedBaisas": 500,
+      "label": "Loyalty redemption",
+      "loyaltyRuleId": 9,
+      "loyaltyPoints": 100
+    },
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 500,
+    "discountTotalBaisas": 500,
+    "subtotalBaisas": 3500,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 3500,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 3500
+  }
+}

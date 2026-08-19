@@ -1,0 +1,30 @@
+{
+  "name": "order_percent_discount",
+  "description": "The order slot holding a PERCENTAGE discount (10% of raw 3.333 = 333.3 -> 333 baisas). Pins the slot's percentage leg — the one order-slot path with its own rounding point in the core (deterministic decimal law; the device rounded the combined sum once on noisy doubles). Subtotal 3.000, VAT 5% = 150, grand 3.150.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 3333, "qty": 1 }
+    ],
+    "orderDiscount": { "kind": "percentage", "percent": 10.0, "label": "Ten off" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 3333,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 333,
+    "discountTotalBaisas": 333,
+    "subtotalBaisas": 3000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 3000,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 150 }],
+    "taxTotalBaisas": 150,
+    "grandTotalBaisas": 3150
+  }
+}

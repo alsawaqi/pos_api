@@ -1,0 +1,39 @@
+{
+  "name": "line_comp_on_discounted_line",
+  "description": "A LINE comp on a line that carries a 10% line discount: the comp writes off the line's NET (2.000 - 0.200 = 1.800), not its raw total. Subtotal 1800, comp 1800, taxed base 0, grand 0.000.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 1 }
+    ],
+    "discountRules": [
+      {
+        "id": 4, "name": "Ten percent", "scope": "product",
+        "amountType": "percent", "percent": 10.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "comp": { "lineIndex": 0, "reasonId": 2, "reason": "Spill" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 2000,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 200, "ruleId": 4, "amountType": "percent" }
+    ],
+    "lineDiscountTotalBaisas": 200,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 200,
+    "subtotalBaisas": 1800,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 1800,
+    "compTotalBaisas": 1800,
+    "taxedBaseBaisas": 0,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 0 }],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 0
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "line_discount_biggest_wins_tie_first",
+  "description": "Line-discount selection: three product-scope rules match one 2.000 line. Rule 1 (10% = 0.200) and rule 2 (fixed 0.200) TIE -> the FIRST in catalog order keeps the win (strictly-greater comparison); rule 3 (5% = 0.100) loses. Exactly one rule per line, stackable ignored. Hand-computed: line discount 200 attributed to rule 1; subtotal 1800; grand 1800.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 1 }
+    ],
+    "discountRules": [
+      {
+        "id": 1, "name": "Ten percent", "scope": "product",
+        "amountType": "percent", "percent": 10.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      },
+      {
+        "id": 2, "name": "Fixed 200", "scope": "product",
+        "amountType": "fixed", "fixedBaisas": 200, "stackable": true,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      },
+      {
+        "id": 3, "name": "Five percent", "scope": "product",
+        "amountType": "percent", "percent": 5.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 2000,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 200, "ruleId": 1, "amountType": "percent" }
+    ],
+    "lineDiscountTotalBaisas": 200,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 200,
+    "subtotalBaisas": 1800,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1800,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 1800
+  }
+}

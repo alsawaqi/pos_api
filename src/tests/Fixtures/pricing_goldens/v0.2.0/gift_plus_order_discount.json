@@ -1,0 +1,32 @@
+{
+  "name": "gift_plus_order_discount",
+  "description": "Gift + order-discount interplay: line 0 (3.000) is GIFTED, line 1 (2.000) sells; a manual 1.000 order discount applies. Discounts come off first (subtotal 4000), then the gift writes off its line's value (3000) as comp — clamped to the subtotal. Taxed base 1000, VAT 5% = 50. Hand-computed invariant: 5000 - 1000 - 3000 + 50 = 1050.",
+  "input": {
+    "lines": [
+      { "productId": 21, "categoryId": 20, "unitPriceBaisas": 3000, "qty": 1, "gifted": true },
+      { "productId": 22, "categoryId": 20, "unitPriceBaisas": 2000, "qty": 1 }
+    ],
+    "orderDiscount": { "kind": "fixed", "fixedBaisas": 1000, "label": "Manual" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 5000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 1000,
+    "discountTotalBaisas": 1000,
+    "subtotalBaisas": 4000,
+    "giftAmountsBaisas": { "0": 3000 },
+    "giftedTotalBaisas": 3000,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 3000,
+    "taxedBaseBaisas": 1000,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 50 }],
+    "taxTotalBaisas": 50,
+    "grandTotalBaisas": 1050
+  }
+}

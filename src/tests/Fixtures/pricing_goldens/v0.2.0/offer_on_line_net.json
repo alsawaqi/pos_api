@@ -1,0 +1,57 @@
+{
+  "name": "offer_on_line_net",
+  "description": "LOCKED SEMANTIC: offers evaluate on line NETS after merchant line discounts. A 10% product rule discounts the 2.000 x 2 line by 0.400 (net 3.600, per-unit 1.800); the BOGO then frees a 1.800 unit — NOT a 2.000 one. Total discount 0.400 + 1.800 = 2.200; subtotal 1.800; grand 1.800.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 2 }
+    ],
+    "discountRules": [
+      {
+        "id": 4, "name": "Ten percent", "scope": "product",
+        "amountType": "percent", "percent": 10.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "offers": [
+      {
+        "id": 1,
+        "name": "BOGO",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "product_ids": [11], "qty": 1 },
+          "get": { "same_as_buy": true, "qty": 1, "percent_off": 100 }
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 400, "ruleId": 4, "amountType": "percent" }
+    ],
+    "lineDiscountTotalBaisas": 400,
+    "appliedOffers": [
+      {
+        "offerId": 1,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 1800 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 1800,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 2200,
+    "subtotalBaisas": 1800,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1800,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 1800
+  }
+}

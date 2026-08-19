@@ -1,0 +1,32 @@
+{
+  "name": "gift_comp_clamp_engaged",
+  "description": "The comp clamp actually ENGAGES: a 3.000 gifted line plus a 0.500 paid line with a 1.000 order discount. Subtotal 2.500 < the gift's face 3.000, so the comp total clamps to 2.500 (giftedTotal stays the raw 3.000 — the clamp lives in the comp, exactly as the machine's compAmount does). Manager slice floors at 0. Taxed base 0, grand 0.000. Invariant: 3500 - 1000 - 2500 + 0 = 0.",
+  "input": {
+    "lines": [
+      { "productId": 21, "categoryId": 20, "unitPriceBaisas": 3000, "qty": 1, "gifted": true },
+      { "productId": 22, "categoryId": 20, "unitPriceBaisas": 500, "qty": 1 }
+    ],
+    "orderDiscount": { "kind": "fixed", "fixedBaisas": 1000, "label": "Manual" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 3500,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 1000,
+    "discountTotalBaisas": 1000,
+    "subtotalBaisas": 2500,
+    "giftAmountsBaisas": { "0": 3000 },
+    "giftedTotalBaisas": 3000,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 2500,
+    "taxedBaseBaisas": 0,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 0 }],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 0
+  }
+}

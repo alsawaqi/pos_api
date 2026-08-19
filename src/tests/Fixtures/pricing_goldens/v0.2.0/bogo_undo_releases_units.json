@@ -1,0 +1,62 @@
+{
+  "name": "bogo_undo_releases_units",
+  "description": "The BOGO buy-undo made OBSERVABLE: three 3.000 mains (cat 20), one 1.000 drink (cat 30). BOGO (id 1, buy cat-20, get cat-30 free): application 1 consumes one main + frees the drink (1.000); application 2 consumes a second main, finds no drink to reward, and UNDOES that buy. The released main leaves TWO free mains, so cheapest_free (id 5, buy 2 cheapest free on cat 20) applies and frees a 3.000 main — without the undo only one main would remain and it could not. Offers total 4.000; raw 10000; subtotal 6000.",
+  "input": {
+    "lines": [
+      { "productId": 21, "categoryId": 20, "unitPriceBaisas": 3000, "qty": 3 },
+      { "productId": 31, "categoryId": 30, "unitPriceBaisas": 1000, "qty": 1 }
+    ],
+    "offers": [
+      {
+        "id": 1,
+        "name": "Free drink with main",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "category_ids": [20], "qty": 1 },
+          "get": { "category_ids": [30], "qty": 1, "percent_off": 100 }
+        }
+      },
+      {
+        "id": 5,
+        "name": "2 mains cheapest free",
+        "type": "cheapest_free",
+        "autoApply": true,
+        "config": { "category_ids": [20], "qty": 2, "free_count": 1 }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 10000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 1,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "1": 1000 }
+      },
+      {
+        "offerId": 5,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 3000 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 4000,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 4000,
+    "subtotalBaisas": 6000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 6000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 6000
+  }
+}

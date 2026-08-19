@@ -1,0 +1,47 @@
+{
+  "name": "line_comp_partial_on_offer_hit_line",
+  "description": "A 1.000 x 3 line takes a buy-3-cheapest-free offer (1000) plus a fixed 500 order discount, so subtotal is 1500. The comp remains offer-blind: n=2 of N=3 computes ((2 * 3000 * 2) + 3) ~/ 6 = 2000, then the combined comp clamps to subtotal 1500. Manager comp is 1500, taxed base and grand are zero.",
+  "input": {
+    "lines": [
+      { "productId": 41, "categoryId": 40, "unitPriceBaisas": 1000, "qty": 3 }
+    ],
+    "offers": [
+      {
+        "id": 3,
+        "name": "Buy 3 cheapest free",
+        "type": "cheapest_free",
+        "autoApply": true,
+        "config": { "category_ids": [40], "qty": 3, "free_count": 1 }
+      }
+    ],
+    "orderDiscount": { "kind": "fixed", "fixedBaisas": 500, "label": "Manual" },
+    "comp": { "lineIndex": 0, "qty": 2, "reasonId": 2, "reason": "Spill" },
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 3000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 3,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 1000 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 1000,
+    "orderDiscountBaisas": 500,
+    "discountTotalBaisas": 1500,
+    "subtotalBaisas": 1500,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 1500,
+    "compTotalBaisas": 1500,
+    "taxedBaseBaisas": 0,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 0
+  }
+}

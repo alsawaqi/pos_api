@@ -1,0 +1,55 @@
+{
+  "name": "multi_buy_at_price_leaves_units_for_bogo",
+  "description": "THE CORE-001 DELIBERATE CHANGE. A multi_buy (id 1, '3 for 1.000') whose only candidate set is UNDER the bundle price (3 x 0.300 = 0.900) yields no discount. pos_machine consumed the 3 units before breaking, so the later BOGO (id 2) found nothing and the customer overcharged; the core adopts pos_handheld's break-without-consume, so the BOGO applies: buy one 0.300 unit, get one free (0.300 off). Hand-computed: raw 900; offers = bogo only, line 0 amount 300; discount 300; subtotal 600; no tax; grand 600.",
+  "input": {
+    "lines": [
+      { "productId": 7, "categoryId": 70, "unitPriceBaisas": 300, "qty": 3 }
+    ],
+    "offers": [
+      {
+        "id": 1,
+        "name": "3 for 1.000",
+        "type": "multi_buy",
+        "autoApply": true,
+        "config": { "product_ids": [7], "qty": 3, "price_baisas": 1000 }
+      },
+      {
+        "id": 2,
+        "name": "BOGO",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "product_ids": [7], "qty": 1 },
+          "get": { "same_as_buy": true, "qty": 1, "percent_off": 100 }
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 900,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 2,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 300 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 300,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 300,
+    "subtotalBaisas": 600,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 600,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 600
+  }
+}

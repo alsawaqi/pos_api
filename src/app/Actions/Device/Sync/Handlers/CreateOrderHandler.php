@@ -49,7 +49,37 @@ class CreateOrderHandler implements SyncEventHandler
 
     public function handle(SyncEvent $event, Device $device): array
     {
-        return $this->writeOrder($event, $device, Order::STATUS_OPEN, enforceGeofence: true);
+        $result = $this->writeOrder($event, $device, Order::STATUS_OPEN, enforceGeofence: true);
+        $order = (array) ($event->payload_json['order'] ?? null);
+
+        try {
+            $result['pricing_check'] = app('App\\Support\\Pricing\\WireValidator')->validate(
+                $order,
+                (int) $device->company_id,
+                (int) $device->branch_id,
+                (int) $event->getKey(),
+            );
+        } catch (\Throwable $exception) {
+            // Container resolution is outside WireValidator::validate(), so it
+            // gets the same fail-open guard: pricing observation can never turn
+            // a valid order.create into a failed sync event.
+            try {
+                logger()->warning('pricing validator error', [
+                    'event_id' => (int) $event->getKey(),
+                    'order_uuid' => (string) ($order['uuid'] ?? ''),
+                    'company_id' => (int) $device->company_id,
+                    'branch_id' => (int) $device->branch_id,
+                    'source' => (string) ($order['source'] ?? ''),
+                    'exception' => $exception::class,
+                    'message' => $exception->getMessage(),
+                ]);
+            } catch (\Throwable) {
+                // Logging is best-effort; the canonical error ACK still wins.
+            }
+            $result['pricing_check'] = ['checked' => false, 'reason' => 'error'];
+        }
+
+        return $result;
     }
 
     /**

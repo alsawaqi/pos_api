@@ -1,0 +1,35 @@
+{
+  "name": "two_taxes_round_then_sum",
+  "description": "ROUND-THEN-SUM tax structure proof: base 1.110 with taxes 5% and 4.5%. Per-tax rounding: 55.5 -> 56 and 49.95 -> 50 under the core's deterministic midpoint law; total 106. Sum-then-round would give round(105.45) = 105 — one baisa LESS. The STRUCTURE (each tax line rounds itself, then sum) is the machine's own; the 55.5 midpoint resolution is the core's law (see tax_half_baisa_midpoint_law for the divergence class — on this particular input the device's noisy double happened to agree). Grand = 1110 + 106 = 1216.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1110, "qty": 1 }
+    ],
+    "taxes": [
+      { "name": "VAT", "ratePercent": 5.0 },
+      { "name": "Tourism", "ratePercent": 4.5 }
+    ],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1110,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 1110,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1110,
+    "taxLines": [
+      { "name": "VAT", "amountBaisas": 56 },
+      { "name": "Tourism", "amountBaisas": 50 }
+    ],
+    "taxTotalBaisas": 106,
+    "grandTotalBaisas": 1216
+  }
+}

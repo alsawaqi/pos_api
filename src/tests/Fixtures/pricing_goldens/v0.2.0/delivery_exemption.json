@@ -1,0 +1,49 @@
+{
+  "name": "delivery_exemption",
+  "description": "P-G7/P-F1 delivery-provider policy: a matching 10% line rule, an eligible BOGO and a 5% VAT are all configured but INERT — delivery orders take no line discounts, no offers and no tax (the provider's listed price is final). Grand equals the raw subtotal exactly.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 2 }
+    ],
+    "discountRules": [
+      {
+        "id": 4, "name": "Ten percent", "scope": "product",
+        "amountType": "percent", "percent": 10.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "offers": [
+      {
+        "id": 1,
+        "name": "BOGO",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "product_ids": [11], "qty": 1 },
+          "get": { "same_as_buy": true, "qty": 1, "percent_off": 100 }
+        }
+      }
+    ],
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "isDeliveryProvider": true,
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 4000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 4000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 4000
+  }
+}

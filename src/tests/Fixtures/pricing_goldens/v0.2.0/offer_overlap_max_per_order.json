@@ -1,0 +1,62 @@
+{
+  "name": "offer_overlap_max_per_order",
+  "description": "Offer overlap + maxPerOrder: four 1.000 units of one product. BOGO (id 1, maxPerOrder 1, same_as_buy 100%) applies ONCE, consuming 2 units and freeing one (1.000). The later cheapest_free (id 10, buy 2 cheapest free) then finds exactly the 2 remaining units and frees the cheaper (1.000). Units consume strictly in offer-id order; each unit joins at most one application. Hand-computed: raw 4000; two applied offers of 1000 each on line 0; subtotal 2000; grand 2000.",
+  "input": {
+    "lines": [
+      { "productId": 3, "categoryId": 60, "unitPriceBaisas": 1000, "qty": 4 }
+    ],
+    "offers": [
+      {
+        "id": 10,
+        "name": "2 for cheapest free",
+        "type": "cheapest_free",
+        "autoApply": true,
+        "config": { "product_ids": [3], "qty": 2, "free_count": 1 }
+      },
+      {
+        "id": 1,
+        "name": "BOGO once",
+        "type": "bogo",
+        "autoApply": true,
+        "maxPerOrder": 1,
+        "config": {
+          "buy": { "product_ids": [3], "qty": 1 },
+          "get": { "same_as_buy": true, "qty": 1, "percent_off": 100 }
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 1,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 1000 }
+      },
+      {
+        "offerId": 10,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 1000 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 2000,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 2000,
+    "subtotalBaisas": 2000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 2000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 2000
+  }
+}

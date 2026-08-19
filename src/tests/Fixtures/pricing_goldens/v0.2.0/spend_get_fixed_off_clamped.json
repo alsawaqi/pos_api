@@ -1,0 +1,49 @@
+{
+  "name": "spend_get_fixed_off_clamped",
+  "description": "spend_get fixed_off larger than the eligible subtotal: 15.000 off a 10.000 cart clamps to the eligible sum (10.000) as an order-level offer amount; the combined discount then clamps at raw subtotal. A fully-discounted order: subtotal 0, taxed base 0, grand 0.000 even with VAT configured.",
+  "input": {
+    "lines": [
+      { "productId": 62, "categoryId": 65, "unitPriceBaisas": 10000, "qty": 1 }
+    ],
+    "offers": [
+      {
+        "id": 7,
+        "name": "Spend 10 get 15 off",
+        "type": "spend_get",
+        "autoApply": true,
+        "config": {
+          "min_subtotal_baisas": 10000,
+          "reward_type": "fixed_off",
+          "reward_value": 15000
+        }
+      }
+    ],
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 10000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 7,
+        "applications": 1,
+        "orderAmountBaisas": 10000,
+        "lineAmountsBaisas": {}
+      }
+    ],
+    "offerDiscountTotalBaisas": 10000,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 10000,
+    "subtotalBaisas": 0,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 0,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 0 }],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 0
+  }
+}

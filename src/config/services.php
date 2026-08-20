@@ -43,6 +43,7 @@ return [
     'charity' => [
         'url' => env('CHARITY_API_URL'),
         'timeout' => (int) env('CHARITY_API_TIMEOUT', 8),
+        'roundup_hmac_secret' => env('POS_ROUNDUP_HMAC_SECRET'),
     ],
 
     // Marketing-api public base. Advertiser content (slider images/videos) lives

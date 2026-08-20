@@ -11,6 +11,7 @@ use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
@@ -557,7 +558,10 @@ class DeviceSyncDonationTest extends TestCase
 
     public function test_donation_is_forwarded_to_the_charity_pos_roundup_endpoint(): void
     {
-        config(['services.charity.url' => 'http://charity.test']);
+        config([
+            'services.charity.url' => 'http://charity.test',
+            'services.charity.roundup_hmac_secret' => 'roundup-test-secret',
+        ]);
         Http::fake(['*' => Http::response(['success' => true], 201)]);
 
         $device = $this->device();
@@ -572,8 +576,20 @@ class DeviceSyncDonationTest extends TestCase
         // donation's uuid rides as pos_reference — the charity-side dedupe key
         // that makes the hourly retry sweep safe to replay.
         $donationUuid = (string) RoundupDonation::firstOrFail()->uuid;
-        Http::assertSent(function ($request) use ($device, $donationUuid) {
-            return str_contains($request->url(), '/api/donations-pos-roundup')
+        Http::assertSent(function (Request $request) use ($device, $donationUuid) {
+            $timestamp = $request->header('X-Pos-Timestamp')[0] ?? null;
+            $signature = $request->header('X-Pos-Signature')[0] ?? null;
+            $body = $request->body();
+
+            return is_string($timestamp)
+                && preg_match('/^\d+$/', $timestamp) === 1
+                && is_string($signature)
+                && hash_equals(
+                    'v1='.hash_hmac('sha256', $timestamp.'.'.$body, 'roundup-test-secret'),
+                    $signature,
+                )
+                && $request->hasHeader('Content-Type', 'application/json')
+                && str_contains($request->url(), '/api/donations-pos-roundup')
                 && $request['pos_device_id'] === $device->id
                 && $request['pos_branch_id'] === 10
                 && $request['pos_branch_name'] === 'Main'

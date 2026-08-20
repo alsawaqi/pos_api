@@ -11,6 +11,10 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
+ * TWIN of pos_admin app/Actions/Admin/Reconciliation/ForwardCharityDonationAction.php -
+ * keep in sync. The repos share the DB but not code; both callers must transmit
+ * the same signed wire contract before charity enforcement is enabled.
+ *
  * Forwards a POS card round-up to the charity app's POS round-up endpoint
  * (POST /api/donations-pos-roundup) so a real `charity_transactions` row
  * (+ `charity_transaction_shares` split by the device's charity commission
@@ -112,15 +116,27 @@ class ForwardCharityDonationAction
         }
 
         try {
+            $json = json_encode($payload, JSON_THROW_ON_ERROR);
+            $timestamp = (string) time();
+            $signature = hash_hmac(
+                'sha256',
+                $timestamp.'.'.$json,
+                (string) config('services.charity.roundup_hmac_secret'),
+            );
+
             $response = Http::timeout((int) config('services.charity.timeout', 8))
                 ->acceptJson()
-                ->asJson()
-                ->post($baseUrl.'/api/donations-pos-roundup', $payload);
+                ->withHeaders([
+                    'X-Pos-Timestamp' => $timestamp,
+                    'X-Pos-Signature' => 'v1='.$signature,
+                ])
+                ->withBody($json, 'application/json')
+                ->post($baseUrl.'/api/donations-pos-roundup');
 
             $receiverSuccess = $response->json('success');
             $receiverAccepted = $receiverSuccess === true;
             if (! $response->successful() || ! $receiverAccepted) {
-                Log::info('charity roundup forward not accepted', [
+                Log::warning('charity roundup forward not accepted', [
                     'pos_device_id' => $payload['pos_device_id'] ?? null,
                     'status' => $response->status(),
                     // Log only the explicit contract field, never the full

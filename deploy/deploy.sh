@@ -15,7 +15,7 @@ docker compose -f "$C" up -d
 # schedule:work starts a fresh schedule:run child each minute, so it picks up
 # the rebuilt shared config without a signal. Restarting it could kill an
 # active recovery sweep; only PHP-FPM needs an explicit bind-mount reload.
-docker compose -f "$C" restart pos_api
+docker compose -f "$C" restart pos_api nginx
 
 # The API has no public page; any non-5xx proves nginx -> php -> router. Also
 # prove the recovery scheduler survived the deploy instead of assuming it did.

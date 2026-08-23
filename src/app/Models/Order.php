@@ -83,6 +83,14 @@ class Order extends Model
     }
 
     /**
+     * @return HasMany<OrderComp, $this>
+     */
+    public function comps(): HasMany
+    {
+        return $this->hasMany(OrderComp::class);
+    }
+
+    /**
      * @return HasMany<Payment, $this>
      */
     public function payments(): HasMany

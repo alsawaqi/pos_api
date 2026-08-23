@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1\Device;
 
 use App\Models\Device;
 use App\Models\Order;
+use App\Models\OrderComp;
 use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
 use App\Support\Money;
@@ -58,7 +59,11 @@ class DeviceOrdersController
             ->where('company_id', $device->company_id)
             ->where('branch_id', $device->branch_id)
             ->whereIn('status', self::ACTIVE)
-            ->with('items.addons')
+            ->with([
+                'items' => fn ($q) => $q->orderBy('id'),
+                'items.addons',
+                'comps' => fn ($q) => $q->orderBy('id'),
+            ])
             ->orderBy('opened_at')
             ->get();
 
@@ -100,7 +105,11 @@ class DeviceOrdersController
             ->whereIn('status', self::HISTORY)
             ->when($from !== null, fn ($q) => $q->where('opened_at', '>=', $from))
             ->when($to !== null, fn ($q) => $q->where('opened_at', '<=', $to))
-            ->with('items.addons')
+            ->with([
+                'items' => fn ($q) => $q->orderBy('id'),
+                'items.addons',
+                'comps' => fn ($q) => $q->orderBy('id'),
+            ])
             ->orderByDesc('opened_at')
             ->orderByDesc('id')
             ->paginate(perPage: $perPage, page: $page);
@@ -136,6 +145,11 @@ class DeviceOrdersController
      */
     private function mapOrder(Order $order): array
     {
+        $itemIds = $order->items
+            ->map(fn (OrderItem $item): int => (int) $item->id)
+            ->values()
+            ->all();
+
         return [
             'id' => (int) $order->id,
             'uuid' => $order->uuid,
@@ -157,9 +171,32 @@ class DeviceOrdersController
             'opened_at' => $order->opened_at?->toIso8601String(),
             'subtotal_baisas' => Money::toBaisas($order->subtotal),
             'discount_total_baisas' => Money::toBaisas($order->discount_total),
+            'comp_total_baisas' => Money::toBaisas($order->comp_total ?? 0),
             'tax_total_baisas' => Money::toBaisas($order->tax_total),
             'grand_total_baisas' => Money::toBaisas($order->grand_total),
             'note' => $order->note,
+            'comps' => $order->comps->map(function (OrderComp $comp) use ($itemIds): array {
+                $lineIndex = null;
+                if ($comp->order_item_id !== null) {
+                    $position = array_search((int) $comp->order_item_id, $itemIds, true);
+                    $lineIndex = $position !== false ? (int) $position : null;
+                }
+
+                return [
+                    'id' => (int) $comp->id,
+                    'order_item_id' => $comp->order_item_id !== null ? (int) $comp->order_item_id : null,
+                    'line_index' => $lineIndex,
+                    'comp_reason_id' => $comp->comp_reason_id !== null ? (int) $comp->comp_reason_id : null,
+                    'reason_code' => $comp->reason_code_snapshot,
+                    'reason_name' => $comp->reason_name_snapshot,
+                    'is_gift' => (bool) $comp->is_gift,
+                    'amount_baisas' => Money::toBaisas($comp->amount),
+                    'qty' => $comp->qty !== null ? (int) round((float) $comp->qty) : null,
+                    'staff_id' => $comp->approved_by_pos_staff_id !== null ? (int) $comp->approved_by_pos_staff_id : null,
+                    'note' => $comp->note,
+                    'applied_at' => $comp->applied_at?->toIso8601String(),
+                ];
+            })->all(),
             'items' => $order->items->map(fn (OrderItem $item): array => [
                 'id' => (int) $item->id,
                 'product_id' => $item->product_id !== null ? (int) $item->product_id : null,

@@ -33,6 +33,8 @@ return [
             ],
             'client_options' => [
                 // Guzzle options for the server → Reverb HTTP publish call.
+                'timeout' => 2,
+                'connect_timeout' => 1,
             ],
             // Phase C3 — what the DEVICE dials (often different from the
             // publish host above, which is the in-compose service DNS). A

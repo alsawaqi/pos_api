@@ -11,6 +11,8 @@ use App\Http\Requests\Api\V1\Device\ApplyDispositionRequest;
 use App\Models\Device;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -89,7 +91,18 @@ class DeviceDispositionController
                 type: 'stock.disposition',
                 result: $result,
             ));
-        } catch (Throwable) {
+        } catch (Throwable $e) {
+            if (Cache::add('reverb-publish-warn:'.$e::class, true, 60)) {
+                Log::warning('reverb publish failed', [
+                    'event_id' => 0,
+                    'event_type' => 'stock.disposition',
+                    'branch_id' => (int) $device->branch_id,
+                    'device_id' => (int) $device->getKey(),
+                    'error' => $e->getMessage(),
+                ]);
+                report($e);
+            }
+
             // Advisory only.
         }
 

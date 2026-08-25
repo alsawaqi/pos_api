@@ -6,11 +6,17 @@ namespace Tests\Feature;
 
 use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
+use App\Models\SyncEvent;
 use Illuminate\Broadcasting\PrivateChannel;
+use Illuminate\Contracts\Broadcasting\Factory as BroadcastFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Exceptions;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Mockery;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -48,6 +54,7 @@ class DeviceSyncBroadcastTest extends TestCase
             'id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Item', 'base_price' => 3.000, 'status' => 'active',
             'created_at' => now(), 'updated_at' => now(),
         ]);
+
         return Device::factory()->paired('mdev_bcast')->create(['company_id' => 100, 'branch_id' => 10]);
     }
 
@@ -137,5 +144,46 @@ class DeviceSyncBroadcastTest extends TestCase
         ]);
 
         $this->assertCount(0, $this->captured);
+    }
+
+    public function test_publish_failure_signal_is_rate_limited_per_error_class(): void
+    {
+        $this->travelTo(now()->startOfMinute());
+
+        try {
+            $device = $this->device();
+            Log::spy();
+            Exceptions::fake();
+
+            $publisher = Mockery::mock(BroadcastFactory::class);
+            $publisher->shouldReceive('queue')
+                ->times(3)
+                ->andReturnUsing(static fn () => throw new RuntimeException('reverb unavailable'));
+            $this->app->instance(BroadcastFactory::class, $publisher);
+
+            $this->push($this->createEvent((string) Str::uuid()));
+            Exceptions::assertReportedCount(1);
+
+            $this->push($this->createEvent((string) Str::uuid()));
+            Exceptions::assertReportedCount(1);
+
+            $this->travel(61)->seconds();
+            $this->push($this->createEvent((string) Str::uuid()));
+            Exceptions::assertReportedCount(2);
+
+            Log::shouldHaveReceived('warning')->twice()->withArgs(
+                static fn (string $message, array $context): bool => $message === 'reverb publish failed'
+                    && $context['event_id'] > 0
+                    && $context['event_type'] === 'order.create'
+                    && $context['branch_id'] === 10
+                    && $context['device_id'] === (int) $device->getKey()
+                    && $context['error'] === 'reverb unavailable',
+            );
+            $this->assertSame(3, SyncEvent::query()
+                ->where('ack_status', SyncEvent::STATUS_PROCESSED)
+                ->count());
+        } finally {
+            $this->travelBack();
+        }
     }
 }

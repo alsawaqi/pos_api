@@ -14,6 +14,8 @@ use App\Http\Requests\Api\V1\Device\StartProductionRequest;
 use App\Models\Device;
 use App\Models\Production;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -158,7 +160,18 @@ class DeviceProductionsController
                     'status' => $production->status,
                 ],
             ));
-        } catch (Throwable) {
+        } catch (Throwable $e) {
+            if (Cache::add('reverb-publish-warn:'.$e::class, true, 60)) {
+                Log::warning('reverb publish failed', [
+                    'event_id' => (int) $production->getKey(),
+                    'event_type' => $type,
+                    'branch_id' => $device->branch_id !== null ? (int) $device->branch_id : null,
+                    'device_id' => (int) $device->getKey(),
+                    'error' => $e->getMessage(),
+                ]);
+                report($e);
+            }
+
             // Live push is advisory; the config delta heals on next sync.
         }
     }

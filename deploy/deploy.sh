@@ -25,6 +25,8 @@ check_running() {
     local service="$1"
     local container_id
     local state
+    local health
+    local restart_count
 
     container_id=$(docker compose -f "$C" ps -q "$service")
     [ -n "$container_id" ] || { echo "FAIL: $service has no container"; exit 1; }
@@ -32,6 +34,12 @@ check_running() {
     state=$(docker inspect --format '{{.State.Status}}' "$container_id")
     echo "$service: $state"
     [ "$state" = "running" ] || { echo "FAIL: $service is not running"; exit 1; }
+
+    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_id")
+    [ -z "$health" ] || [ "$health" = "healthy" ] || { echo "FAIL: $service is not healthy"; exit 1; }
+
+    restart_count=$(docker inspect --format '{{.RestartCount}}' "$container_id")
+    [ "$restart_count" -eq 0 ] || { echo "FAIL: $service has restarted"; exit 1; }
 }
 
 for service in pos_api scheduler; do

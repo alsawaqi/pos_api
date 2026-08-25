@@ -22,6 +22,7 @@ use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
 use App\Models\SyncEvent;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -203,7 +204,18 @@ class SyncEventDispatcher
         // Event::fake() in tests.
         try {
             event(DeviceSyncBroadcast::fromProcessed($event, $device));
-        } catch (Throwable) {
+        } catch (Throwable $e) {
+            if (Cache::add('reverb-publish-warn:'.$e::class, true, 60)) {
+                Log::warning('reverb publish failed', [
+                    'event_id' => (int) $event->getKey(),
+                    'event_type' => (string) $event->event_type,
+                    'branch_id' => $device->branch_id !== null ? (int) $device->branch_id : null,
+                    'device_id' => (int) $device->getKey(),
+                    'error' => $e->getMessage(),
+                ]);
+                report($e);
+            }
+
             // best-effort; the domain event stands regardless of push delivery
         }
     }

@@ -177,15 +177,16 @@ services:
       - charity_net
 
   # ── Real-time push (OPTIONAL, OFF by default): --profile reverb ──────────
-  # The device does not subscribe to Reverb yet, so the simple prod posture is
-  # to leave this off and set BROADCAST_CONNECTION=log + QUEUE_CONNECTION=sync
-  # in .env (nothing queues, no worker needed). To turn real-time ON instead:
-  #   1. in .env: BROADCAST_CONNECTION=reverb, QUEUE_CONNECTION=redis, and set
+  # Devices already subscribe through the Pusher-protocol-7 client. Reverb is
+  # optional and off by default. To turn real-time ON:
+  #   1. in .env: set BROADCAST_CONNECTION=reverb and
   #      REVERB_APP_ID / REVERB_APP_KEY / REVERB_APP_SECRET (php artisan
-  #      reverb:install) + REVERB_HOST to the public WS hostname.
+  #      reverb:install). Keep REVERB_HOST=pos_api_reverb for the internal
+  #      publish target, and set REVERB_PUBLIC_HOST / REVERB_PUBLIC_PORT /
+  #      REVERB_PUBLIC_SCHEME for the public wss endpoint.
   #   2. point a Proxy Manager host (e.g. wss://posapi.mithqal.net) at the
   #      `pos-api-reverb` alias : 8080.
-  #   3. bring the stack up with:  --profile reverb up -d
+  #   3. start only the required service: --profile reverb up -d reverb
   reverb:
     profiles: ["reverb"]
     image: pos_api-app
@@ -209,9 +210,10 @@ services:
         aliases:
           - pos-api-reverb
 
-  # Queue worker — only needed when QUEUE_CONNECTION=redis (i.e. with Reverb
-  # on, broadcast jobs are queued). Off by default with the rest of --profile
-  # reverb. With QUEUE_CONNECTION=sync this is unnecessary.
+  # Queue worker — NOT required by the Reverb broadcast path.
+  # DeviceSyncBroadcast implements ShouldBroadcastNow and publishes
+  # synchronously; reverb is the only service in this profile needed for
+  # broadcasts. Start queue only for unrelated queued workloads.
   queue:
     profiles: ["reverb"]
     image: pos_api-app

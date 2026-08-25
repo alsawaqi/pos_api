@@ -199,8 +199,7 @@ services:
       APP_ENV: production
       APP_DEBUG: "false"
       LOG_CHANNEL: stderr
-    entrypoint: ["sh", "-lc"]
-    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
     depends_on:
       - pos_api_redis
     expose:
@@ -226,8 +225,7 @@ services:
       APP_ENV: production
       APP_DEBUG: "false"
       LOG_CHANNEL: stderr
-    entrypoint: ["sh", "-lc"]
-    command: php artisan queue:work --tries=3 --sleep=3 --max-time=3600
+    command: ["php", "artisan", "queue:work", "--tries=3", "--sleep=3", "--max-time=3600"]
     depends_on:
       - pos_api_redis
     networks:

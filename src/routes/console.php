@@ -14,3 +14,9 @@ Schedule::command('sync:sweep-stranded-events')
     ->withoutOverlapping(30)
     ->onOneServer()
     ->when(static fn (): bool => config('sync.stranded_sweep_enabled') === true);
+
+Schedule::command('qr:prune-sessions')
+    ->hourly()
+    ->name('prune-qr-sessions')
+    ->withoutOverlapping(60)
+    ->onOneServer();

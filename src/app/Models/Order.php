@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Support\Money;
+use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -30,6 +32,8 @@ class Order extends Model
 
     public const STATUS_KITCHEN = 'kitchen';
 
+    public const STATUS_AWAITING_PAYMENT = 'awaiting_payment';
+
     public const STATUS_PAID = 'paid';
 
     // P-G7 — a no-tender delivery-provider order awaiting the provider's
@@ -46,7 +50,23 @@ class Order extends Model
     public const TYPES = ['quick', 'dine_in', 'to_go', 'delivery', 'car'];
 
     /** @var list<string> */
-    public const SOURCES = ['main_pos', 'handheld', 'customer_tablet'];
+    public const SOURCES = ['main_pos', 'handheld', 'customer_tablet', 'qr_web'];
+
+    public const CHARGE_OUTCOME_APPROVED = 'approved';
+
+    public const CHARGE_OUTCOME_DECLINED = 'declined';
+
+    public const CHARGE_OUTCOME_CANCELLED = 'cancelled';
+
+    public const CHARGE_OUTCOME_UNCERTAIN = 'uncertain';
+
+    /** @var list<string> */
+    public const CHARGE_OUTCOMES = [
+        self::CHARGE_OUTCOME_APPROVED,
+        self::CHARGE_OUTCOME_DECLINED,
+        self::CHARGE_OUTCOME_CANCELLED,
+        self::CHARGE_OUTCOME_UNCERTAIN,
+    ];
 
     /**
      * @return array<string, string>
@@ -62,6 +82,8 @@ class Order extends Model
             'longitude' => 'decimal:7',
             'opened_at' => 'datetime',
             'closed_at' => 'datetime',
+            'charge_claimed_at' => 'datetime',
+            'charge_deadline_at' => 'datetime',
             // Device-to-device order transfer.
             'transferred_at' => 'datetime',
             // P-G7 — delivery-provider lifecycle.
@@ -72,6 +94,30 @@ class Order extends Model
             'delivery_punched_at' => 'datetime',
             'delivery_confirmed_at' => 'datetime',
         ];
+    }
+
+    /**
+     * The single canonical live-charge-claim predicate from QR-001 R3 section 5.
+     */
+    public function scopeWithLiveClaim(Builder $query, ?CarbonInterface $at = null): Builder
+    {
+        $at ??= now();
+
+        return $query
+            ->where('status', self::STATUS_AWAITING_PAYMENT)
+            ->whereNotNull('charge_claimed_at')
+            ->where(function (Builder $claim) use ($at): void {
+                $claim
+                    ->where(function (Builder $inFlight) use ($at): void {
+                        $inFlight
+                            ->whereNull('charge_outcome')
+                            ->where('charge_deadline_at', '>', $at);
+                    })
+                    ->orWhereIn('charge_outcome', [
+                        self::CHARGE_OUTCOME_UNCERTAIN,
+                        self::CHARGE_OUTCOME_APPROVED,
+                    ]);
+            });
     }
 
     /**

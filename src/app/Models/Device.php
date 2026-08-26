@@ -83,4 +83,9 @@ class Device extends Model implements Authenticatable
     {
         return $this->company_id !== null && $this->branch_id !== null;
     }
+
+    public function isPaymentStation(): bool
+    {
+        return $this->device_type === 'payment_station';
+    }
 }

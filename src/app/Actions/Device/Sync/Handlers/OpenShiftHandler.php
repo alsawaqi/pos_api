@@ -34,6 +34,10 @@ class OpenShiftHandler implements SyncEventHandler
 {
     public function handle(SyncEvent $event, Device $device): array
     {
+        if ($device->isPaymentStation() || $device->device_type === 'customer_tablet') {
+            throw new RuntimeException('device type cannot open shifts');
+        }
+
         $payload = (array) $event->payload_json;
         $uuid = $payload['uuid'] ?? null;
         if (! is_string($uuid)) {

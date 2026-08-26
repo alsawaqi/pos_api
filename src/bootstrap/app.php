@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\AttachSentryDeviceContext;
 use App\Http\Middleware\ForceJsonResponse;
+use App\Http\Middleware\ResolveQrSession;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -21,6 +22,18 @@ return Application::configure(basePath: dirname(__DIR__))
     // web-session /broadcasting/auth, which this token-only API has no use for).
     ->withBroadcasting(__DIR__.'/../routes/channels.php')
     ->withMiddleware(function (Middleware $middleware): void {
+        // QR client secrets and checkout idempotency keys are opaque values.
+        // Preserve their exact bytes so JSON binding and later header checks
+        // agree, and so two distinct client request keys never collapse.
+        $middleware->trimStrings(except: [
+            'client_secret',
+            'client_request_id',
+        ]);
+
+        $middleware->alias([
+            'qr.session' => ResolveQrSession::class,
+        ]);
+
         // Force every /api/* request to be treated as JSON regardless of the
         // client's Accept header, so auth/validation/not-found failures return
         // a JSON envelope (or a 401) instead of an HTML page or a redirect to

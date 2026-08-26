@@ -17,10 +17,16 @@ use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrRotateController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
+use App\Http\Controllers\Api\V1\PublicQr\QrBindController;
+use App\Http\Controllers\Api\V1\PublicQr\QrCheckoutController;
+use App\Http\Controllers\Api\V1\PublicQr\QrMenuController;
+use App\Http\Controllers\Api\V1\PublicQr\QrQuoteController;
+use App\Http\Controllers\Api\V1\PublicQr\QrStatusController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -56,6 +62,22 @@ Route::prefix('v1')->group(function (): void {
         ->middleware('throttle:30,1')
         ->name('device.activate');
 
+    Route::post('public/qr/bind', QrBindController::class)
+        ->middleware('throttle:qr-bind')
+        ->name('public.qr.bind');
+    Route::get('public/qr/menu', QrMenuController::class)
+        ->middleware('qr.session')
+        ->name('public.qr.menu');
+    Route::post('public/qr/quote', QrQuoteController::class)
+        ->middleware('qr.session')
+        ->name('public.qr.quote');
+    Route::post('public/qr/checkout', QrCheckoutController::class)
+        ->middleware(['throttle:qr-checkout', 'qr.session'])
+        ->name('public.qr.checkout');
+    Route::get('public/qr/status', QrStatusController::class)
+        ->middleware('qr.session:include-closed')
+        ->name('public.qr.status');
+
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
         // POS staff PIN login on a paired device (§11.1). Extra-throttled
@@ -87,6 +109,7 @@ Route::prefix('v1')->group(function (): void {
             ->name('broadcasting.auth');
 
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
+        Route::post('device/qr/rotate', DeviceQrRotateController::class)->name('device.qr.rotate');
 
         // Config bundle (§11.4): full snapshot + incremental delta.
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');

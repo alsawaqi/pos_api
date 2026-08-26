@@ -554,6 +554,7 @@ return new class extends Migration
             $table->unsignedBigInteger('branch_id');
             $table->unsignedBigInteger('device_id')->nullable();
             $table->unsignedBigInteger('qr_session_id')->nullable();
+            $table->string('client_request_id', 64)->nullable();
             $table->unsignedBigInteger('charge_device_id')->nullable();
             $table->unsignedInteger('charge_amount_baisas')->nullable();
             $table->timestamp('charge_claimed_at')->nullable();
@@ -611,6 +612,7 @@ return new class extends Migration
             $table->index(['company_id', 'receipt_number'], 'pos_orders_company_receipt_idx');
             $table->index(['company_id', 'delivery_provider_id'], 'pos_orders_company_provider_idx');
             $table->index(['status', 'charge_deadline_at'], 'pos_orders_status_charge_deadline_idx');
+            $table->unique(['qr_session_id', 'client_request_id'], 'pos_orders_qr_session_request_unique');
         });
 
         DB::statement(

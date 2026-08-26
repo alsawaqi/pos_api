@@ -40,9 +40,12 @@ class QrSessionGroundworkTest extends TestCase
         ], $attributes));
     }
 
-    private function insertOrder(int $sessionId, string $status): void
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function insertOrder(int $sessionId, string $status, array $attributes = []): void
     {
-        DB::table('pos_orders')->insert([
+        DB::table('pos_orders')->insert(array_merge([
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,
             'branch_id' => 10,
@@ -51,7 +54,7 @@ class QrSessionGroundworkTest extends TestCase
             'status' => $status,
             'source' => 'main_pos',
             'opened_at' => now(),
-        ]);
+        ], $attributes));
     }
 
     public function test_sqlite_mirror_has_the_qr_columns_and_named_indexes(): void
@@ -64,6 +67,7 @@ class QrSessionGroundworkTest extends TestCase
             'charge_claimed_at',
             'charge_deadline_at',
             'charge_outcome',
+            'client_request_id',
         ] as $column) {
             $this->assertTrue(Schema::hasColumn('pos_orders', $column), $column);
         }
@@ -79,7 +83,31 @@ class QrSessionGroundworkTest extends TestCase
         $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_live_unique']->partial);
         $this->assertTrue($orderIndexes->has('pos_orders_qr_session_idx'));
         $this->assertTrue($orderIndexes->has('pos_orders_status_charge_deadline_idx'));
+        $this->assertTrue($orderIndexes->has('pos_orders_qr_session_request_unique'));
+        $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_request_unique']->unique);
         $this->assertTrue($paymentIndexes->has('pos_payments_softpos_ref_idx'));
+    }
+
+    public function test_client_request_id_is_unique_only_within_its_qr_session(): void
+    {
+        $firstSession = $this->qrSession();
+        $secondSession = $this->qrSession();
+
+        $this->insertOrder($firstSession, Order::STATUS_PAID, ['client_request_id' => 'request-1']);
+        $this->insertOrder($firstSession, Order::STATUS_PAID, ['client_request_id' => 'request-2']);
+        $this->insertOrder($secondSession, Order::STATUS_PAID, ['client_request_id' => 'request-1']);
+        $this->insertOrder($firstSession, Order::STATUS_PAID);
+        $this->insertOrder($firstSession, Order::STATUS_PAID);
+
+        try {
+            $this->insertOrder($firstSession, Order::STATUS_PAID, ['client_request_id' => 'request-1']);
+            $this->fail('The same client request id was accepted twice for one QR session.');
+        } catch (QueryException) {
+            // Expected: the composite unique rejects only this repeated pair.
+        }
+
+        $this->assertSame(4, DB::table('pos_orders')->where('qr_session_id', $firstSession)->count());
+        $this->assertSame(1, DB::table('pos_orders')->where('qr_session_id', $secondSession)->count());
     }
 
     public function test_one_qr_session_cannot_have_two_nonterminal_orders(): void

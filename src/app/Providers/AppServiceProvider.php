@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\Device;
+use App\Support\QrApiResponse;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -59,6 +60,28 @@ class AppServiceProvider extends ServiceProvider
 
         RateLimiter::for('device-api', fn (Request $request) => Limit::perMinute(120)
             ->by('device:'.(string) ($request->user()?->getAuthIdentifier() ?? $request->ip())));
+
+        $qrRateLimited = static function (Request $request, array $headers) {
+            $response = QrApiResponse::failure('rate_limited', 'Too many requests.', 429);
+            $response->headers->add($headers);
+
+            return $response;
+        };
+
+        RateLimiter::for('qr-bind', fn (Request $request) => [
+            Limit::perMinute(10)
+                ->by('qr-bind:ip:'.(string) $request->ip())
+                ->response($qrRateLimited),
+        ]);
+
+        RateLimiter::for('qr-checkout', fn (Request $request) => [
+            Limit::perMinute(10)
+                ->by('qr-checkout:ip:'.(string) $request->ip())
+                ->response($qrRateLimited),
+            Limit::perMinute(10)
+                ->by('qr-checkout:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
+                ->response($qrRateLimited),
+        ]);
 
         // POS staff PIN login is a 6-digit brute-force surface — throttle it
         // hard per-device (the device is already resolved by the guard before

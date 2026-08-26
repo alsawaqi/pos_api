@@ -13,8 +13,10 @@ use App\Actions\Device\Sync\SyncEventHandler;
 use App\Exceptions\InsufficientLoyaltyBalanceException;
 use App\Models\Branch;
 use App\Models\Device;
+use App\Models\LoyaltyRule;
 use App\Models\Order;
 use App\Models\Payment;
+use App\Models\QrSession;
 use App\Models\SyncEvent;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
@@ -80,10 +82,9 @@ class PayOrderHandler implements SyncEventHandler
         $this->enforceGeofence($device, $payload);
 
         $capturedAt = isset($payload['paid_at']) ? Carbon::parse((string) $payload['paid_at']) : now();
-        $loyaltyRuleIds = $this->earnRuleIds($payload);
         $loyaltyRedeem = is_array($payload['loyalty_redeem'] ?? null) ? $payload['loyalty_redeem'] : null;
 
-        return DB::transaction(function () use ($order, $orderUuid, $device, $event, $payments, $capturedAt, $loyaltyRuleIds, $loyaltyRedeem): array {
+        return DB::transaction(function () use ($order, $orderUuid, $device, $event, $payments, $capturedAt, $payload, $loyaltyRedeem): array {
             // Re-read + lock the order INSIDE the txn before consuming inventory.
             // The status guard above is unlocked, so two concurrent order.pay
             // events with DIFFERENT client_event_ids (not caught by the sync
@@ -175,6 +176,17 @@ class PayOrderHandler implements SyncEventHandler
                 'status' => Order::STATUS_PAID,
                 'closed_at' => $capturedAt,
             ]);
+            if ($order->qr_session_id !== null) {
+                DB::table('pos_qr_sessions')
+                    ->where('id', (int) $order->qr_session_id)
+                    ->where('company_id', (int) $order->company_id)
+                    ->where('status', QrSession::STATUS_ORDERED)
+                    ->update([
+                        'status' => QrSession::STATUS_CLOSED,
+                        'closed_at' => $capturedAt,
+                        'updated_at' => $capturedAt,
+                    ]);
+            }
 
             $movements = $this->inventory->consume($order);
 
@@ -203,15 +215,16 @@ class PayOrderHandler implements SyncEventHandler
                 );
             }
 
-            // Loyalty earn (server-authoritative, §9.1.6): accrue under EVERY
-            // rule the cashier named for a known customer. A merchant can run
-            // several earn programs at once (e.g. a stamp card AND points), so
-            // each applicable rule credits — not just the first (v2 #3).
+            // Loyalty earn (server-authoritative, §9.1.6): ordinary device
+            // orders accrue under every rule the cashier named. QR-origin
+            // orders instead ignore the event's ids and resolve every active
+            // same-company rule server-side; qr_session_id remains authoritative
+            // even after a counter finalize rewrites source to main_pos.
             // Phase D4 — a fully GIFTED order earns nothing (no spend ⇒ no
             // points), even if the device named earn rules.
-            if ($giftBaisas >= $grandBaisas && $grandBaisas > 0) {
-                $loyaltyRuleIds = [];
-            }
+            $loyaltyRuleIds = $giftBaisas >= $grandBaisas && $grandBaisas > 0
+                ? []
+                : $this->earnRuleIds($order, $payload);
             $this->assertLoyaltyEarnCanBeAttributed($order, $loyaltyRuleIds);
 
             $loyaltyTxnIds = [];
@@ -272,15 +285,27 @@ class PayOrderHandler implements SyncEventHandler
     }
 
     /**
-     * The loyalty EARN rule ids named on the pay event. Accepts the v2 #3
+     * Resolve loyalty EARN rule ids. QR-origin orders use every active rule
+     * in their company; ordinary orders accept the v2 #3
      * `loyalty_rule_ids` (array — earn under several programs at once) or the
      * legacy single `loyalty_rule_id`. De-duped, positive ints only.
      *
      * @param  array<string, mixed>  $payload
      * @return list<int>
      */
-    private function earnRuleIds(array $payload): array
+    private function earnRuleIds(Order $order, array $payload): array
     {
+        if ($order->qr_session_id !== null) {
+            return LoyaltyRule::query()
+                ->where('company_id', (int) $order->company_id)
+                ->where('status', 'active')
+                ->orderBy('id')
+                ->pluck('id')
+                ->map(static fn (mixed $id): int => (int) $id)
+                ->values()
+                ->all();
+        }
+
         $raw = [];
         if (is_array($payload['loyalty_rule_ids'] ?? null)) {
             $raw = $payload['loyalty_rule_ids'];

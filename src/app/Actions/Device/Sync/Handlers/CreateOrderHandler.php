@@ -152,6 +152,20 @@ class CreateOrderHandler implements SyncEventHandler
             ];
 
             if ($existing !== null) {
+                if ($existing->qr_session_id !== null) {
+                    // QR-001 P2 — a till finalising a held QR order re-emits
+                    // order.create and may omit these server/customer-owned
+                    // values. Absence or null means “keep”; an explicit
+                    // non-null cashier replacement still wins. source remains
+                    // device-authored, while qr_session_id stays preserved by
+                    // its deliberate absence from $columns.
+                    foreach (['customer_id', 'plate_number', 'receipt_number'] as $column) {
+                        if (! array_key_exists($column, $order) || $order[$column] === null) {
+                            $columns[$column] = $existing->{$column};
+                        }
+                    }
+                }
+
                 $this->purgeOrderChildren($existing);
                 $existing->update($columns);
                 $model = $existing;

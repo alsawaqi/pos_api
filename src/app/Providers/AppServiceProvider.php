@@ -68,9 +68,38 @@ class AppServiceProvider extends ServiceProvider
             return $response;
         };
 
-        RateLimiter::for('qr-bind', fn (Request $request) => [
-            Limit::perMinute(10)
-                ->by('qr-bind:ip:'.(string) $request->ip())
+        RateLimiter::for('qr-bind', function (Request $request) use ($qrRateLimited): array {
+            $submittedToken = $request->input('token');
+            $token = is_string($submittedToken) ? $submittedToken : '';
+
+            return [
+                Limit::perMinute(10)
+                    ->by('qr-bind:ip:'.(string) $request->ip())
+                    ->response($qrRateLimited),
+                Limit::perMinute(10)
+                    ->by('qr-bind:token:'.hash('sha256', $token))
+                    ->response($qrRateLimited),
+            ];
+        });
+
+        // Credentialed session buckets are the primary controls. The much
+        // higher IP ceilings are anonymous resource backstops kept generous
+        // enough that ordinary customers behind shared NAT do not collide.
+        RateLimiter::for('qr-read', fn (Request $request) => [
+            Limit::perMinute(60)
+                ->by('qr-read:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
+                ->response($qrRateLimited),
+            Limit::perMinute(3000)
+                ->by('qr-read:ip:'.(string) $request->ip())
+                ->response($qrRateLimited),
+        ]);
+
+        RateLimiter::for('qr-quote', fn (Request $request) => [
+            Limit::perMinute(30)
+                ->by('qr-quote:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
+                ->response($qrRateLimited),
+            Limit::perMinute(600)
+                ->by('qr-quote:ip:'.(string) $request->ip())
                 ->response($qrRateLimited),
         ]);
 

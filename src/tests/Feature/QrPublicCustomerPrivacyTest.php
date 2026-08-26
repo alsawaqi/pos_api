@@ -316,6 +316,57 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         }
     }
 
+    public function test_every_public_qr_route_has_exactly_one_named_qr_throttle(): void
+    {
+        $routes = collect(Route::getRoutes()->getRoutes())
+            ->filter(static fn ($route): bool => str_starts_with($route->uri(), 'api/v1/public/qr'));
+
+        $this->assertNotEmpty($routes);
+        foreach ($routes as $route) {
+            $middleware = array_values($route->gatherMiddleware());
+            $throttles = array_values(array_filter(
+                $middleware,
+                static fn (string $name): bool => str_starts_with($name, 'throttle:'),
+            ));
+
+            $this->assertCount(1, $throttles, 'Missing or duplicate throttle on '.$route->uri());
+            $this->assertMatchesRegularExpression(
+                '/^throttle:qr-[a-z0-9-]+$/',
+                $throttles[0],
+                'Public QR routes must use a named QR limiter: '.$route->uri(),
+            );
+
+            $sessionIndex = collect($middleware)->search(
+                static fn (string $name): bool => str_starts_with($name, 'qr.session'),
+            );
+            if ($sessionIndex !== false) {
+                $this->assertLessThan(
+                    $sessionIndex,
+                    array_search($throttles[0], $middleware, true),
+                    'Throttle must run before session resolution: '.$route->uri(),
+                );
+            }
+        }
+    }
+
+    public function test_six_customers_on_six_sessions_from_one_ip_and_branch_all_checkout(): void
+    {
+        $ip = '198.51.100.60';
+
+        for ($customer = 1; $customer <= 6; $customer++) {
+            $secret = 'shared-nat-secret-'.$customer;
+            $this->checkout(
+                $this->activeSession($secret),
+                $secret,
+                $this->payload('9555010'.$customer),
+                $ip,
+            )->assertCreated();
+        }
+
+        $this->assertDatabaseCount('pos_orders', 6);
+        $this->assertDatabaseCount('pos_customers', 6);
+    }
+
     public function test_fourth_distinct_phone_from_one_session_is_refused_by_the_http_endpoint(): void
     {
         // Abort each of the first three writes after the external identity guard
@@ -408,38 +459,60 @@ final class QrPublicCustomerPrivacyTest extends TestCase
     {
         $phone = '96660001';
         $plate = 'LIMITER 88';
+        $token = str_repeat('t', 64);
         $session = 'raw-session-credential';
         $request = Request::create('/api/v1/public/qr/checkout', 'POST', [
+            'token' => $token,
             'phone' => $phone,
             'plate_number' => $plate,
         ], server: ['REMOTE_ADDR' => '192.0.2.44']);
         $request->headers->set('X-QR-Session', $session);
 
         $rateLimiter = app(RateLimiter::class);
-        foreach (['qr-bind', 'qr-checkout'] as $name) {
+        $expected = [
+            'qr-bind' => [
+                ['qr-bind:ip:192.0.2.44', 10, 60],
+                ['qr-bind:token:'.hash('sha256', $token), 10, 60],
+            ],
+            'qr-read' => [
+                ['qr-read:session:'.hash('sha256', $session), 60, 60],
+                ['qr-read:ip:192.0.2.44', 3000, 60],
+            ],
+            'qr-quote' => [
+                ['qr-quote:session:'.hash('sha256', $session), 30, 60],
+                ['qr-quote:ip:192.0.2.44', 600, 60],
+            ],
+            'qr-checkout' => [
+                ['qr-checkout:ip:192.0.2.44', 10, 60],
+                ['qr-checkout:session:'.hash('sha256', $session), 10, 60],
+            ],
+        ];
+
+        foreach ($expected as $name => $expectedLimits) {
             $definition = $rateLimiter->limiter($name);
             $this->assertNotNull($definition);
             $resolved = $definition($request);
             $limits = is_array($resolved) ? $resolved : [$resolved];
-            $keys = implode('|', array_map(
-                static fn ($limit): string => (string) $limit->key,
+            $actualLimits = array_map(
+                static fn ($limit): array => [
+                    (string) $limit->key,
+                    $limit->maxAttempts,
+                    $limit->decaySeconds,
+                ],
                 $limits,
-            ));
+            );
+            $this->assertSame($expectedLimits, $actualLimits);
 
+            $keys = implode('|', array_column($actualLimits, 0));
             $this->assertStringNotContainsString($phone, $keys);
             $this->assertStringNotContainsString($plate, $keys);
+            $this->assertStringNotContainsString($token, $keys);
+            $this->assertStringNotContainsString($session, $keys);
         }
 
-        $checkoutDefinition = $rateLimiter->limiter('qr-checkout');
-        $this->assertNotNull($checkoutDefinition);
-        $checkoutLimits = $checkoutDefinition($request);
-        $this->assertIsArray($checkoutLimits);
-        $checkoutKeys = implode('|', array_map(
-            static fn ($limit): string => (string) $limit->key,
-            $checkoutLimits,
-        ));
-        $this->assertStringNotContainsString($session, $checkoutKeys);
-        $this->assertStringContainsString(hash('sha256', $session), $checkoutKeys);
+        $allKeys = json_encode($expected, JSON_THROW_ON_ERROR);
+        $this->assertStringContainsString(hash('sha256', $token), $allKeys);
+        $this->assertStringContainsString(hash('sha256', $session), $allKeys);
     }
 
     /** @param  array<string, mixed>  $payload */

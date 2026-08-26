@@ -119,7 +119,6 @@ final class BuildQrBranchMenuAction
                     'display_order' => (int) $product->display_order,
                     'status' => $product->status,
                     'stock_mode' => $product->stock_mode,
-                    'branch_stock_qty' => $branchProduct?->stock_qty !== null ? (float) $branchProduct->stock_qty : null,
                     'available_from' => $product->available_from,
                     'available_until' => $product->available_until,
                     'available' => $availability->available,

@@ -89,7 +89,7 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
         $session = $this->activeSession();
         $unavailable = $this->product(['name' => 'Unavailable here']);
         $otherBranch = $this->product(['name' => 'Other branch only']);
-        $this->branchProduct($unavailable, false, null, 10);
+        $this->branchProduct($unavailable, false, '7.000', 10);
         $this->branchProduct($otherBranch, true, null, 20);
 
         $response = $this->qrGet($session, '/api/v1/public/qr/menu')
@@ -101,6 +101,9 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
         $this->assertFalse($products[$unavailable]['available']);
         $this->assertSame('branch_unavailable', $products[$unavailable]['unavailable_reason']);
         $this->assertFalse($products->has($otherBranch));
+        foreach ($products as $product) {
+            $this->assertArrayNotHasKey('branch_stock_qty', $product);
+        }
     }
 
     public function test_quote_accepts_blank_and_null_notes_and_never_writes_an_order(): void

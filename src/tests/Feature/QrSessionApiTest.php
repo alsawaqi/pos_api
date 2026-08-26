@@ -71,9 +71,11 @@ class QrSessionApiTest extends TestCase
         return $this->withToken($deviceToken)->postJson('/api/v1/device/qr/rotate');
     }
 
-    private function bind(string $token, string $clientSecret): TestResponse
+    private function bind(string $token, string $clientSecret, ?string $ip = null): TestResponse
     {
-        return $this->postJson('/api/v1/public/qr/bind', [
+        $test = $ip === null ? $this : $this->withServerVariables(['REMOTE_ADDR' => $ip]);
+
+        return $test->postJson('/api/v1/public/qr/bind', [
             'token' => $token,
             'client_secret' => $clientSecret,
         ]);
@@ -316,6 +318,24 @@ class QrSessionApiTest extends TestCase
         }
 
         $this->bind(str_repeat('z', 64), 'rate-limit-secret')
+            ->assertStatus(429)
+            ->assertExactJson([
+                'data' => null,
+                'errors' => [[
+                    'code' => 'rate_limited',
+                    'message' => 'Too many requests.',
+                ]],
+            ]);
+    }
+
+    public function test_bind_limiter_caps_one_submitted_token_across_source_ips(): void
+    {
+        $token = str_repeat('d', 64);
+        for ($attempt = 1; $attempt <= 10; $attempt++) {
+            $this->bind($token, 'distributed-secret', '192.0.2.'.$attempt)->assertNotFound();
+        }
+
+        $this->bind($token, 'distributed-secret', '192.0.2.11')
             ->assertStatus(429)
             ->assertExactJson([
                 'data' => null,

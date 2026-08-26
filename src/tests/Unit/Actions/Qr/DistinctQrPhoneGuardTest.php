@@ -6,6 +6,10 @@ namespace Tests\Unit\Actions\Qr;
 
 use App\Actions\Qr\DistinctQrPhoneGuard;
 use Illuminate\Support\Facades\Cache;
+use Mockery;
+use Sentry\Laravel\Facade as Sentry;
+use Sentry\Severity;
+use Sentry\State\Scope;
 use Tests\TestCase;
 
 class DistinctQrPhoneGuardTest extends TestCase
@@ -17,41 +21,82 @@ class DistinctQrPhoneGuardTest extends TestCase
         Cache::flush();
     }
 
-    public function test_fourth_distinct_phone_is_refused_per_session_and_ip(): void
+    public function test_six_distinct_customers_on_six_sessions_share_one_branch_ip(): void
     {
         $guard = app(DistinctQrPhoneGuard::class);
 
-        $this->assertTrue($guard->allows('session-a', '192.0.2.1', '90000001'));
-        $this->assertTrue($guard->allows('session-a', '192.0.2.1', '90000002'));
-        $this->assertTrue($guard->allows('session-a', '192.0.2.1', '90000003'));
-        $this->assertFalse($guard->allows('session-a', '192.0.2.1', '90000004'));
-
-        // Replaying one of the three accepted identities consumes no new slot.
-        $this->assertTrue($guard->allows('session-a', '192.0.2.1', '90000003'));
+        for ($customer = 1; $customer <= 6; $customer++) {
+            $this->assertTrue($guard->allows(
+                'session-'.$customer,
+                10,
+                '192.0.2.1',
+                '9000000'.$customer,
+            ));
+        }
     }
 
-    public function test_both_axes_are_enforced_without_raw_pii_cache_keys(): void
+    public function test_fourth_distinct_phone_on_one_session_is_still_refused(): void
     {
         $guard = app(DistinctQrPhoneGuard::class);
 
-        foreach (['90000001', '90000002', '90000003'] as $index => $phone) {
-            $this->assertTrue($guard->allows('session-'.($index + 1), '192.0.2.8', $phone));
-        }
+        $this->assertTrue($guard->allows('session-a', 10, '192.0.2.1', '90000001'));
+        $this->assertTrue($guard->allows('session-a', 10, '192.0.2.2', '90000002'));
+        $this->assertTrue($guard->allows('session-a', 10, '192.0.2.3', '90000003'));
+        $this->assertFalse($guard->allows('session-a', 10, '192.0.2.4', '90000004'));
 
-        $this->assertFalse($guard->allows('session-new', '192.0.2.8', '90000004'));
+        // Replaying one of the three accepted identities consumes no new slot.
+        $this->assertTrue($guard->allows('session-a', 10, '192.0.2.5', '90000003'));
+    }
 
-        Cache::flush();
-        $this->assertTrue($guard->allows('session-fixed', '192.0.2.11', '90000001'));
-        $this->assertTrue($guard->allows('session-fixed', '192.0.2.12', '90000002'));
-        $this->assertTrue($guard->allows('session-fixed', '192.0.2.13', '90000003'));
-        $this->assertFalse($guard->allows('session-fixed', '192.0.2.14', '91111111'));
+    public function test_branches_sharing_one_ip_do_not_consume_each_others_backstop(): void
+    {
+        config(['qr.distinct_phone_ip_backstop_per_branch_per_hour' => 2]);
+        $guard = app(DistinctQrPhoneGuard::class);
+
+        $this->assertTrue($guard->allows('branch-10-a', 10, '192.0.2.8', '90000001'));
+        $this->assertTrue($guard->allows('branch-10-b', 10, '192.0.2.8', '90000002'));
+        $this->assertTrue($guard->allows('branch-20-a', 20, '192.0.2.8', '90000003'));
+        $this->assertTrue($guard->allows('branch-20-b', 20, '192.0.2.8', '90000004'));
 
         $store = Cache::getStore();
         $reflection = new \ReflectionObject($store);
         $property = $reflection->getProperty('storage');
         $keys = implode('|', array_keys($property->getValue($store)));
 
+        $this->assertStringContainsString('branch:10:ip:'.hash('sha256', '192.0.2.8'), $keys);
+        $this->assertStringContainsString('branch:20:ip:'.hash('sha256', '192.0.2.8'), $keys);
+        $this->assertStringNotContainsString('192.0.2.8', $keys);
         $this->assertStringNotContainsString('90000001', $keys);
-        $this->assertStringNotContainsString('91111111', $keys);
+        $this->assertStringNotContainsString('90000004', $keys);
+    }
+
+    public function test_ip_backstop_refuses_and_emits_sentry_warning_with_branch_and_count(): void
+    {
+        config(['qr.distinct_phone_ip_backstop_per_branch_per_hour' => 2]);
+        $scope = Mockery::mock(Scope::class);
+        $scope->shouldReceive('setContext')
+            ->once()
+            ->with('qr_distinct_phone_ip_backstop', [
+                'branch_id' => 10,
+                'count' => 3,
+            ])
+            ->andReturnSelf();
+        Sentry::shouldReceive('captureMessage')
+            ->once()
+            ->with(
+                'QR distinct-phone IP backstop reached',
+                Mockery::on(static fn (mixed $severity): bool => $severity instanceof Severity
+                    && $severity->isEqualTo(Severity::warning())),
+            );
+        Sentry::shouldReceive('withScope')
+            ->once()
+            ->andReturnUsing(static function (callable $callback) use ($scope): void {
+                $callback($scope);
+            });
+
+        $guard = app(DistinctQrPhoneGuard::class);
+        $this->assertTrue($guard->allows('session-a', 10, '192.0.2.9', '90000001'));
+        $this->assertTrue($guard->allows('session-b', 10, '192.0.2.9', '90000002'));
+        $this->assertFalse($guard->allows('session-c', 10, '192.0.2.9', '90000003'));
     }
 }

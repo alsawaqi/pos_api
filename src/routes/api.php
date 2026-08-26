@@ -66,16 +66,16 @@ Route::prefix('v1')->group(function (): void {
         ->middleware('throttle:qr-bind')
         ->name('public.qr.bind');
     Route::get('public/qr/menu', QrMenuController::class)
-        ->middleware('qr.session')
+        ->middleware(['throttle:qr-read', 'qr.session'])
         ->name('public.qr.menu');
     Route::post('public/qr/quote', QrQuoteController::class)
-        ->middleware('qr.session')
+        ->middleware(['throttle:qr-quote', 'qr.session'])
         ->name('public.qr.quote');
     Route::post('public/qr/checkout', QrCheckoutController::class)
         ->middleware(['throttle:qr-checkout', 'qr.session'])
         ->name('public.qr.checkout');
     Route::get('public/qr/status', QrStatusController::class)
-        ->middleware('qr.session:include-closed')
+        ->middleware(['throttle:qr-read', 'qr.session:include-closed'])
         ->name('public.qr.status');
 
     // Everything below requires a valid device token, throttled per-device.

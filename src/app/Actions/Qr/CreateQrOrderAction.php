@@ -88,7 +88,12 @@ final class CreateQrOrderAction
             $price = Totals::priceOrder($loaded->pricingInput);
 
             $phone = (string) $payload['phone'];
-            if (! $this->phoneGuard->allows((string) $session->uuid, $ip, $phone)) {
+            if (! $this->phoneGuard->allows(
+                (string) $session->uuid,
+                (int) $session->branch_id,
+                $ip,
+                $phone,
+            )) {
                 throw new QrCheckoutException(
                     'qr_identity_limit_exceeded',
                     429,

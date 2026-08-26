@@ -11,6 +11,8 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Payment;
 use App\Models\RoundupDonation;
+use App\Models\StockMovement;
+use App\Models\SyncEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -135,6 +137,64 @@ class DeviceSyncOrderTest extends TestCase
     private function push(string $token, array $events): TestResponse
     {
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
+    }
+
+    public function test_order_create_refuses_qr_web_source_from_a_device_but_accepts_main_pos(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+
+        $rejectedUuid = (string) Str::uuid();
+        $rejected = $this->push('mdev_ord', [$this->createEvent($rejectedUuid, [
+            'source' => Order::SOURCE_QR_WEB,
+        ])]);
+
+        $rejected->assertOk();
+        $this->assertSame('failed', $rejected->json('data.results.0.status'));
+        $this->assertStringContainsString('selected source is invalid', $rejected->json('data.results.0.result.error'));
+        $this->assertDatabaseMissing('pos_orders', ['uuid' => $rejectedUuid]);
+
+        $acceptedUuid = (string) Str::uuid();
+        $accepted = $this->push('mdev_ord', [$this->createEvent($acceptedUuid, [
+            'source' => 'main_pos',
+        ])]);
+
+        $accepted->assertOk();
+        $this->assertSame('processed', $accepted->json('data.results.0.status'));
+        $this->assertDatabaseHas('pos_orders', [
+            'uuid' => $acceptedUuid,
+            'status' => Order::STATUS_OPEN,
+            'source' => 'main_pos',
+        ]);
+    }
+
+    public function test_device_can_finalize_an_existing_qr_web_order_as_main_pos(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        $uuid = (string) Str::uuid();
+        $initial = $this->push('mdev_ord', [$this->createEvent($uuid)]);
+        $initial->assertOk();
+        $this->assertSame('processed', $initial->json('data.results.0.status'));
+
+        $this->assertSame(1, Order::query()
+            ->where('uuid', $uuid)
+            ->update([
+                'source' => Order::SOURCE_QR_WEB,
+                'status' => Order::STATUS_HELD,
+            ]));
+
+        $finalize = $this->push('mdev_ord', [$this->createEvent($uuid, [
+            'source' => 'main_pos',
+        ])]);
+
+        $finalize->assertOk();
+        $this->assertSame('processed', $finalize->json('data.results.0.status'));
+        $this->assertDatabaseHas('pos_orders', [
+            'uuid' => $uuid,
+            'status' => Order::STATUS_OPEN,
+            'source' => 'main_pos',
+        ]);
     }
 
     public function test_unit_products_freeze_no_recipe_snapshot(): void
@@ -314,7 +374,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->push('mdev_ord', [$create, $this->payEvent($uuid, [['method' => 'cash', 'amount_baisas' => 375, 'change_given_baisas' => 0]])])->assertOk();
 
         $balance = (float) BranchStock::where(['branch_id' => 10, 'ingredient_id' => 1])->value('quantity');
-        $movementSum = (float) \App\Models\StockMovement::where(['branch_id' => 10, 'ingredient_id' => 1])->sum('quantity');
+        $movementSum = (float) StockMovement::where(['branch_id' => 10, 'ingredient_id' => 1])->sum('quantity');
 
         // The ledger invariant: start + Σ(movements) == balance.
         $this->assertEqualsWithDelta(5.0 + $movementSum, $balance, 1e-9);
@@ -332,14 +392,14 @@ class DeviceSyncOrderTest extends TestCase
         // Simulate a prior TRANSIENT failure: a `failed` ledger row whose handler
         // txn rolled back (nothing settled). The device re-pushes the same id.
         $pay = $this->payEvent($uuid);
-        \App\Models\SyncEvent::create([
+        SyncEvent::create([
             'client_event_id' => $pay['client_event_id'],
             'device_id' => $device->id,
             'event_type' => 'order.pay',
             'payload_json' => $pay['payload'],
             'client_timestamp' => now(),
             'server_received_at' => now(),
-            'ack_status' => \App\Models\SyncEvent::STATUS_FAILED,
+            'ack_status' => SyncEvent::STATUS_FAILED,
             'result_json' => ['error' => 'deadlock'],
         ]);
 

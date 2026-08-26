@@ -161,6 +161,26 @@ class QrSessionGroundworkTest extends TestCase
             ->assertExitCode(Command::INVALID);
     }
 
+    public function test_pruner_keeps_an_old_closed_session_referenced_by_an_order(): void
+    {
+        $now = Carbon::parse('2026-08-26 12:00:00');
+        $this->travelTo($now);
+
+        $sessionId = $this->qrSession([
+            'status' => 'closed',
+            'expires_at' => $now->copy()->subDays(31),
+            'closed_at' => $now->copy()->subDays(31),
+        ]);
+        $this->insertOrder($sessionId, Order::STATUS_PAID);
+
+        $this->artisan('qr:prune-sessions')
+            ->expectsOutput('expired=0 deleted=0')
+            ->assertSuccessful();
+
+        $this->assertDatabaseHas('pos_qr_sessions', ['id' => $sessionId]);
+        $this->assertDatabaseHas('pos_orders', ['qr_session_id' => $sessionId]);
+    }
+
     public function test_pruner_is_scheduled_hourly_with_overlap_guards(): void
     {
         $scheduled = collect(app(Schedule::class)->events())

@@ -609,7 +609,7 @@ class CreateOrderHandler implements SyncEventHandler
         $validator = Validator::make($order, [
             'uuid' => ['required', 'uuid'],
             'order_type' => ['required', 'string', 'in:'.implode(',', Order::TYPES)],
-            'source' => ['required', 'string', 'in:'.implode(',', Order::SOURCES)],
+            'source' => ['required', 'string', 'in:'.implode(',', Order::SOURCES), 'not_in:'.Order::SOURCE_QR_WEB],
             'subtotal_baisas' => ['required', 'integer', 'min:0'],
             'discount_total_baisas' => ['required', 'integer', 'min:0'],
             'tax_total_baisas' => ['required', 'integer', 'min:0'],

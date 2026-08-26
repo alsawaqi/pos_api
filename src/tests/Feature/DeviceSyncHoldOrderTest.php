@@ -105,6 +105,34 @@ class DeviceSyncHoldOrderTest extends TestCase
         );
     }
 
+    public function test_order_hold_refuses_qr_web_source_from_a_device_but_accepts_main_pos(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+
+        $rejectedUuid = (string) Str::uuid();
+        $rejected = $this->push('mdev_hold', [$this->holdEvent($rejectedUuid, [
+            'source' => Order::SOURCE_QR_WEB,
+        ])]);
+
+        $rejected->assertOk();
+        $this->assertSame('failed', $rejected->json('data.results.0.status'));
+        $this->assertStringContainsString('selected source is invalid', $rejected->json('data.results.0.result.error'));
+        $this->assertDatabaseMissing('pos_orders', ['uuid' => $rejectedUuid]);
+
+        $acceptedUuid = (string) Str::uuid();
+        $accepted = $this->push('mdev_hold', [$this->holdEvent($acceptedUuid, [
+            'source' => 'main_pos',
+        ])]);
+
+        $this->assertProcessed($accepted);
+        $this->assertDatabaseHas('pos_orders', [
+            'uuid' => $acceptedUuid,
+            'status' => Order::STATUS_HELD,
+            'source' => 'main_pos',
+        ]);
+    }
+
     public function test_order_hold_creates_a_held_mirror_with_lines_and_addons(): void
     {
         $this->seedCatalogue();

@@ -49,8 +49,10 @@ class Order extends Model
     /** @var list<string> */
     public const TYPES = ['quick', 'dine_in', 'to_go', 'delivery', 'car'];
 
+    public const SOURCE_QR_WEB = 'qr_web';
+
     /** @var list<string> */
-    public const SOURCES = ['main_pos', 'handheld', 'customer_tablet', 'qr_web'];
+    public const SOURCES = ['main_pos', 'handheld', 'customer_tablet', self::SOURCE_QR_WEB];
 
     public const CHARGE_OUTCOME_APPROVED = 'approved';
 
@@ -98,6 +100,7 @@ class Order extends Model
 
     /**
      * The single canonical live-charge-claim predicate from QR-001 R3 section 5.
+     * It asserts awaiting_payment; callers negating LC must still assert that status positively.
      */
     public function scopeWithLiveClaim(Builder $query, ?CarbonInterface $at = null): Builder
     {

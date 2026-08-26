@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
 class PruneQrSessions extends Command
@@ -42,6 +43,12 @@ class PruneQrSessions extends Command
             ->whereIn('status', self::TERMINAL_STATUSES)
             ->whereNotNull('closed_at')
             ->where('closed_at', '<=', $now->copy()->subDays($retentionDays))
+            ->whereNotExists(function (Builder $orders): void {
+                $orders
+                    ->selectRaw('1')
+                    ->from('pos_orders')
+                    ->whereColumn('pos_orders.qr_session_id', 'pos_qr_sessions.id');
+            })
             ->delete();
 
         $this->info("expired={$expired} deleted={$deleted}");

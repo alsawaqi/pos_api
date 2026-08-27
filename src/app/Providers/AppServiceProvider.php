@@ -54,12 +54,12 @@ class AppServiceProvider extends ServiceProvider
         // off the resolved device id so one noisy terminal can't starve the
         // rest of the fleet (and falls back to IP before the guard resolves).
         RateLimiter::for('device-pair', fn (Request $request) => [
-            Limit::perMinute(10)->by('ip:'.(string) $request->ip()),
+            Limit::perMinute(10)->by('ip:'.self::rateLimitIpKey($request->ip())),
             Limit::perMinute(20)->by('kiosk:'.(string) $request->input('kiosk_id')),
         ]);
 
         RateLimiter::for('device-api', fn (Request $request) => Limit::perMinute(120)
-            ->by('device:'.(string) ($request->user()?->getAuthIdentifier() ?? $request->ip())));
+            ->by('device:'.(string) ($request->user()?->getAuthIdentifier() ?? self::rateLimitIpKey($request->ip()))));
 
         $qrRateLimited = static function (Request $request, array $headers) {
             $response = QrApiResponse::failure('rate_limited', 'Too many requests.', 429);
@@ -74,7 +74,7 @@ class AppServiceProvider extends ServiceProvider
 
             return [
                 Limit::perMinute(10)
-                    ->by('qr-bind:ip:'.(string) $request->ip())
+                    ->by('qr-bind:ip:'.self::rateLimitIpKey($request->ip()))
                     ->response($qrRateLimited),
                 Limit::perMinute(10)
                     ->by('qr-bind:token:'.hash('sha256', $token))
@@ -90,7 +90,7 @@ class AppServiceProvider extends ServiceProvider
                 ->by('qr-read:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
                 ->response($qrRateLimited),
             Limit::perMinute(3000)
-                ->by('qr-read:ip:'.(string) $request->ip())
+                ->by('qr-read:ip:'.self::rateLimitIpKey($request->ip()))
                 ->response($qrRateLimited),
         ]);
 
@@ -99,13 +99,13 @@ class AppServiceProvider extends ServiceProvider
                 ->by('qr-quote:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
                 ->response($qrRateLimited),
             Limit::perMinute(600)
-                ->by('qr-quote:ip:'.(string) $request->ip())
+                ->by('qr-quote:ip:'.self::rateLimitIpKey($request->ip()))
                 ->response($qrRateLimited),
         ]);
 
         RateLimiter::for('qr-checkout', fn (Request $request) => [
             Limit::perMinute(10)
-                ->by('qr-checkout:ip:'.(string) $request->ip())
+                ->by('qr-checkout:ip:'.self::rateLimitIpKey($request->ip()))
                 ->response($qrRateLimited),
             Limit::perMinute(10)
                 ->by('qr-checkout:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
@@ -116,6 +116,37 @@ class AppServiceProvider extends ServiceProvider
         // hard per-device (the device is already resolved by the guard before
         // this limiter runs), independent of the generous device-api budget.
         RateLimiter::for('pos-login', fn (Request $request) => Limit::perMinute(10)
-            ->by('pos-login:'.(string) ($request->user()?->getAuthIdentifier() ?? $request->ip())));
+            ->by('pos-login:'.(string) ($request->user()?->getAuthIdentifier() ?? self::rateLimitIpKey($request->ip()))));
+    }
+
+    /**
+     * Keep one bucket per IPv4 address and one per native IPv6 /64.
+     *
+     * IPv4-mapped IPv6 must retain IPv4 cardinality; treating it as native
+     * IPv6 would collapse every mapped IPv4 address into the same ::/64.
+     */
+    private static function rateLimitIpKey(?string $ip): string
+    {
+        $packed = inet_pton((string) $ip);
+        if ($packed === false) {
+            return 'unknown';
+        }
+
+        if (strlen($packed) === 4) {
+            $normalized = inet_ntop($packed);
+
+            return $normalized === false ? 'unknown' : $normalized;
+        }
+
+        $mappedIpv4Prefix = str_repeat("\0", 10)."\xff\xff";
+        if (str_starts_with($packed, $mappedIpv4Prefix)) {
+            $normalized = inet_ntop(substr($packed, 12, 4));
+
+            return $normalized === false ? 'unknown' : $normalized;
+        }
+
+        $network = inet_ntop(substr($packed, 0, 8).str_repeat("\0", 8));
+
+        return $network === false ? 'unknown' : $network.'/64';
     }
 }

@@ -3,6 +3,8 @@
 # `deploy` job after the device-contract tests pass (or by hand). Assumes
 # the repo was just `git pull`ed. NO migrate (pos_admin owns the shared
 # schema) and NO node-build (JSON-only device API).
+# Before deploying, the live src/.env must set SESSION_SECURE_COOKIE=true;
+# nginx marks the FastCGI hop as HTTPS so Laravel keeps session cookies Secure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 C="docker-compose.prod.yml"

@@ -19,29 +19,30 @@ class DeviceApiHardeningTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_pairing_is_rate_limited_per_forwarded_client_ip(): void
+    public function test_pairing_is_rate_limited_per_nginx_established_client_ip(): void
     {
-        $this->withServerVariables(['REMOTE_ADDR' => '172.24.10.20'])
-            ->withHeader('X-Forwarded-For', '198.51.100.81');
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.81']);
 
         // The per-IP limiter allows 10 attempts/minute. The first 10 fail
         // validation (unknown token), the 11th is blocked with 429 before it
         // can reach the action — an attacker can't grind activation tokens.
         for ($i = 0; $i < 10; $i++) {
-            $response = $this->postJson('/api/v1/auth/device/pair', [
-                'kiosk_id' => 'KIOSK-BRUTE',
-                'activation_token' => "guess-{$i}",
-            ])->assertStatus(422);
+            $response = $this->withHeader('X-Forwarded-For', '203.0.113.'.($i + 1))
+                ->postJson('/api/v1/auth/device/pair', [
+                    'kiosk_id' => 'KIOSK-BRUTE',
+                    'activation_token' => "guess-{$i}",
+                ])->assertStatus(422);
             $this->assertSame('198.51.100.81', $response->baseRequest?->ip());
         }
 
-        $this->postJson('/api/v1/auth/device/pair', [
-            'kiosk_id' => 'KIOSK-BRUTE',
-            'activation_token' => 'guess-final',
-        ])->assertStatus(429);
+        $this->withHeader('X-Forwarded-For', '203.0.113.11')
+            ->postJson('/api/v1/auth/device/pair', [
+                'kiosk_id' => 'KIOSK-BRUTE',
+                'activation_token' => 'guess-final',
+            ])->assertStatus(429);
     }
 
-    public function test_device_api_limiter_remains_per_authenticated_device_behind_a_proxy(): void
+    public function test_device_api_limiter_remains_per_authenticated_device_with_nginx_client_ip(): void
     {
         Route::middleware(['auth:pos_device', 'throttle:device-api'])
             ->get('/_ops/device-api-budget', static fn (Request $request) => response()->json([
@@ -60,8 +61,8 @@ class DeviceApiHardeningTest extends TestCase
             'status' => 'active',
         ]);
 
-        $this->withServerVariables(['REMOTE_ADDR' => '172.24.10.20'])
-            ->withHeader('X-Forwarded-For', '198.51.100.82');
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.82'])
+            ->withHeader('X-Forwarded-For', '203.0.113.82');
 
         for ($attempt = 1; $attempt <= 120; $attempt++) {
             $this->withToken('mdev_budget_a')

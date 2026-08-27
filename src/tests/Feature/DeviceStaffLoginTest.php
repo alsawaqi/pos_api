@@ -163,10 +163,10 @@ class DeviceStaffLoginTest extends TestCase
         $this->device('mdev_pos_other');
         $this->staff('123456');
 
-        $this->withServerVariables(['REMOTE_ADDR' => '172.24.10.21']);
+        $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.90']);
 
         // The route is authenticated before throttling, so the existing key
-        // remains the device even when each request has a different real IP.
+        // remains the device even when forged forwarding headers vary.
         for ($i = 0; $i < 10; $i++) {
             $this->withHeader('X-Forwarded-For', '198.51.100.'.(100 + $i))
                 ->withToken('mdev_pos')

@@ -30,8 +30,9 @@ final class DistinctQrPhoneGuard
         }
 
         $ipLimit = max(1, (int) config('qr.distinct_phone_ip_backstop_per_branch_per_hour', 500));
+        $ipKey = self::rateLimitIpKey($ip);
         $ipBackstop = $this->check(
-            'qr:distinct-phones:branch:'.$branchId.':ip:'.hash('sha256', $ip).':'.$hour,
+            'qr:distinct-phones:branch:'.$branchId.':ip:'.hash('sha256', $ipKey).':'.$hour,
             $phoneHash,
             $ipLimit,
         );
@@ -44,6 +45,37 @@ final class DistinctQrPhoneGuard
         }
 
         return true;
+    }
+
+    /**
+     * Keep one bucket per IPv4 address and one per native IPv6 /64.
+     *
+     * IPv4-mapped IPv6 is normalized back to IPv4 so unrelated IPv4 clients
+     * are not collapsed into the mapped-address ::/64.
+     */
+    private static function rateLimitIpKey(string $ip): string
+    {
+        $packed = inet_pton($ip);
+        if ($packed === false) {
+            return 'unknown';
+        }
+
+        if (strlen($packed) === 4) {
+            $normalized = inet_ntop($packed);
+
+            return $normalized === false ? 'unknown' : $normalized;
+        }
+
+        $mappedIpv4Prefix = str_repeat("\0", 10)."\xff\xff";
+        if (str_starts_with($packed, $mappedIpv4Prefix)) {
+            $normalized = inet_ntop(substr($packed, 12, 4));
+
+            return $normalized === false ? 'unknown' : $normalized;
+        }
+
+        $network = inet_ntop(substr($packed, 0, 8).str_repeat("\0", 8));
+
+        return $network === false ? 'unknown' : $network.'/64';
     }
 
     /**

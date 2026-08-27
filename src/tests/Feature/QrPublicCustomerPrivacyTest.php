@@ -351,7 +351,6 @@ final class QrPublicCustomerPrivacyTest extends TestCase
 
     public function test_six_customers_on_six_sessions_from_one_ip_and_branch_all_checkout(): void
     {
-        $proxyIp = '172.24.10.10';
         $clientIp = '198.51.100.60';
 
         for ($customer = 1; $customer <= 6; $customer++) {
@@ -360,7 +359,6 @@ final class QrPublicCustomerPrivacyTest extends TestCase
                 $this->activeSession($secret),
                 $secret,
                 $this->payload('9555010'.$customer),
-                $proxyIp,
                 $clientIp,
             )->assertCreated();
             $this->assertSame($clientIp, $response->baseRequest?->ip());
@@ -370,15 +368,13 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         $this->assertDatabaseCount('pos_customers', 6);
     }
 
-    public function test_eleven_customers_across_two_branches_behind_one_proxy_all_checkout(): void
+    public function test_eleven_nginx_attributed_customers_across_two_branches_all_checkout(): void
     {
         $secondStation = Device::factory()->paired('privacy-second-station-token')->create([
             'company_id' => 100,
             'branch_id' => 20,
             'device_type' => 'payment_station',
         ]);
-        $proxyIp = '172.24.10.11';
-
         for ($customer = 1; $customer <= 11; $customer++) {
             $station = $customer <= 6 ? $this->station : $secondStation;
             $secret = 'eleven-customer-secret-'.$customer;
@@ -387,7 +383,6 @@ final class QrPublicCustomerPrivacyTest extends TestCase
                 $this->activeSession($secret, station: $station),
                 $secret,
                 $this->payload('95552'.str_pad((string) $customer, 3, '0', STR_PAD_LEFT)),
-                $proxyIp,
                 $clientIp,
             )->assertCreated();
             $this->assertSame($clientIp, $response->baseRequest?->ip());
@@ -553,12 +548,8 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         string $secret,
         array $payload,
         string $ip = '198.51.100.20',
-        ?string $forwardedFor = null,
     ): TestResponse {
         $headers = $this->credentialHeaders($session, $secret);
-        if ($forwardedFor !== null) {
-            $headers['X-Forwarded-For'] = $forwardedFor;
-        }
 
         return $this->withServerVariables(['REMOTE_ADDR' => $ip])
             ->withHeaders($headers)

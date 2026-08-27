@@ -99,4 +99,77 @@ class DistinctQrPhoneGuardTest extends TestCase
         $this->assertTrue($guard->allows('session-b', 10, '192.0.2.9', '90000002'));
         $this->assertFalse($guard->allows('session-c', 10, '192.0.2.9', '90000003'));
     }
+
+    public function test_native_ipv6_addresses_share_their_branch_backstop_within_one_64(): void
+    {
+        config(['qr.distinct_phone_ip_backstop_per_branch_per_hour' => 2]);
+        $guard = app(DistinctQrPhoneGuard::class);
+
+        $this->assertTrue($guard->allows(
+            'ipv6-session-a',
+            10,
+            '2001:db8:abcd:1234:1111:2222:3333:4444',
+            '90000001',
+        ));
+        $this->assertTrue($guard->allows(
+            'ipv6-session-b',
+            10,
+            '2001:db8:abcd:1234:aaaa:bbbb:cccc:dddd',
+            '90000002',
+        ));
+        $this->assertFalse($guard->allows(
+            'ipv6-session-c',
+            10,
+            '2001:db8:abcd:1234::ffff',
+            '90000003',
+        ));
+        $this->assertTrue($guard->allows(
+            'ipv6-session-d',
+            10,
+            '2001:db8:abcd:1235::1',
+            '90000004',
+        ));
+
+        $store = Cache::getStore();
+        $reflection = new \ReflectionObject($store);
+        $property = $reflection->getProperty('storage');
+        $keys = implode('|', array_keys($property->getValue($store)));
+
+        $this->assertStringContainsString(
+            'branch:10:ip:'.hash('sha256', '2001:db8:abcd:1234::/64'),
+            $keys,
+        );
+        $this->assertStringNotContainsString(
+            hash('sha256', '2001:db8:abcd:1234:1111:2222:3333:4444'),
+            $keys,
+        );
+    }
+
+    public function test_ipv4_mapped_ipv6_shares_the_canonical_ipv4_backstop(): void
+    {
+        config(['qr.distinct_phone_ip_backstop_per_branch_per_hour' => 1]);
+        $guard = app(DistinctQrPhoneGuard::class);
+
+        $this->assertTrue($guard->allows(
+            'mapped-session-a',
+            10,
+            '::ffff:192.0.2.44',
+            '90000001',
+        ));
+        $this->assertFalse($guard->allows(
+            'mapped-session-b',
+            10,
+            '192.0.2.44',
+            '90000002',
+        ));
+    }
+
+    public function test_malformed_ips_share_one_fixed_backstop_bucket(): void
+    {
+        config(['qr.distinct_phone_ip_backstop_per_branch_per_hour' => 1]);
+        $guard = app(DistinctQrPhoneGuard::class);
+
+        $this->assertTrue($guard->allows('invalid-session-a', 10, 'not-an-ip', '90000001'));
+        $this->assertFalse($guard->allows('invalid-session-b', 10, 'also-not-an-ip', '90000002'));
+    }
 }

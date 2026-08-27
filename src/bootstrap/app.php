@@ -7,6 +7,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Sentry\Laravel\Integration;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -22,10 +23,6 @@ return Application::configure(basePath: dirname(__DIR__))
     // web-session /broadcasting/auth, which this token-only API has no use for).
     ->withBroadcasting(__DIR__.'/../routes/channels.php')
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->trustProxies(
-            at: explode(',', (string) env('TRUSTED_PROXIES', '172.24.0.0/16')),
-        );
-
         // QR client secrets and checkout idempotency keys are opaque values.
         // Preserve their exact bytes so JSON binding and later header checks
         // agree, and so two distinct client request keys never collapse.
@@ -63,5 +60,5 @@ return Application::configure(basePath: dirname(__DIR__))
         // "errors from each surface… Laravel, …"). A complete no-op when
         // SENTRY_LARAVEL_DSN is unset, so local dev + the test suite are
         // unaffected.
-        \Sentry\Laravel\Integration::handles($exceptions);
+        Integration::handles($exceptions);
     })->create();

@@ -15,6 +15,13 @@ Schedule::command('sync:sweep-stranded-events')
     ->onOneServer()
     ->when(static fn (): bool => config('sync.stranded_sweep_enabled') === true);
 
+Schedule::command('qr:sweep-stale-charges')
+    ->everyMinute()
+    ->name('sweep-stale-charges')
+    ->withoutOverlapping(30)
+    ->onOneServer()
+    ->when(static fn (): bool => config('qr.charge_sweep_enabled') === true);
+
 Schedule::command('qr:prune-sessions')
     ->hourly()
     ->name('prune-qr-sessions')

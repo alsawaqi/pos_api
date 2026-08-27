@@ -17,4 +17,24 @@ return [
         'QR_DISTINCT_PHONE_IP_BACKSTOP_PER_BRANCH_PER_HOUR',
         500,
     ),
+
+    // How long a station owns the frozen sale amount after a successful claim.
+    'charge_claim_seconds' => (int) env('QR_CHARGE_CLAIM_SECONDS', 180),
+
+    // Audit-release margin beyond the claim deadline so the sweeper does not
+    // stamp cancellation while an on-time station result is still arriving.
+    'charge_sweep_grace_seconds' => (int) env('QR_CHARGE_SWEEP_GRACE_SECONDS', 30),
+
+    // Fail-closed deploy gate for the every-minute stale-charge sweeper.
+    'charge_sweep_enabled' => filter_var(
+        env('QR_CHARGE_SWEEP_ENABLED', false),
+        FILTER_VALIDATE_BOOL,
+    ),
+
+    // Interim estate-wide exemption for bolted-down stations that cannot get
+    // GPS indoors. Default false; replace with an admin-provisioned device flag.
+    'station_geofence_exempt' => filter_var(
+        env('QR_STATION_GEOFENCE_EXEMPT', false),
+        FILTER_VALIDATE_BOOL,
+    ),
 ];

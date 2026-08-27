@@ -80,6 +80,7 @@ class Order extends Model
             'discount_total' => 'decimal:3',
             'tax_total' => 'decimal:3',
             'grand_total' => 'decimal:3',
+            'charge_amount_baisas' => 'integer',
             'latitude' => 'decimal:7',
             'longitude' => 'decimal:7',
             'opened_at' => 'datetime',
@@ -120,6 +121,34 @@ class Order extends Model
                         self::CHARGE_OUTCOME_UNCERTAIN,
                         self::CHARGE_OUTCOME_APPROVED,
                     ]);
+            });
+    }
+
+    /**
+     * The exact fail-closed inverse of the live-claim branches, restricted
+     * positively to awaiting_payment orders. Callers must not negate
+     * {@see scopeWithLiveClaim()} themselves: both scopes assert
+     * awaiting_payment, so they are deliberately not complements over all
+     * orders. A paid order matches neither scope.
+     */
+    public function scopeWithoutLiveClaim(Builder $query, ?CarbonInterface $at = null): Builder
+    {
+        $at ??= now();
+
+        return $query
+            ->where('status', self::STATUS_AWAITING_PAYMENT)
+            ->where(function (Builder $claim) use ($at): void {
+                $claim
+                    ->whereNull('charge_claimed_at')
+                    ->orWhereIn('charge_outcome', [
+                        self::CHARGE_OUTCOME_DECLINED,
+                        self::CHARGE_OUTCOME_CANCELLED,
+                    ])
+                    ->orWhere(function (Builder $expired) use ($at): void {
+                        $expired
+                            ->whereNull('charge_outcome')
+                            ->where('charge_deadline_at', '<=', $at);
+                    });
             });
     }
 

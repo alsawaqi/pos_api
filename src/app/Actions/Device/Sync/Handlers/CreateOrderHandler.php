@@ -88,11 +88,11 @@ class CreateOrderHandler implements SyncEventHandler
      * money or stock and must mirror even when queued offline without a GPS
      * fix; order.pay re-checks the fence).
      *
-     * UPSERT-BY-UUID: a same-uuid NON-terminal row is replaced in place — a
-     * re-hold refreshes the mirror, and the finalize order.create flips a held
-     * mirror to open (the device cannot know offline whether its earlier
-     * order.hold reached the server). A terminal row (paid/void/refunded)
-     * fails the event instead.
+     * UPSERT-BY-UUID: a same-uuid replaceable NON-terminal row is replaced in
+     * place — a re-hold refreshes the mirror, and the finalize order.create
+     * flips a held mirror to open (the device cannot know offline whether its
+     * earlier order.hold reached the server). The server-owned awaiting-payment
+     * state and terminal rows (paid/void/refunded) fail the event instead.
      */
     public function writeOrder(SyncEvent $event, Device $device, string $status, bool $enforceGeofence): array
     {
@@ -112,6 +112,13 @@ class CreateOrderHandler implements SyncEventHandler
                 // §9.11 — a uuid squatted by another tenant/branch can neither
                 // be read nor overwritten; fail without leaking its contents.
                 throw new RuntimeException('order uuid already exists outside the device tenant');
+            }
+            if ($existing !== null && $existing->status === Order::STATUS_AWAITING_PAYMENT) {
+                throw new RuntimeException(sprintf(
+                    'order %s cannot be overwritten while in status %s',
+                    $order['uuid'],
+                    $existing->status,
+                ));
             }
             if ($existing !== null
                 && in_array($existing->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION, Order::STATUS_VOID, Order::STATUS_REFUNDED], true)) {

@@ -21,11 +21,12 @@ class DeviceSyncQrLoyaltyTest extends TestCase
 
     private const TOKEN = 'mdev_qr_loyalty';
 
-    private function seedDomain(): Device
+    private function seedDomain(string $deviceType = 'pos_terminal'): Device
     {
         $device = Device::factory()->paired(self::TOKEN)->create([
             'company_id' => 100,
             'branch_id' => 10,
+            'device_type' => $deviceType,
         ]);
         $timestamps = ['created_at' => now(), 'updated_at' => now()];
 
@@ -242,16 +243,27 @@ class DeviceSyncQrLoyaltyTest extends TestCase
 
     public function test_machine_pay_ignores_event_rule_ids_and_resolves_active_company_rules(): void
     {
-        $device = $this->seedDomain();
+        $device = $this->seedDomain('payment_station');
         $sessionId = $this->qrSession($device);
         $order = $this->qrOrder($device, $sessionId, [
             'status' => Order::STATUS_AWAITING_PAYMENT,
+            'charge_device_id' => $device->id,
+            'charge_amount_baisas' => 3000,
+            'charge_claimed_at' => now(),
+            'charge_deadline_at' => now()->addMinutes(3),
+            'charge_outcome' => null,
         ]);
         $paidAt = now()->startOfSecond();
 
         $response = $this->push([$this->payEvent($order->uuid, $paidAt, [
             'loyalty_rule_ids' => [3, 9, 999],
             'loyalty_rule_id' => 999,
+            'payments' => [[
+                'method' => 'card',
+                'amount_baisas' => 3000,
+                'status' => 'success',
+                'softpos_reference' => 'QR-LOYALTY-REF',
+            ]],
         ])]);
 
         $this->assertProcessed($response);
@@ -266,7 +278,7 @@ class DeviceSyncQrLoyaltyTest extends TestCase
         $device = $this->seedDomain();
         $sessionId = $this->qrSession($device);
         $order = $this->qrOrder($device, $sessionId, [
-            'status' => Order::STATUS_AWAITING_PAYMENT,
+            'status' => Order::STATUS_HELD,
         ]);
         $expiredAt = now()->subMinute()->startOfSecond();
         DB::table('pos_qr_sessions')->where('id', $sessionId)->update([
@@ -306,6 +318,7 @@ class DeviceSyncQrLoyaltyTest extends TestCase
         $pay = $this->push([$this->payEvent($order->uuid, $paidAt)]);
         $this->assertProcessed($pay);
 
+        $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
         $this->assertSame(1, (int) $order->fresh()->customer_id);
         $this->assertActiveRulesEarned();
         $this->assertSessionClosed($sessionId, $paidAt);

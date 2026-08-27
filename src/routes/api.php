@@ -17,6 +17,9 @@ use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrReleaseChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrRotateController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
@@ -110,6 +113,12 @@ Route::prefix('v1')->group(function (): void {
 
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
         Route::post('device/qr/rotate', DeviceQrRotateController::class)->name('device.qr.rotate');
+        Route::post('device/qr/claim-charge', DeviceQrClaimChargeController::class)
+            ->name('device.qr.claim-charge');
+        Route::post('device/qr/release-charge', DeviceQrReleaseChargeController::class)
+            ->name('device.qr.release-charge');
+        Route::post('device/qr/fallback-to-counter', DeviceQrFallbackToCounterController::class)
+            ->name('device.qr.fallback-to-counter');
 
         // Config bundle (§11.4): full snapshot + incremental delta.
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');

@@ -11,12 +11,22 @@ use Tests\TestCase;
 
 class Phase1InertnessTest extends TestCase
 {
-    public function test_no_explicit_phase_two_value_producer_is_present(): void
+    public function test_qr_value_producers_remain_confined_to_authorized_protocol_files(): void
     {
         $allowed = [
             'qr_web' => ['app/Models/Order.php'],
-            'awaiting_payment' => ['app/Models/Order.php'],
-            'payment_station' => ['app/Models/Device.php'],
+            'awaiting_payment' => [
+                'app/Models/Order.php',
+                'app/Actions/Qr/ClaimQrChargeAction.php',
+                'app/Actions/Qr/ReleaseQrChargeAction.php',
+                'app/Actions/Qr/FallbackQrOrderToCounterAction.php',
+                'app/Console/Commands/SweepStaleQrCharges.php',
+            ],
+            'payment_station' => [
+                'app/Models/Device.php',
+                'app/Actions/Qr/ClaimQrChargeAction.php',
+                'app/Actions/Qr/FallbackQrOrderToCounterAction.php',
+            ],
         ];
         $violations = [];
 

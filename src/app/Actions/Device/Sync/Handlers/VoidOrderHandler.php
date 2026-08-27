@@ -108,6 +108,13 @@ class VoidOrderHandler implements SyncEventHandler
             if ($order === null || $order->status === Order::STATUS_VOID) {
                 throw new RuntimeException('order already void: '.$orderUuid);
             }
+            if ($order->status === Order::STATUS_AWAITING_PAYMENT
+                && ! Order::query()
+                    ->whereKey($order->getKey())
+                    ->withoutLiveClaim(now())
+                    ->exists()) {
+                throw new RuntimeException('cannot void an order with a live charge claim: '.$orderUuid);
+            }
             // P-G7 — pending-verification delivery orders consumed inventory at
             // intake, so a void must unwind them like a paid sale. Their OTHER
             // effects never happened (no loyalty/round-up/commission for delivery

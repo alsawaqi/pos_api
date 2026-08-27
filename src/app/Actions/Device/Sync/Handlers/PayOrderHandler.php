@@ -64,22 +64,17 @@ class PayOrderHandler implements SyncEventHandler
         if ($order === null) {
             throw new RuntimeException('order not found for payment: '.$orderUuid);
         }
-        if ($order->status === Order::STATUS_PAID) {
+        if ($order->status === Order::STATUS_PAID && ! $device->isPaymentStation()) {
             throw new RuntimeException('order already paid: '.$orderUuid);
         }
-        if ($order->status === Order::STATUS_PENDING_VERIFICATION) {
+        if ($order->status === Order::STATUS_PENDING_VERIFICATION && ! $device->isPaymentStation()) {
             // P-G7 — a no-tender delivery order settles via the merchant's
             // Deliveries reconciliation, never via a till tender.
             throw new RuntimeException('cannot pay a pending-verification delivery order: '.$orderUuid);
         }
-        if ($order->status === Order::STATUS_VOID) {
+        if ($order->status === Order::STATUS_VOID && ! $device->isPaymentStation()) {
             throw new RuntimeException('cannot pay a voided order: '.$orderUuid);
         }
-
-        // Geofence: a device must be inside its branch fence to take payment
-        // (fail-closed at a fenced branch), so it can't be carried away and
-        // keep settling sales.
-        $this->enforceGeofence($device, $payload);
 
         $capturedAt = isset($payload['paid_at']) ? Carbon::parse((string) $payload['paid_at']) : now();
         $loyaltyRedeem = is_array($payload['loyalty_redeem'] ?? null) ? $payload['loyalty_redeem'] : null;
@@ -93,14 +88,90 @@ class PayOrderHandler implements SyncEventHandler
             // loser blocks until the winner commits, then sees STATUS_PAID and
             // throws — exactly one consume() ever runs.
             $order = Order::query()->whereKey($order->id)->lockForUpdate()->first();
-            if ($order === null || $order->status === Order::STATUS_PAID) {
+            if ($order === null) {
                 throw new RuntimeException('order already paid: '.$orderUuid);
             }
-            if ($order->status === Order::STATUS_VOID) {
+
+            $claimAt = now();
+            $claimIsLive = Order::query()
+                ->whereKey($order->getKey())
+                ->withLiveClaim($claimAt)
+                ->exists();
+            $claimHeldByDevice = $claimIsLive
+                && $order->charge_device_id !== null
+                && (int) $order->charge_device_id === (int) $device->getKey();
+
+            if ($device->isPaymentStation() && ! $claimHeldByDevice) {
+                $evidence = $this->softPosEvidence($payments);
+
+                if ($evidence !== null) {
+                    $result = $this->recordLateAuthorizationOrphan(
+                        $order,
+                        $device,
+                        $evidence,
+                        $capturedAt,
+                    );
+
+                    if ($order->status === Order::STATUS_AWAITING_PAYMENT) {
+                        $order->update([
+                            'charge_outcome' => Order::CHARGE_OUTCOME_UNCERTAIN,
+                        ]);
+                    }
+
+                    return $result;
+                }
+            }
+
+            if (in_array($order->status, [Order::STATUS_PAID, Order::STATUS_VOID], true)) {
+                if ($order->status === Order::STATUS_PAID) {
+                    throw new RuntimeException('order already paid: '.$orderUuid);
+                }
+
                 throw new RuntimeException('cannot pay a voided order: '.$orderUuid);
             }
             if ($order->status === Order::STATUS_PENDING_VERIFICATION) {
                 throw new RuntimeException('cannot pay a pending-verification delivery order: '.$orderUuid);
+            }
+            if ($order->charge_outcome === Order::CHARGE_OUTCOME_UNCERTAIN) {
+                throw new RuntimeException('cannot settle an uncertain charge outcome: '.$orderUuid);
+            }
+            if ($claimIsLive && ! $claimHeldByDevice) {
+                throw new RuntimeException('live charge claim is held by another device: '.$orderUuid);
+            }
+            if ($device->isPaymentStation() && ! $claimHeldByDevice) {
+                throw new RuntimeException('payment station must hold a live charge claim: '.$orderUuid);
+            }
+            if ($order->status === Order::STATUS_AWAITING_PAYMENT && ! $claimIsLive) {
+                throw new RuntimeException('awaiting-payment order has no live charge claim: '.$orderUuid);
+            }
+
+            if ($device->isPaymentStation() && count($payments) !== 1) {
+                throw new RuntimeException('payment station requires exactly one card tender');
+            }
+            foreach ($payments as $tender) {
+                if (! is_array($tender)) {
+                    throw new RuntimeException('invalid payment tender in order.pay');
+                }
+                if ($claimIsLive
+                    && (! array_key_exists('amount_baisas', $tender)
+                        || ! is_int($tender['amount_baisas']))) {
+                    throw new RuntimeException('claimed charge requires an integer tender amount');
+                }
+                if ($device->isPaymentStation()
+                    && ($tender['method'] ?? null) !== Payment::METHOD_CARD) {
+                    throw new RuntimeException('payment station accepts card tenders only');
+                }
+                if ($claimIsLive
+                    && ($tender['status'] ?? Payment::STATUS_SUCCESS) !== Payment::STATUS_SUCCESS) {
+                    throw new RuntimeException('claimed charge requires a successful tender');
+                }
+            }
+
+            // A live claim held by this device already paid the fail-closed
+            // geofence cost before the tap. Every other path keeps the legacy
+            // settle-time fence unchanged.
+            if (! $claimHeldByDevice) {
+                $this->enforceGeofence($device, $payload);
             }
 
             $paymentIds = [];
@@ -168,14 +239,23 @@ class PayOrderHandler implements SyncEventHandler
             }
 
             $grandBaisas = Money::toBaisas($order->grand_total);
-            if (abs($tenderedBaisas - $grandBaisas) > 1) {
+            if ($claimIsLive) {
+                $frozenBaisas = (int) $order->charge_amount_baisas;
+                if ($tenderedBaisas !== $frozenBaisas) {
+                    throw new RuntimeException('payment total mismatch: tendered '.$tenderedBaisas.' baisas vs charge_amount_baisas '.$frozenBaisas);
+                }
+            } elseif (abs($tenderedBaisas - $grandBaisas) > 1) {
                 throw new RuntimeException('payment total mismatch: tendered '.$tenderedBaisas.' baisas vs grand_total '.$grandBaisas);
             }
 
-            $order->update([
+            $orderUpdate = [
                 'status' => Order::STATUS_PAID,
                 'closed_at' => $capturedAt,
-            ]);
+            ];
+            if ($claimIsLive) {
+                $orderUpdate['charge_outcome'] = Order::CHARGE_OUTCOME_APPROVED;
+            }
+            $order->update($orderUpdate);
             if ($order->qr_session_id !== null) {
                 DB::table('pos_qr_sessions')
                     ->where('id', (int) $order->qr_session_id)
@@ -282,6 +362,150 @@ class PayOrderHandler implements SyncEventHandler
                 'loyalty_redeem_warning' => $redeemWarning,
             ];
         });
+    }
+
+    /**
+     * Locate the first tender carrying enough SoftPOS evidence to preserve a
+     * late authorisation. Terminal-order handling deliberately happens before
+     * ordinary tender guards: after a tap, recording money is safer than
+     * discarding evidence because another payload field is imperfect.
+     *
+     * @param  array<int|string, mixed>  $payments
+     * @return array<string, mixed>|null
+     */
+    private function softPosEvidence(array $payments): ?array
+    {
+        foreach ($payments as $tender) {
+            if (! is_array($tender) || ! array_key_exists('amount_baisas', $tender)) {
+                continue;
+            }
+
+            $reference = $this->trimmedEvidence($tender['softpos_reference'] ?? null, 64);
+            $authCode = $this->trimmedEvidence($tender['softpos_auth_code'] ?? null, 32);
+            if ($reference === null && $authCode === null) {
+                continue;
+            }
+
+            if (filter_var($tender['amount_baisas'], FILTER_VALIDATE_INT) === false) {
+                throw new RuntimeException('invalid orphan tender amount in order.pay');
+            }
+
+            $tender['softpos_reference'] = $reference;
+            $tender['softpos_auth_code'] = $authCode;
+
+            return $tender;
+        }
+
+        return null;
+    }
+
+    private function trimmedEvidence(mixed $value, int $maxLength): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        if (mb_strlen($value) > $maxLength) {
+            throw new RuntimeException('SoftPOS evidence exceeds the supported length');
+        }
+
+        return $value;
+    }
+
+    /**
+     * Persist an acquirer result that arrived after another settlement path
+     * made the order terminal. Returning this result is what commits both the
+     * payment and the sync event's processed stamp atomically.
+     *
+     * @param  array<string, mixed>  $evidence
+     * @return array<string, mixed>
+     */
+    private function recordLateAuthorizationOrphan(
+        Order $order,
+        Device $device,
+        array $evidence,
+        Carbon $capturedAt,
+    ): array {
+        $reference = $evidence['softpos_reference'];
+        $authCode = $evidence['softpos_auth_code'];
+
+        // Only an acquirer reference is strong enough for cross-event evidence
+        // de-duplication. Auth codes are not unique; auth-only repeats with new
+        // client_event_ids are preserved as separate money records. Replays of
+        // the same event are already de-duplicated by the sync ledger.
+        $existingEvidence = $reference !== null
+            ? Payment::query()
+                ->where('order_id', $order->getKey())
+                ->where('device_id', $device->getKey())
+                ->where('softpos_reference', $reference)
+                ->orderBy('id')
+                ->first()
+            : null;
+
+        if ($existingEvidence !== null) {
+            return [
+                'order_id' => (int) $order->getKey(),
+                'status' => (string) $order->status,
+                'orphan_tender' => data_get(
+                    $existingEvidence->bank_response,
+                    'qr_late_auth_orphan',
+                ) === true,
+                'orphan_payment_uuid' => (string) $existingEvidence->uuid,
+                'duplicate_softpos_evidence' => true,
+            ];
+        }
+
+        $originalSettlingDeviceId = null;
+        if ($order->closed_at !== null) {
+            $settlingDeviceIds = Payment::query()
+                ->where('order_id', $order->getKey())
+                ->where('captured_at', $order->closed_at)
+                ->whereNotNull('device_id')
+                ->distinct()
+                ->pluck('device_id');
+            if ($settlingDeviceIds->count() === 1) {
+                $originalSettlingDeviceId = (int) $settlingDeviceIds->first();
+            }
+        }
+        $clientBankResponse = is_array($evidence['bank_response'] ?? null)
+            ? $evidence['bank_response']
+            : [];
+        $bankResponse = array_merge($clientBankResponse, [
+            'qr_late_auth_orphan' => true,
+            'order_uuid' => (string) $order->uuid,
+            'original_settling_device_id' => $originalSettlingDeviceId !== null
+                ? (int) $originalSettlingDeviceId
+                : null,
+        ]);
+
+        $payment = Payment::create([
+            'uuid' => (string) Str::uuid(),
+            'order_id' => $order->getKey(),
+            'method' => Payment::METHOD_CARD,
+            'amount' => Money::toOmr((int) $evidence['amount_baisas']),
+            'change_given' => null,
+            'softpos_reference' => $reference,
+            'softpos_auth_code' => $authCode,
+            'status' => Payment::STATUS_PENDING_RECONCILIATION,
+            'pending_reconciliation' => true,
+            'device_id' => $device->getKey(),
+            'terminal_id' => $device->terminal_id,
+            'bank_id' => $device->bank_id,
+            'bank_response' => $bankResponse,
+            'captured_at' => $capturedAt,
+        ]);
+
+        return [
+            'order_id' => (int) $order->getKey(),
+            'status' => (string) $order->status,
+            'orphan_tender' => true,
+            'orphan_payment_uuid' => (string) $payment->uuid,
+            'duplicate_softpos_evidence' => false,
+        ];
     }
 
     /**

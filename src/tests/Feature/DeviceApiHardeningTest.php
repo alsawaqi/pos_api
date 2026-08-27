@@ -7,6 +7,8 @@ namespace Tests\Feature;
 use App\Models\Device;
 use App\Models\DeviceActivationToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
 /**
@@ -17,22 +19,69 @@ class DeviceApiHardeningTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_pairing_is_rate_limited_per_ip(): void
+    public function test_pairing_is_rate_limited_per_forwarded_client_ip(): void
     {
+        $this->withServerVariables(['REMOTE_ADDR' => '172.24.10.20'])
+            ->withHeader('X-Forwarded-For', '198.51.100.81');
+
         // The per-IP limiter allows 10 attempts/minute. The first 10 fail
         // validation (unknown token), the 11th is blocked with 429 before it
         // can reach the action — an attacker can't grind activation tokens.
         for ($i = 0; $i < 10; $i++) {
-            $this->postJson('/api/v1/auth/device/pair', [
+            $response = $this->postJson('/api/v1/auth/device/pair', [
                 'kiosk_id' => 'KIOSK-BRUTE',
                 'activation_token' => "guess-{$i}",
             ])->assertStatus(422);
+            $this->assertSame('198.51.100.81', $response->baseRequest?->ip());
         }
 
         $this->postJson('/api/v1/auth/device/pair', [
             'kiosk_id' => 'KIOSK-BRUTE',
             'activation_token' => 'guess-final',
         ])->assertStatus(429);
+    }
+
+    public function test_device_api_limiter_remains_per_authenticated_device_behind_a_proxy(): void
+    {
+        Route::middleware(['auth:pos_device', 'throttle:device-api'])
+            ->get('/_ops/device-api-budget', static fn (Request $request) => response()->json([
+                'device_id' => $request->user()?->getAuthIdentifier(),
+                'ip' => $request->ip(),
+            ]));
+
+        $firstDevice = Device::factory()->paired('mdev_budget_a')->create([
+            'company_id' => 100,
+            'branch_id' => 10,
+            'status' => 'active',
+        ]);
+        $secondDevice = Device::factory()->paired('mdev_budget_b')->create([
+            'company_id' => 100,
+            'branch_id' => 10,
+            'status' => 'active',
+        ]);
+
+        $this->withServerVariables(['REMOTE_ADDR' => '172.24.10.20'])
+            ->withHeader('X-Forwarded-For', '198.51.100.82');
+
+        for ($attempt = 1; $attempt <= 120; $attempt++) {
+            $this->withToken('mdev_budget_a')
+                ->getJson('/_ops/device-api-budget')
+                ->assertOk()
+                ->assertJsonPath('device_id', $firstDevice->id)
+                ->assertJsonPath('ip', '198.51.100.82');
+        }
+
+        $this->withToken('mdev_budget_a')
+            ->getJson('/_ops/device-api-budget')
+            ->assertStatus(429);
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken('mdev_budget_b')
+            ->getJson('/_ops/device-api-budget')
+            ->assertOk()
+            ->assertJsonPath('device_id', $secondDevice->id)
+            ->assertJsonPath('ip', '198.51.100.82');
     }
 
     public function test_a_legitimate_pair_succeeds_within_the_limit(): void

@@ -22,6 +22,10 @@ return Application::configure(basePath: dirname(__DIR__))
     // web-session /broadcasting/auth, which this token-only API has no use for).
     ->withBroadcasting(__DIR__.'/../routes/channels.php')
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trustProxies(
+            at: explode(',', (string) env('TRUSTED_PROXIES', '172.24.0.0/16')),
+        );
+
         // QR client secrets and checkout idempotency keys are opaque values.
         // Preserve their exact bytes so JSON binding and later header checks
         // agree, and so two distinct client request keys never collapse.

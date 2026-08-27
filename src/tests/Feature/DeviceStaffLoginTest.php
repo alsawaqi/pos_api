@@ -160,16 +160,32 @@ class DeviceStaffLoginTest extends TestCase
     public function test_login_is_rate_limited_per_device(): void
     {
         $this->device();
+        $this->device('mdev_pos_other');
         $this->staff('123456');
 
-        // 10 attempts/min allowed; the 11th is throttled.
+        $this->withServerVariables(['REMOTE_ADDR' => '172.24.10.21']);
+
+        // The route is authenticated before throttling, so the existing key
+        // remains the device even when each request has a different real IP.
         for ($i = 0; $i < 10; $i++) {
-            $this->withToken('mdev_pos')->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
+            $this->withHeader('X-Forwarded-For', '198.51.100.'.(100 + $i))
+                ->withToken('mdev_pos')
+                ->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
                 ->assertStatus(401);
         }
 
-        $this->withToken('mdev_pos')->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
+        $this->withHeader('X-Forwarded-For', '198.51.100.110')
+            ->withToken('mdev_pos')
+            ->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
             ->assertStatus(429);
+
+        $this->app['auth']->forgetGuards();
+
+        // A second authenticated device behind the same client/proxy path has
+        // an independent budget.
+        $this->withToken('mdev_pos_other')
+            ->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
+            ->assertStatus(401);
     }
 
     public function test_login_at_a_fenced_branch_enforces_location(): void

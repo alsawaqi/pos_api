@@ -351,20 +351,52 @@ final class QrPublicCustomerPrivacyTest extends TestCase
 
     public function test_six_customers_on_six_sessions_from_one_ip_and_branch_all_checkout(): void
     {
-        $ip = '198.51.100.60';
+        $proxyIp = '172.24.10.10';
+        $clientIp = '198.51.100.60';
 
         for ($customer = 1; $customer <= 6; $customer++) {
             $secret = 'shared-nat-secret-'.$customer;
-            $this->checkout(
+            $response = $this->checkout(
                 $this->activeSession($secret),
                 $secret,
                 $this->payload('9555010'.$customer),
-                $ip,
+                $proxyIp,
+                $clientIp,
             )->assertCreated();
+            $this->assertSame($clientIp, $response->baseRequest?->ip());
         }
 
         $this->assertDatabaseCount('pos_orders', 6);
         $this->assertDatabaseCount('pos_customers', 6);
+    }
+
+    public function test_eleven_customers_across_two_branches_behind_one_proxy_all_checkout(): void
+    {
+        $secondStation = Device::factory()->paired('privacy-second-station-token')->create([
+            'company_id' => 100,
+            'branch_id' => 20,
+            'device_type' => 'payment_station',
+        ]);
+        $proxyIp = '172.24.10.11';
+
+        for ($customer = 1; $customer <= 11; $customer++) {
+            $station = $customer <= 6 ? $this->station : $secondStation;
+            $secret = 'eleven-customer-secret-'.$customer;
+            $clientIp = '203.0.113.'.$customer;
+            $response = $this->checkout(
+                $this->activeSession($secret, station: $station),
+                $secret,
+                $this->payload('95552'.str_pad((string) $customer, 3, '0', STR_PAD_LEFT)),
+                $proxyIp,
+                $clientIp,
+            )->assertCreated();
+            $this->assertSame($clientIp, $response->baseRequest?->ip());
+        }
+
+        $this->assertDatabaseCount('pos_orders', 11);
+        $this->assertDatabaseCount('pos_customers', 11);
+        $this->assertSame(6, Order::query()->where('branch_id', 10)->count());
+        $this->assertSame(5, Order::query()->where('branch_id', 20)->count());
     }
 
     public function test_fourth_distinct_phone_from_one_session_is_refused_by_the_http_endpoint(): void
@@ -521,9 +553,15 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         string $secret,
         array $payload,
         string $ip = '198.51.100.20',
+        ?string $forwardedFor = null,
     ): TestResponse {
+        $headers = $this->credentialHeaders($session, $secret);
+        if ($forwardedFor !== null) {
+            $headers['X-Forwarded-For'] = $forwardedFor;
+        }
+
         return $this->withServerVariables(['REMOTE_ADDR' => $ip])
-            ->withHeaders($this->credentialHeaders($session, $secret))
+            ->withHeaders($headers)
             ->postJson('/api/v1/public/qr/checkout', $payload);
     }
 
@@ -555,14 +593,17 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         ];
     }
 
-    private function activeSession(string $secret, array $attributes = []): QrSession
-    {
+    private function activeSession(
+        string $secret,
+        array $attributes = [],
+        ?Device $station = null,
+    ): QrSession {
         return $this->qrSession($attributes + [
             'status' => QrSession::STATUS_ACTIVE,
             'client_secret_hash' => QrSession::hashClientSecret($secret),
             'bound_at' => now(),
             'last_seen_at' => now(),
-        ]);
+        ], $station);
     }
 
     private function pendingSession(): QrSession
@@ -576,16 +617,17 @@ final class QrPublicCustomerPrivacyTest extends TestCase
     }
 
     /** @param  array<string, mixed>  $attributes */
-    private function qrSession(array $attributes): QrSession
+    private function qrSession(array $attributes, ?Device $station = null): QrSession
     {
         $this->sessionSequence++;
         $now = now();
+        $station ??= $this->station;
 
         return QrSession::query()->create($attributes + [
             'uuid' => (string) Str::uuid(),
-            'company_id' => $this->station->company_id,
-            'branch_id' => $this->station->branch_id,
-            'device_id' => $this->station->id,
+            'company_id' => $station->company_id,
+            'branch_id' => $station->branch_id,
+            'device_id' => $station->id,
             'token' => hash('sha256', 'privacy-token-'.$this->sessionSequence),
             'token_expires_at' => $now->copy()->addMinute(),
             'expires_at' => $now->copy()->addMinutes(30),

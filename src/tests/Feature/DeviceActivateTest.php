@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\Device;
 use App\Models\DeviceActivationToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -37,6 +38,36 @@ class DeviceActivateTest extends TestCase
 
         $device->refresh();
         $this->assertSame($res->json('data.device_token'), $device->device_token);
+        $this->assertSame('active', $device->status);
+    }
+
+    public function test_assigned_payment_station_can_rotate_immediately_after_activation(): void
+    {
+        $device = Device::factory()->create([
+            'device_type' => 'payment_station',
+            'status' => 'assigned',
+        ]);
+        DeviceActivationToken::factory()->for($device)->forPlaintext('station_code')->create();
+
+        $activation = $this->postJson('/api/v1/auth/device/activate', [
+            'code' => 'station_code',
+        ])->assertOk();
+
+        $deviceToken = $activation->json('data.device_token');
+        $this->assertIsString($deviceToken);
+        $this->assertNotSame('', $deviceToken);
+        $this->assertSame('active', $device->fresh()->status);
+
+        $rotation = $this->withToken($deviceToken)
+            ->postJson('/api/v1/device/qr/rotate')
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => ['token', 'token_expires_at', 'expires_at'],
+                'errors',
+            ])
+            ->assertJsonPath('errors', []);
+
+        $this->assertMatchesRegularExpression('/\A[a-f0-9]{64}\z/', (string) $rotation->json('data.token'));
     }
 
     public function test_rejects_an_unknown_code(): void
@@ -59,6 +90,40 @@ class DeviceActivateTest extends TestCase
         DeviceActivationToken::factory()->for($device)->forPlaintext('used_code')->used()->create();
 
         $this->postJson('/api/v1/auth/device/activate', ['code' => 'used_code'])->assertStatus(422);
+    }
+
+    #[DataProvider('nonActivatableStatuses')]
+    public function test_blocked_or_inactive_device_is_not_promoted_and_code_is_not_consumed(string $status): void
+    {
+        $code = $status.'_code';
+        $device = Device::factory()->create(['status' => $status]);
+        $activationToken = DeviceActivationToken::factory()
+            ->for($device)
+            ->forPlaintext($code)
+            ->create();
+
+        $this->postJson('/api/v1/auth/device/activate', ['code' => $code])
+            ->assertStatus(422)
+            ->assertJsonPath('errors.0.code', 'activation_failed')
+            ->assertJsonPath('errors.0.message', 'Activation failed: device is not active.');
+
+        $device->refresh();
+        $activationToken->refresh();
+
+        $this->assertSame($status, $device->status);
+        $this->assertNull($device->device_token);
+        $this->assertNull($activationToken->used_at);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonActivatableStatuses(): array
+    {
+        return [
+            'blocked' => ['blocked'],
+            'inactive' => ['inactive'],
+        ];
     }
 
     public function test_rejects_an_unassigned_device(): void

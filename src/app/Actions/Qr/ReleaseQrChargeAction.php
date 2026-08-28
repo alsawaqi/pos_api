@@ -77,6 +77,9 @@ final class ReleaseQrChargeAction
                 );
             }
 
+            // Preserve the frozen round-up intent: an API release says only
+            // that this claim stopped being live. A delayed SoftPOS approval
+            // may still arrive and must carry its donation into reconciliation.
             $order->update(['charge_outcome' => $outcome]);
 
             return [

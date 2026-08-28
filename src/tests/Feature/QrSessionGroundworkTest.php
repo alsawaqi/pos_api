@@ -64,6 +64,7 @@ class QrSessionGroundworkTest extends TestCase
             'qr_session_id',
             'charge_device_id',
             'charge_amount_baisas',
+            'charge_roundup_amount_baisas',
             'charge_claimed_at',
             'charge_deadline_at',
             'charge_outcome',

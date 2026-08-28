@@ -79,7 +79,7 @@ final class ClaimQrChargeAction
                     && (int) $order->charge_device_id === (int) $authenticatedDevice->getKey()) {
                     $this->assertStationAdmission($session, $authenticatedDevice);
 
-                    return $this->present($order, $roundupBaisas, true);
+                    return $this->present($order, true);
                 }
 
                 throw new QrChargeException(
@@ -104,12 +104,13 @@ final class ClaimQrChargeAction
             $order->update([
                 'charge_device_id' => $authenticatedDevice->getKey(),
                 'charge_amount_baisas' => Money::toBaisas($order->grand_total),
+                'charge_roundup_amount_baisas' => $roundupBaisas,
                 'charge_claimed_at' => $now,
                 'charge_deadline_at' => $now->copy()->addSeconds($claimSeconds),
                 'charge_outcome' => null,
             ]);
 
-            return $this->present($order->refresh(), $roundupBaisas, false);
+            return $this->present($order->refresh(), false);
         });
 
         Log::info('qr-charge claim', [
@@ -234,9 +235,10 @@ final class ClaimQrChargeAction
     /**
      * @return array<string, mixed>
      */
-    private function present(Order $order, int $roundupBaisas, bool $alreadyClaimed): array
+    private function present(Order $order, bool $alreadyClaimed): array
     {
         $chargeBaisas = (int) $order->charge_amount_baisas;
+        $roundupBaisas = (int) ($order->charge_roundup_amount_baisas ?? 0);
 
         return [
             'order_uuid' => (string) $order->uuid,

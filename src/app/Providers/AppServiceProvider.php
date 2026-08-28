@@ -68,6 +68,13 @@ class AppServiceProvider extends ServiceProvider
             return $response;
         };
 
+        // A station polls while a customer is waiting to tap. Twenty requests
+        // per minute covers a three-second poll; 60 leaves reconnect headroom
+        // while keeping this database-backed read bounded per station.
+        RateLimiter::for('qr-station-read', fn (Request $request) => Limit::perMinute(60)
+            ->by('qr-station-read:device:'.(string) $request->user()?->getAuthIdentifier())
+            ->response($qrRateLimited));
+
         RateLimiter::for('qr-bind', function (Request $request) use ($qrRateLimited): array {
             $submittedToken = $request->input('token');
             $token = is_string($submittedToken) ? $submittedToken : '';

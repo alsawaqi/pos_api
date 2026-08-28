@@ -120,68 +120,167 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
                 : (is_array($payload['receipt'] ?? null) ? $payload['receipt'] : null);
             $status = $orderHasPendingTender ? 'pending' : 'success';
 
-            $donation = RoundupDonation::query()
-                ->where('client_event_id', $event->client_event_id)
+            return $this->recordLockedRoundup(
+                event: $event,
+                device: $device,
+                branch: $branch,
+                order: $order,
+                payment: $payment,
+                amount: $amount,
+                receipt: $receipt,
+                status: $status,
+                occurredAt: isset($payload['occurred_at'])
+                    ? Carbon::parse((string) $payload['occurred_at'])
+                    : $event->client_timestamp,
+            );
+        });
+    }
+
+    /**
+     * Convert a server-owned QR intent into the same durable donation and
+     * payment breadcrumbs as a till donation.record event. A confirmed card
+     * produces success; accepted late evidence produces pending reconciliation.
+     *
+     * The surrounding order.pay transaction already owns the order lock. This
+     * nested transaction reasserts the order/payment boundary so this method is
+     * also safe if it is reused independently later.
+     *
+     * @return array<string, mixed>
+     */
+    public function recordPaymentRoundup(
+        SyncEvent $event,
+        Device $device,
+        int $orderId,
+        int $paymentId,
+        int $amountBaisas,
+    ): array {
+        if ($amountBaisas < 1) {
+            throw new RuntimeException('a settled round-up amount must be positive');
+        }
+
+        $amount = Money::toOmr($amountBaisas);
+
+        return DB::transaction(function () use ($event, $device, $orderId, $paymentId, $amount): array {
+            $order = Order::query()
+                ->whereKey($orderId)
+                ->where('company_id', $device->company_id)
+                ->where('branch_id', $device->branch_id)
                 ->lockForUpdate()
                 ->first();
-
-            if ($donation === null) {
-                // A stranded donation.record may be replayed after a later
-                // order.void. It must never resurrect charity money after that
-                // terminal decision. An already-existing void donation remains
-                // replayable below so its original ACK can still settle.
-                if ($order->status === Order::STATUS_VOID) {
-                    throw new RuntimeException('order already void for donation.record: '.$payload['order_uuid']);
-                }
-
-                $donation = RoundupDonation::create([
-                    'uuid' => (string) Str::uuid(),
-                    'company_id' => $device->company_id,
-                    'branch_id' => $device->branch_id,
-                    'branch_name' => $branch?->name,
-                    'device_id' => $device->getKey(),
-                    'order_id' => $order->id,
-                    'payment_id' => $payment->id,
-                    'bank_id' => $device->bank_id,
-                    'terminal_id' => $device->terminal_id,
-                    'commission_profile_id' => $device->commission_profile_id,
-                    'organization_id' => $device->organization_id,
-                    'amount' => $amount,
-                    'bank_response' => $receipt,
-                    'status' => $status,
-                    'source' => 'pos_roundup',
-                    'country_id' => $branch?->country_id,
-                    'region_id' => $branch?->region_id,
-                    'district_id' => $branch?->district_id,
-                    'city_id' => $branch?->city_id,
-                    'latitude' => $branch?->latitude,
-                    'longitude' => $branch?->longitude,
-                    'client_event_id' => $event->client_event_id,
-                    'occurred_at' => isset($payload['occurred_at'])
-                        ? Carbon::parse((string) $payload['occurred_at'])
-                        : $event->client_timestamp,
-                ]);
-
-                // Breadcrumb on the card payment: amount plus durable link.
-                $payment->forceFill([
-                    'roundup_amount' => $amount,
-                    'charity_transaction_id' => $donation->id,
-                ])->save();
-            } else {
-                $this->assertExistingDonationMatches($donation, $device, $order, $payment, $amount);
-
-                if ($order->status === Order::STATUS_VOID && $donation->status !== 'void') {
-                    throw new RuntimeException('order already void for donation.record: '.$payload['order_uuid']);
-                }
+            if ($order === null) {
+                throw new RuntimeException('QR round-up order was not found');
             }
 
-            return [
-                'roundup_donation_id' => (int) $donation->id,
-                'roundup_donation_uuid' => (string) $donation->uuid,
-                'payment_id' => (int) $payment->id,
-                'status' => $donation->status,
-            ];
+            $payment = Payment::query()
+                ->whereKey($paymentId)
+                ->where('order_id', $order->getKey())
+                ->lockForUpdate()
+                ->first();
+            if ($payment === null || $payment->method !== Payment::METHOD_CARD) {
+                throw new RuntimeException('QR round-up requires one card payment');
+            }
+
+            $isPending = $payment->status === Payment::STATUS_PENDING_RECONCILIATION
+                && (bool) $payment->pending_reconciliation;
+            $isSuccessful = $order->status === Order::STATUS_PAID
+                && $payment->status === Payment::STATUS_SUCCESS
+                && ! (bool) $payment->pending_reconciliation;
+            if (! $isPending && ! $isSuccessful) {
+                throw new RuntimeException('QR round-up payment is neither successful nor pending reconciliation');
+            }
+
+            $branch = Branch::query()->find($device->branch_id);
+
+            return $this->recordLockedRoundup(
+                event: $event,
+                device: $device,
+                branch: $branch,
+                order: $order,
+                payment: $payment,
+                amount: $amount,
+                receipt: is_array($payment->bank_response) ? $payment->bank_response : null,
+                status: $isPending ? 'pending' : 'success',
+                occurredAt: $event->client_timestamp,
+            );
         });
+    }
+
+    /**
+     * Shared till/station writer. Callers hold the order and payment locks.
+     *
+     * @param  array<string, mixed>|null  $receipt
+     * @return array<string, mixed>
+     */
+    private function recordLockedRoundup(
+        SyncEvent $event,
+        Device $device,
+        ?Branch $branch,
+        Order $order,
+        Payment $payment,
+        string $amount,
+        ?array $receipt,
+        string $status,
+        ?Carbon $occurredAt,
+    ): array {
+        $donation = RoundupDonation::query()
+            ->where('client_event_id', $event->client_event_id)
+            ->lockForUpdate()
+            ->first();
+
+        if ($donation === null) {
+            // A stranded donation.record may be replayed after a later
+            // order.void. It must never resurrect charity money after that
+            // terminal decision. An already-existing void donation remains
+            // replayable below so its original ACK can still settle.
+            if ($order->status === Order::STATUS_VOID) {
+                throw new RuntimeException('order already void for donation.record: '.$order->uuid);
+            }
+
+            $donation = RoundupDonation::create([
+                'uuid' => (string) Str::uuid(),
+                'company_id' => $device->company_id,
+                'branch_id' => $device->branch_id,
+                'branch_name' => $branch?->name,
+                'device_id' => $device->getKey(),
+                'order_id' => $order->id,
+                'payment_id' => $payment->id,
+                'bank_id' => $device->bank_id,
+                'terminal_id' => $device->terminal_id,
+                'commission_profile_id' => $device->commission_profile_id,
+                'organization_id' => $device->organization_id,
+                'amount' => $amount,
+                'bank_response' => $receipt,
+                'status' => $status,
+                'source' => 'pos_roundup',
+                'country_id' => $branch?->country_id,
+                'region_id' => $branch?->region_id,
+                'district_id' => $branch?->district_id,
+                'city_id' => $branch?->city_id,
+                'latitude' => $branch?->latitude,
+                'longitude' => $branch?->longitude,
+                'client_event_id' => $event->client_event_id,
+                'occurred_at' => $occurredAt,
+            ]);
+
+            // Breadcrumb on the card payment: amount plus durable link.
+            $payment->forceFill([
+                'roundup_amount' => $amount,
+                'charity_transaction_id' => $donation->id,
+            ])->save();
+        } else {
+            $this->assertExistingDonationMatches($donation, $device, $order, $payment, $amount);
+
+            if ($order->status === Order::STATUS_VOID && $donation->status !== 'void') {
+                throw new RuntimeException('order already void for donation.record: '.$order->uuid);
+            }
+        }
+
+        return [
+            'roundup_donation_id' => (int) $donation->id,
+            'roundup_donation_uuid' => (string) $donation->uuid,
+            'payment_id' => (int) $payment->id,
+            'status' => $donation->status,
+        ];
     }
 
     /**

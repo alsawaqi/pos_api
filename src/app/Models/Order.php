@@ -81,6 +81,7 @@ class Order extends Model
             'tax_total' => 'decimal:3',
             'grand_total' => 'decimal:3',
             'charge_amount_baisas' => 'integer',
+            'charge_roundup_amount_baisas' => 'integer',
             'latitude' => 'decimal:7',
             'longitude' => 'decimal:7',
             'opened_at' => 'datetime',

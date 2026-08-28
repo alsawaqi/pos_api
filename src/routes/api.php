@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrAwaitingOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrReleaseChargeController;
@@ -113,6 +114,9 @@ Route::prefix('v1')->group(function (): void {
 
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
         Route::post('device/qr/rotate', DeviceQrRotateController::class)->name('device.qr.rotate');
+        Route::get('device/qr/awaiting-orders', DeviceQrAwaitingOrdersController::class)
+            ->middleware('throttle:qr-station-read')
+            ->name('device.qr.awaiting-orders');
         Route::post('device/qr/claim-charge', DeviceQrClaimChargeController::class)
             ->name('device.qr.claim-charge');
         Route::post('device/qr/release-charge', DeviceQrReleaseChargeController::class)

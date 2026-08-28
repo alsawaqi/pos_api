@@ -26,28 +26,37 @@ final readonly class ActivateDeviceAction
 {
     public function handle(string $code): Device
     {
-        $token = DeviceActivationToken::query()
-            ->where('token_hash', DeviceActivationToken::hash($code))
-            ->first();
-        if ($token === null || ! $token->isUsable()) {
-            throw new RuntimeException('Activation failed: invalid or expired code.');
-        }
+        $tokenHash = DeviceActivationToken::hash($code);
 
-        $device = $token->device;
-        if ($device === null || ! $device->isAssigned()) {
-            throw new RuntimeException('Activation failed: device is not assigned to a branch.');
-        }
-        if (in_array($device->status, ['blocked', 'inactive'], true)) {
-            throw new RuntimeException('Activation failed: device is not active.');
-        }
+        return DB::transaction(function () use ($tokenHash): Device {
+            $token = DeviceActivationToken::query()
+                ->where('token_hash', $tokenHash)
+                ->lockForUpdate()
+                ->first();
+            if ($token === null || ! $token->isUsable()) {
+                throw new RuntimeException('Activation failed: invalid or expired code.');
+            }
 
-        return DB::transaction(function () use ($device, $token): Device {
+            $device = Device::query()
+                ->whereKey($token->device_id)
+                ->lockForUpdate()
+                ->first();
+            if ($device === null || ! $device->isAssigned()) {
+                throw new RuntimeException('Activation failed: device is not assigned to a branch.');
+            }
+            if (in_array($device->status, ['blocked', 'inactive'], true)) {
+                throw new RuntimeException('Activation failed: device is not active.');
+            }
+
             $token->update(['used_at' => now()]);
 
-            // The bearer credential, stored plaintext in the (UNIQUE) device_token
-            // column so the pos_device guard matches it directly.
+            // Mint the bearer credential and promote the assigned device into its
+            // operable state atomically. QR station guards deliberately require
+            // status=active, so activation is the lifecycle boundary that makes a
+            // newly enrolled station usable.
             $device->update([
                 'device_token' => 'mdev_'.Str::random(60),
+                'status' => 'active',
                 'last_seen_at' => now(),
             ]);
 

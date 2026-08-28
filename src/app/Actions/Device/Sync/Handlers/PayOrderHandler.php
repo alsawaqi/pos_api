@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\GeofenceGuard;
+use App\Actions\Device\Sync\AfterSyncEventCommitHandler;
 use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
-use App\Actions\Device\Sync\SyncEventHandler;
 use App\Exceptions\InsufficientLoyaltyBalanceException;
 use App\Models\Branch;
 use App\Models\Device;
@@ -17,6 +17,7 @@ use App\Models\LoyaltyRule;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\QrSession;
+use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
@@ -35,7 +36,7 @@ use RuntimeException;
  * device's company + branch, so a device can't pay another tenant's /
  * branch's order. Invariant: Σ(tendered) == grand_total.
  */
-class PayOrderHandler implements SyncEventHandler
+class PayOrderHandler implements AfterSyncEventCommitHandler
 {
     public function __construct(
         private readonly ConsumeInventoryAction $inventory,
@@ -43,6 +44,7 @@ class PayOrderHandler implements SyncEventHandler
         private readonly ApplyLoyaltyRedeemAction $loyaltyRedeem,
         private readonly GeofenceGuard $geofence,
         private readonly RecordSaleCommissionAction $saleCommission,
+        private readonly DonationRecordHandler $donationRecord,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -100,12 +102,16 @@ class PayOrderHandler implements SyncEventHandler
             $claimHeldByDevice = $claimIsLive
                 && $order->charge_device_id !== null
                 && (int) $order->charge_device_id === (int) $device->getKey();
+            $roundupBaisas = $device->isPaymentStation() && $claimHeldByDevice
+                ? (int) ($order->charge_roundup_amount_baisas ?? 0)
+                : 0;
 
             if ($device->isPaymentStation() && ! $claimHeldByDevice) {
                 $evidence = $this->softPosEvidence($payments);
 
                 if ($evidence !== null) {
                     $result = $this->recordLateAuthorizationOrphan(
+                        $event,
                         $order,
                         $device,
                         $evidence,
@@ -348,7 +354,18 @@ class PayOrderHandler implements SyncEventHandler
                 }
             }
 
-            return [
+            $roundupResult = null;
+            if ($roundupBaisas > 0) {
+                $roundupResult = $this->donationRecord->recordPaymentRoundup(
+                    event: $event,
+                    device: $device,
+                    orderId: (int) $order->getKey(),
+                    paymentId: (int) $paymentIds[0],
+                    amountBaisas: $roundupBaisas,
+                );
+            }
+
+            $result = [
                 'order_id' => (int) $order->id,
                 'status' => 'paid',
                 'payment_ids' => $paymentIds,
@@ -361,7 +378,27 @@ class PayOrderHandler implements SyncEventHandler
                 'loyalty_redeem_adjustment_id' => $redeemAdjustment?->id,
                 'loyalty_redeem_warning' => $redeemWarning,
             ];
+
+            if ($roundupResult !== null) {
+                $result['roundup_donation_id'] = $roundupResult['roundup_donation_id'];
+                $result['roundup_donation_uuid'] = $roundupResult['roundup_donation_uuid'];
+                $result['roundup_payment_id'] = $roundupResult['payment_id'];
+                $result['roundup_status'] = $roundupResult['status'];
+            }
+
+            return $result;
         });
+    }
+
+    /**
+     * The local payment, donation and processed ACK commit together. Reuse the
+     * donation handler's guarded snapshot forward only after that commit.
+     *
+     * @param  array<string, mixed>  $result
+     */
+    public function afterSyncEventCommit(SyncEvent $event, Device $device, array $result): void
+    {
+        $this->donationRecord->afterSyncEventCommit($event, $device, $result);
     }
 
     /**
@@ -425,6 +462,7 @@ class PayOrderHandler implements SyncEventHandler
      * @return array<string, mixed>
      */
     private function recordLateAuthorizationOrphan(
+        SyncEvent $event,
         Order $order,
         Device $device,
         array $evidence,
@@ -443,20 +481,27 @@ class PayOrderHandler implements SyncEventHandler
                 ->where('device_id', $device->getKey())
                 ->where('softpos_reference', $reference)
                 ->orderBy('id')
+                ->lockForUpdate()
                 ->first()
             : null;
 
         if ($existingEvidence !== null) {
-            return [
-                'order_id' => (int) $order->getKey(),
-                'status' => (string) $order->status,
-                'orphan_tender' => data_get(
-                    $existingEvidence->bank_response,
-                    'qr_late_auth_orphan',
-                ) === true,
-                'orphan_payment_uuid' => (string) $existingEvidence->uuid,
-                'duplicate_softpos_evidence' => true,
-            ];
+            return $this->withLateRoundup(
+                result: [
+                    'order_id' => (int) $order->getKey(),
+                    'status' => (string) $order->status,
+                    'orphan_tender' => data_get(
+                        $existingEvidence->bank_response,
+                        'qr_late_auth_orphan',
+                    ) === true,
+                    'orphan_payment_uuid' => (string) $existingEvidence->uuid,
+                    'duplicate_softpos_evidence' => true,
+                ],
+                event: $event,
+                device: $device,
+                order: $order,
+                payment: $existingEvidence,
+            );
         }
 
         $originalSettlingDeviceId = null;
@@ -499,13 +544,72 @@ class PayOrderHandler implements SyncEventHandler
             'captured_at' => $capturedAt,
         ]);
 
-        return [
-            'order_id' => (int) $order->getKey(),
-            'status' => (string) $order->status,
-            'orphan_tender' => true,
-            'orphan_payment_uuid' => (string) $payment->uuid,
-            'duplicate_softpos_evidence' => false,
-        ];
+        return $this->withLateRoundup(
+            result: [
+                'order_id' => (int) $order->getKey(),
+                'status' => (string) $order->status,
+                'orphan_tender' => true,
+                'orphan_payment_uuid' => (string) $payment->uuid,
+                'duplicate_softpos_evidence' => false,
+            ],
+            event: $event,
+            device: $device,
+            order: $order,
+            payment: $payment,
+        );
+    }
+
+    /**
+     * Attach the frozen intent only to an accepted late SoftPOS charge. The
+     * donation remains pending with its orphan payment; admin reconciliation
+     * is the existing authority that later settles or rejects both.
+     *
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    private function withLateRoundup(
+        array $result,
+        SyncEvent $event,
+        Device $device,
+        Order $order,
+        Payment $payment,
+    ): array {
+        $roundupBaisas = (int) ($order->charge_roundup_amount_baisas ?? 0);
+        $isPendingOrphan = data_get($payment->bank_response, 'qr_late_auth_orphan') === true
+            && $payment->status === Payment::STATUS_PENDING_RECONCILIATION
+            && (bool) $payment->pending_reconciliation;
+        if ($roundupBaisas < 1 || ! $isPendingOrphan) {
+            return $result;
+        }
+
+        $existingDonation = RoundupDonation::query()
+            ->where('payment_id', $payment->getKey())
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->first();
+        if ($existingDonation !== null) {
+            $roundupResult = [
+                'roundup_donation_id' => (int) $existingDonation->getKey(),
+                'roundup_donation_uuid' => (string) $existingDonation->uuid,
+                'payment_id' => (int) $payment->getKey(),
+                'status' => (string) $existingDonation->status,
+            ];
+        } else {
+            $roundupResult = $this->donationRecord->recordPaymentRoundup(
+                event: $event,
+                device: $device,
+                orderId: (int) $order->getKey(),
+                paymentId: (int) $payment->getKey(),
+                amountBaisas: $roundupBaisas,
+            );
+        }
+
+        $result['roundup_donation_id'] = $roundupResult['roundup_donation_id'];
+        $result['roundup_donation_uuid'] = $roundupResult['roundup_donation_uuid'];
+        $result['roundup_payment_id'] = $roundupResult['payment_id'];
+        $result['roundup_status'] = $roundupResult['status'];
+
+        return $result;
     }
 
     /**

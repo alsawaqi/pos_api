@@ -26,6 +26,7 @@ class Phase1InertnessTest extends TestCase
                 'app/Models/Device.php',
                 'app/Actions/Qr/ClaimQrChargeAction.php',
                 'app/Actions/Qr/FallbackQrOrderToCounterAction.php',
+                'app/Http/Controllers/Api/V1/Device/DeviceQrAwaitingOrdersController.php',
             ],
         ];
         $violations = [];

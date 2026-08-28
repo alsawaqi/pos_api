@@ -4,22 +4,22 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Models\Order;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Audit-release only stale in-flight claims.
+ * Mark stale in-flight claims as lapsed without declaring that no charge occurred.
  *
  * The charge_outcome IS NULL predicate is safety-critical: uncertain and
- * approved are deadline-independent live claims and must never be returned to
- * payable by time alone.
+ * approved claims, and already-lapsed claims, must never be changed by time.
  */
 final class SweepStaleQrCharges extends Command
 {
     protected $signature = 'qr:sweep-stale-charges
         {--grace-seconds= : Override the configured post-deadline safety margin}';
 
-    protected $description = 'Stamp stale in-flight QR charge claims as cancelled';
+    protected $description = 'Stamp stale in-flight QR charge claims as lapsed';
 
     public function handle(): int
     {
@@ -36,17 +36,17 @@ final class SweepStaleQrCharges extends Command
         }
 
         $now = now();
-        $cancelled = DB::table('pos_orders')
+        $lapsed = DB::table('pos_orders')
             ->where('status', 'awaiting_payment')
             ->whereNotNull('charge_claimed_at')
             ->whereNull('charge_outcome')
             ->where('charge_deadline_at', '<=', $now->copy()->subSeconds($graceSeconds))
             ->update([
-                'charge_outcome' => 'cancelled',
+                'charge_outcome' => Order::CHARGE_OUTCOME_LAPSED,
                 'updated_at' => $now,
             ]);
 
-        $this->info("cancelled={$cancelled} grace_seconds={$graceSeconds}");
+        $this->info("lapsed={$lapsed} grace_seconds={$graceSeconds}");
 
         return self::SUCCESS;
     }

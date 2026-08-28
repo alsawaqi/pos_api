@@ -98,7 +98,7 @@ class VoidOrderHandler implements SyncEventHandler
         }
         $keepInventoryConsumed = $voidReason !== null && $voidReason->affects_inventory;
 
-        return DB::transaction(function () use ($order, $orderUuid, $voidedAt, $reason, $voidReason, $keepInventoryConsumed): array {
+        return DB::transaction(function () use ($order, $orderUuid, $device, $voidedAt, $reason, $voidReason, $keepInventoryConsumed): array {
             // Re-read + lock the order INSIDE the txn before reversing stock. The
             // "already void" guard above is unlocked and is the SOLE idempotency
             // mechanism, so two concurrent order.void events with DIFFERENT
@@ -108,10 +108,16 @@ class VoidOrderHandler implements SyncEventHandler
             if ($order === null || $order->status === Order::STATUS_VOID) {
                 throw new RuntimeException('order already void: '.$orderUuid);
             }
+
+            $claimAt = now();
+            if ($this->isAmbiguousCounterRecovery($order, $claimAt)
+                && ! $this->isAttendedDevice($device)) {
+                throw new RuntimeException('device type cannot resolve an ambiguous QR charge');
+            }
             if ($order->status === Order::STATUS_AWAITING_PAYMENT
                 && ! Order::query()
                     ->whereKey($order->getKey())
-                    ->withoutLiveClaim(now())
+                    ->withoutLiveClaim($claimAt)
                     ->exists()) {
                 throw new RuntimeException('cannot void an order with a live charge claim: '.$orderUuid);
             }
@@ -150,6 +156,36 @@ class VoidOrderHandler implements SyncEventHandler
                 'commission_removed' => $commissionRemoved,
             ];
         });
+    }
+
+    private function isAmbiguousCounterRecovery(Order $order, Carbon $at): bool
+    {
+        if ($order->qr_session_id === null
+            || ! in_array($order->status, [
+                Order::STATUS_HELD,
+                Order::STATUS_OPEN,
+                Order::STATUS_KITCHEN,
+            ], true)) {
+            return false;
+        }
+
+        if (in_array($order->charge_outcome, [
+            Order::CHARGE_OUTCOME_LAPSED,
+            Order::CHARGE_OUTCOME_UNCERTAIN,
+        ], true)) {
+            return true;
+        }
+
+        return $order->charge_claimed_at !== null
+            && $order->charge_outcome === null
+            && $order->charge_deadline_at !== null
+            && $order->charge_deadline_at->lessThanOrEqualTo($at);
+    }
+
+    private function isAttendedDevice(Device $device): bool
+    {
+        return ! $device->isPaymentStation()
+            && $device->device_type !== 'customer_tablet';
     }
 
     /**

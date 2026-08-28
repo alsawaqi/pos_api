@@ -35,7 +35,15 @@ class OrderLiveClaimScopeTest extends TestCase
     {
         $at = CarbonImmutable::parse('2026-08-26 12:00:00');
         $cases = [
-            'claimed_at null' => [
+            'never claimed' => [
+                'attributes' => [
+                    'charge_claimed_at' => null,
+                    'charge_deadline_at' => $at->addMinute(),
+                    'charge_outcome' => null,
+                ],
+                'live' => false,
+            ],
+            'terminal outcome without claimed_at' => [
                 'attributes' => [
                     'charge_claimed_at' => null,
                     'charge_deadline_at' => $at->addMinute(),
@@ -72,6 +80,14 @@ class OrderLiveClaimScopeTest extends TestCase
                     'charge_claimed_at' => $at->subMinute(),
                     'charge_deadline_at' => $at->addMinute(),
                     'charge_outcome' => Order::CHARGE_OUTCOME_CANCELLED,
+                ],
+                'live' => false,
+            ],
+            'lapsed' => [
+                'attributes' => [
+                    'charge_claimed_at' => $at->subMinutes(2),
+                    'charge_deadline_at' => $at->subMinute(),
+                    'charge_outcome' => Order::CHARGE_OUTCOME_LAPSED,
                 ],
                 'live' => false,
             ],
@@ -104,17 +120,25 @@ class OrderLiveClaimScopeTest extends TestCase
         }
     }
 
-    public function test_without_live_claim_matches_the_inverse_truth_table_but_excludes_held_orders(): void
+    public function test_without_live_claim_matches_the_safe_new_charge_truth_table(): void
     {
         $at = CarbonImmutable::parse('2026-08-26 12:00:00');
         $cases = [
-            'claimed_at null' => [
+            'never claimed' => [
+                'attributes' => [
+                    'charge_claimed_at' => null,
+                    'charge_deadline_at' => $at->addMinute(),
+                    'charge_outcome' => null,
+                ],
+                'without_live_claim' => true,
+            ],
+            'terminal outcome without claimed_at' => [
                 'attributes' => [
                     'charge_claimed_at' => null,
                     'charge_deadline_at' => $at->addMinute(),
                     'charge_outcome' => Order::CHARGE_OUTCOME_APPROVED,
                 ],
-                'without_live_claim' => true,
+                'without_live_claim' => false,
             ],
             'null outcome and future deadline' => [
                 'attributes' => [
@@ -130,7 +154,7 @@ class OrderLiveClaimScopeTest extends TestCase
                     'charge_deadline_at' => $at->subMinute(),
                     'charge_outcome' => null,
                 ],
-                'without_live_claim' => true,
+                'without_live_claim' => false,
             ],
             'declined' => [
                 'attributes' => [
@@ -147,6 +171,14 @@ class OrderLiveClaimScopeTest extends TestCase
                     'charge_outcome' => Order::CHARGE_OUTCOME_CANCELLED,
                 ],
                 'without_live_claim' => true,
+            ],
+            'lapsed' => [
+                'attributes' => [
+                    'charge_claimed_at' => $at->subMinutes(2),
+                    'charge_deadline_at' => $at->subMinute(),
+                    'charge_outcome' => Order::CHARGE_OUTCOME_LAPSED,
+                ],
+                'without_live_claim' => false,
             ],
             'uncertain regardless of deadline' => [
                 'attributes' => [

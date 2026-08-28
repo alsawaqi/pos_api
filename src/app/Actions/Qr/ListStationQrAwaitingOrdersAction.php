@@ -69,14 +69,6 @@ final class ListStationQrAwaitingOrdersAction
         return $orders
             ->where('company_id', $companyId)
             ->where('branch_id', $branchId)
-            ->where('status', Order::STATUS_AWAITING_PAYMENT)
-            ->where(function (Builder $claim): void {
-                $claim
-                    ->whereNull('charge_outcome')
-                    ->orWhereIn('charge_outcome', [
-                        Order::CHARGE_OUTCOME_DECLINED,
-                        Order::CHARGE_OUTCOME_CANCELLED,
-                    ]);
-            });
+            ->withoutLiveClaim();
     }
 }

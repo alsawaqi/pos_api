@@ -362,7 +362,7 @@ final class QrRoundupSettlementTest extends TestCase
 
         $this->artisan('qr:sweep-stale-charges')->assertSuccessful();
         $expired = $order->fresh();
-        $this->assertSame(Order::CHARGE_OUTCOME_CANCELLED, $expired->charge_outcome);
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $expired->charge_outcome);
         $this->assertSame(250, $expired->charge_roundup_amount_baisas);
         $this->assertNoRoundupMoney($order);
     }
@@ -373,15 +373,25 @@ final class QrRoundupSettlementTest extends TestCase
         $station = $this->device('roundup-fallback');
         $order = $this->order($station);
         $this->claim($station, $order, 250)->assertOk();
+        $claimed = $order->fresh();
         $this->travel(181)->seconds();
 
         $this->postAs($station, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'device_not_attended_till');
+
+        $till = $this->device('roundup-fallback-till', 'fixed_pos');
+        $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
             ->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD);
 
         $fallback = $order->fresh();
-        $this->assertNull($fallback->charge_amount_baisas);
-        $this->assertSame(250, $fallback->charge_roundup_amount_baisas);
+        $this->assertSame((int) $claimed->charge_device_id, (int) $fallback->charge_device_id);
+        $this->assertSame($claimed->charge_amount_baisas, $fallback->charge_amount_baisas);
+        $this->assertSame($claimed->charge_roundup_amount_baisas, $fallback->charge_roundup_amount_baisas);
+        $this->assertTrue($claimed->charge_claimed_at->equalTo($fallback->charge_claimed_at));
+        $this->assertTrue($claimed->charge_deadline_at->equalTo($fallback->charge_deadline_at));
+        $this->assertSame($claimed->charge_outcome, $fallback->charge_outcome);
         $this->assertNoRoundupMoney($order);
     }
 

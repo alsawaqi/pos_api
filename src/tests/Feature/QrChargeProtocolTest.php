@@ -1465,7 +1465,7 @@ final class QrChargeProtocolTest extends TestCase
             ->assertJsonPath('data.receipt_number', 'QR-0001');
     }
 
-    public function test_sweeper_cancels_past_deadline_plus_grace_and_order_is_reclaimable(): void
+    public function test_sweeper_lapses_past_deadline_plus_grace_and_order_is_not_reclaimable(): void
     {
         $now = Carbon::parse('2026-08-27 14:00:00');
         $this->travelTo($now);
@@ -1476,16 +1476,18 @@ final class QrChargeProtocolTest extends TestCase
         $this->travelTo($deadline->copy()->addSeconds(30));
 
         $this->artisan('qr:sweep-stale-charges')
-            ->expectsOutput('cancelled=1 grace_seconds=30')
+            ->expectsOutput('lapsed=1 grace_seconds=30')
             ->assertSuccessful();
 
-        $this->assertSame(Order::CHARGE_OUTCOME_CANCELLED, $order->fresh()->charge_outcome);
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $order->fresh()->charge_outcome);
+        $beforeRetry = $order->fresh()->getAttributes();
         $this->claim($station, $order)
-            ->assertOk()
-            ->assertJsonPath('data.already_claimed_by_this_device', false);
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'charge_already_claimed');
+        $this->assertSame($beforeRetry, $order->fresh()->getAttributes());
     }
 
-    public function test_sweeper_skips_permanently_live_recent_grace_and_non_awaiting_rows(): void
+    public function test_sweeper_skips_terminal_outcomes_recent_grace_and_non_awaiting_rows(): void
     {
         $now = Carbon::parse('2026-08-27 15:00:00');
         $this->travelTo($now);
@@ -1503,6 +1505,13 @@ final class QrChargeProtocolTest extends TestCase
             'charge_claimed_at' => $now->copy()->subDay(),
             'charge_deadline_at' => $now->copy()->subDay(),
             'charge_outcome' => Order::CHARGE_OUTCOME_APPROVED,
+        ]);
+        $lapsed = $this->order($this->qrSession($station), [
+            'charge_device_id' => $station->id,
+            'charge_amount_baisas' => 4750,
+            'charge_claimed_at' => $now->copy()->subDay(),
+            'charge_deadline_at' => $now->copy()->subDay(),
+            'charge_outcome' => Order::CHARGE_OUTCOME_LAPSED,
         ]);
         $insideDeadline = $this->order($this->qrSession($station), [
             'charge_device_id' => $station->id,
@@ -1526,21 +1535,22 @@ final class QrChargeProtocolTest extends TestCase
             'charge_deadline_at' => $now->copy()->subDay(),
             'charge_outcome' => null,
         ]);
-        $untouched = collect([$uncertain, $approved, $insideDeadline, $insideGrace, $held])
+        $untouched = collect([$uncertain, $approved, $lapsed, $insideDeadline, $insideGrace, $held])
             ->mapWithKeys(static fn (Order $order): array => [
                 (int) $order->getKey() => $order->fresh()->getAttributes(),
             ]);
 
         $this->artisan('qr:sweep-stale-charges')
-            ->expectsOutput('cancelled=0 grace_seconds=30')
+            ->expectsOutput('lapsed=0 grace_seconds=30')
             ->assertSuccessful();
 
         $this->assertSame(Order::CHARGE_OUTCOME_UNCERTAIN, $uncertain->fresh()->charge_outcome);
         $this->assertSame(Order::CHARGE_OUTCOME_APPROVED, $approved->fresh()->charge_outcome);
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $lapsed->fresh()->charge_outcome);
         $this->assertNull($insideDeadline->fresh()->charge_outcome);
         $this->assertNull($insideGrace->fresh()->charge_outcome);
         $this->assertNull($held->fresh()->charge_outcome);
-        foreach ([$uncertain, $approved, $insideDeadline, $insideGrace, $held] as $order) {
+        foreach ([$uncertain, $approved, $lapsed, $insideDeadline, $insideGrace, $held] as $order) {
             $this->assertSame(
                 $untouched->get((int) $order->getKey()),
                 $order->fresh()->getAttributes(),

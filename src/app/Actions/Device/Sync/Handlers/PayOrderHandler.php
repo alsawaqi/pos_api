@@ -128,6 +128,11 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 }
             }
 
+            $isAmbiguousCounterRecovery = $this->isAmbiguousCounterRecovery($order, $claimAt);
+            if ($isAmbiguousCounterRecovery && ! $this->isAttendedDevice($device)) {
+                throw new RuntimeException('device type cannot resolve an ambiguous QR charge');
+            }
+
             if (in_array($order->status, [Order::STATUS_PAID, Order::STATUS_VOID], true)) {
                 if ($order->status === Order::STATUS_PAID) {
                     throw new RuntimeException('order already paid: '.$orderUuid);
@@ -138,7 +143,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             if ($order->status === Order::STATUS_PENDING_VERIFICATION) {
                 throw new RuntimeException('cannot pay a pending-verification delivery order: '.$orderUuid);
             }
-            if ($order->charge_outcome === Order::CHARGE_OUTCOME_UNCERTAIN) {
+            if ($order->charge_outcome === Order::CHARGE_OUTCOME_UNCERTAIN
+                && ! $isAmbiguousCounterRecovery) {
                 throw new RuntimeException('cannot settle an uncertain charge outcome: '.$orderUuid);
             }
             if ($claimIsLive && ! $claimHeldByDevice) {
@@ -399,6 +405,43 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
     public function afterSyncEventCommit(SyncEvent $event, Device $device, array $result): void
     {
         $this->donationRecord->afterSyncEventCommit($event, $device, $result);
+    }
+
+    /**
+     * Fallback-to-counter is the only transition that moves an ambiguous QR
+     * claim out of awaiting-payment. It retains the claim facts while moving
+     * the order through held (and optionally open after till finalisation), so
+     * those states are the durable proof that normal attended settlement is
+     * allowed. An awaiting order remains blocked.
+     */
+    private function isAmbiguousCounterRecovery(Order $order, Carbon $at): bool
+    {
+        if ($order->qr_session_id === null
+            || ! in_array($order->status, [
+                Order::STATUS_HELD,
+                Order::STATUS_OPEN,
+                Order::STATUS_KITCHEN,
+            ], true)) {
+            return false;
+        }
+
+        if (in_array($order->charge_outcome, [
+            Order::CHARGE_OUTCOME_LAPSED,
+            Order::CHARGE_OUTCOME_UNCERTAIN,
+        ], true)) {
+            return true;
+        }
+
+        return $order->charge_claimed_at !== null
+            && $order->charge_outcome === null
+            && $order->charge_deadline_at !== null
+            && $order->charge_deadline_at->lessThanOrEqualTo($at);
+    }
+
+    private function isAttendedDevice(Device $device): bool
+    {
+        return ! $device->isPaymentStation()
+            && $device->device_type !== 'customer_tablet';
     }
 
     /**

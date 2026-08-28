@@ -60,6 +60,8 @@ class Order extends Model
 
     public const CHARGE_OUTCOME_CANCELLED = 'cancelled';
 
+    public const CHARGE_OUTCOME_LAPSED = 'lapsed';
+
     public const CHARGE_OUTCOME_UNCERTAIN = 'uncertain';
 
     /** @var list<string> */
@@ -67,6 +69,7 @@ class Order extends Model
         self::CHARGE_OUTCOME_APPROVED,
         self::CHARGE_OUTCOME_DECLINED,
         self::CHARGE_OUTCOME_CANCELLED,
+        self::CHARGE_OUTCOME_LAPSED,
         self::CHARGE_OUTCOME_UNCERTAIN,
     ];
 
@@ -126,30 +129,28 @@ class Order extends Model
     }
 
     /**
-     * The exact fail-closed inverse of the live-claim branches, restricted
-     * positively to awaiting_payment orders. Callers must not negate
-     * {@see scopeWithLiveClaim()} themselves: both scopes assert
-     * awaiting_payment, so they are deliberately not complements over all
-     * orders. A paid order matches neither scope.
+     * The fail-closed predicate for starting a new automatic charge.
+     *
+     * Only a never-claimed order with no outcome, or a claim the station
+     * affirmatively reported as declined/cancelled, is safe to offer again.
+     * An expired unresolved claim and lapsed/uncertain/approved outcomes match
+     * neither scope: they require an attended recovery path instead.
      */
     public function scopeWithoutLiveClaim(Builder $query, ?CarbonInterface $at = null): Builder
     {
-        $at ??= now();
-
         return $query
             ->where('status', self::STATUS_AWAITING_PAYMENT)
-            ->where(function (Builder $claim) use ($at): void {
+            ->where(function (Builder $claim): void {
                 $claim
-                    ->whereNull('charge_claimed_at')
+                    ->where(function (Builder $neverClaimed): void {
+                        $neverClaimed
+                            ->whereNull('charge_claimed_at')
+                            ->whereNull('charge_outcome');
+                    })
                     ->orWhereIn('charge_outcome', [
                         self::CHARGE_OUTCOME_DECLINED,
                         self::CHARGE_OUTCOME_CANCELLED,
-                    ])
-                    ->orWhere(function (Builder $expired) use ($at): void {
-                        $expired
-                            ->whereNull('charge_outcome')
-                            ->where('charge_deadline_at', '<=', $at);
-                    });
+                    ]);
             });
     }
 

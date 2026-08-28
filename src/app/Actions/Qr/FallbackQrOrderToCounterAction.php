@@ -16,6 +16,7 @@ final class FallbackQrOrderToCounterAction
 {
     public function __construct(
         private readonly AllocateOrderNumberAction $allocateOrderNumber,
+        private readonly QrChargeRecoveryGuard $recoveryGuard,
     ) {}
 
     /**
@@ -37,10 +38,10 @@ final class FallbackQrOrderToCounterAction
             }
 
             if ($order->status === Order::STATUS_HELD) {
-                $isAttendedRecovery = $this->isAmbiguousCharge($order, $now);
+                $isAttendedRecovery = $this->recoveryGuard->isAmbiguousCharge($order, $now);
                 if ($isAttendedRecovery) {
                     $this->assertAttendedDevice($device);
-                    $this->lockOrderedSessionForAttendedRecovery($order, $device);
+                    $this->lockSessionForAttendedRecovery($order, $device);
                 } else {
                     $this->lockBoundOrderedSession($order, $device);
                 }
@@ -63,10 +64,10 @@ final class FallbackQrOrderToCounterAction
                 );
             }
 
-            $isAttendedRecovery = $this->isAmbiguousCharge($order, $now);
+            $isAttendedRecovery = $this->recoveryGuard->isAmbiguousCharge($order, $now);
             if ($isAttendedRecovery) {
                 $this->assertAttendedDevice($device);
-                $session = $this->lockOrderedSessionForAttendedRecovery($order, $device);
+                $this->lockSessionForAttendedRecovery($order, $device);
             } elseif (! $this->isWithoutLiveClaim($order, $now)) {
                 throw new QrChargeException(
                     'charge_already_claimed',
@@ -74,15 +75,7 @@ final class FallbackQrOrderToCounterAction
                     'A live charge claim prevents fallback to the counter.',
                 );
             } else {
-                $session = $this->lockBoundOrderedSession($order, $device);
-            }
-
-            if ($session->status !== QrSession::STATUS_ORDERED) {
-                throw new QrChargeException(
-                    'session_not_ordered',
-                    409,
-                    'The QR session is not in the ordered state.',
-                );
+                $this->lockBoundOrderedSession($order, $device);
             }
 
             $allocation = $this->allocateOrderNumber->handle($device);
@@ -128,38 +121,18 @@ final class FallbackQrOrderToCounterAction
             ->exists();
     }
 
-    /**
-     * A started claim whose result cannot safely be inferred by time alone.
-     * Expired NULL covers the deadline-to-sweeper grace window; lapsed is the
-     * server's durable post-sweep representation of the same uncertainty.
-     */
-    private function isAmbiguousCharge(Order $order, CarbonInterface $at): bool
-    {
-        if (in_array($order->charge_outcome, [
-            Order::CHARGE_OUTCOME_LAPSED,
-            Order::CHARGE_OUTCOME_UNCERTAIN,
-        ], true)) {
-            return true;
-        }
-
-        return $order->charge_claimed_at !== null
-            && $order->charge_outcome === null
-            && $order->charge_deadline_at !== null
-            && $order->charge_deadline_at->lessThanOrEqualTo($at);
-    }
-
     private function assertAttendedDevice(Device $device): void
     {
-        if ($device->isPaymentStation() || $device->device_type === 'customer_tablet') {
+        if (! $this->recoveryGuard->isAttendedDevice($device)) {
             throw new QrChargeException(
-                'device_not_attended_till',
+                'device_not_attended',
                 409,
-                'An attended till must recover an ambiguous charge.',
+                'Only an attended fixed POS or handheld device may recover an ambiguous charge.',
             );
         }
     }
 
-    private function lockOrderedSessionForAttendedRecovery(Order $order, Device $device): QrSession
+    private function lockSessionForAttendedRecovery(Order $order, Device $device): QrSession
     {
         if ($order->qr_session_id === null) {
             throw new QrChargeException(
@@ -171,24 +144,20 @@ final class FallbackQrOrderToCounterAction
 
         $session = QrSession::query()
             ->whereKey((int) $order->qr_session_id)
+            ->where('company_id', (int) $order->company_id)
+            ->where('branch_id', (int) $order->branch_id)
             ->lockForUpdate()
             ->first();
 
         if ($session === null
+            || (int) $order->company_id !== (int) $device->company_id
+            || (int) $order->branch_id !== (int) $device->branch_id
             || (int) $session->company_id !== (int) $device->company_id
             || (int) $session->branch_id !== (int) $device->branch_id) {
             throw new QrChargeException(
                 'order_not_bound_to_device_session',
                 409,
                 'The order is not bound to a station session in this till branch.',
-            );
-        }
-
-        if ($session->status !== QrSession::STATUS_ORDERED) {
-            throw new QrChargeException(
-                'session_not_ordered',
-                409,
-                'The QR session is not in the ordered state.',
             );
         }
 
@@ -222,6 +191,14 @@ final class FallbackQrOrderToCounterAction
                 'order_not_bound_to_device_session',
                 409,
                 'The order is not bound to this station session.',
+            );
+        }
+
+        if ($session->status !== QrSession::STATUS_ORDERED) {
+            throw new QrChargeException(
+                'session_not_ordered',
+                409,
+                'The QR session is not in the ordered state.',
             );
         }
 

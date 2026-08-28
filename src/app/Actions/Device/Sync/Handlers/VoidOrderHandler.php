@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync\Handlers;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Pos\Loyalty\WriteLoyaltyTransactionAction;
+use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyTransaction;
@@ -55,6 +56,7 @@ class VoidOrderHandler implements SyncEventHandler
     public function __construct(
         private readonly ConsumeInventoryAction $inventory,
         private readonly WriteLoyaltyTransactionAction $loyalty,
+        private readonly QrChargeRecoveryGuard $qrChargeRecovery,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -110,16 +112,32 @@ class VoidOrderHandler implements SyncEventHandler
             }
 
             $claimAt = now();
-            if ($this->isAmbiguousCounterRecovery($order, $claimAt)
-                && ! $this->isAttendedDevice($device)) {
-                throw new RuntimeException('device type cannot resolve an ambiguous QR charge');
+            if ($this->qrChargeRecovery->isAmbiguousCounterRecovery($order, $claimAt)
+                && ! $this->qrChargeRecovery->isAttendedDevice($device)) {
+                throw new RuntimeException(
+                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
+                );
             }
-            if ($order->status === Order::STATUS_AWAITING_PAYMENT
-                && ! Order::query()
+            if ($order->status === Order::STATUS_AWAITING_PAYMENT) {
+                if ($this->qrChargeRecovery->isAmbiguousCharge($order, $claimAt)) {
+                    throw new RuntimeException(
+                        'ambiguous QR charge requires fallback-to-counter before void: '.$orderUuid,
+                    );
+                }
+                if (Order::query()
+                    ->whereKey($order->getKey())
+                    ->withLiveClaim($claimAt)
+                    ->exists()) {
+                    throw new RuntimeException('cannot void an order with a live charge claim: '.$orderUuid);
+                }
+                if (! Order::query()
                     ->whereKey($order->getKey())
                     ->withoutLiveClaim($claimAt)
                     ->exists()) {
-                throw new RuntimeException('cannot void an order with a live charge claim: '.$orderUuid);
+                    throw new RuntimeException(
+                        'cannot void an order with unresolved charge provenance: '.$orderUuid,
+                    );
+                }
             }
             // P-G7 — pending-verification delivery orders consumed inventory at
             // intake, so a void must unwind them like a paid sale. Their OTHER
@@ -156,36 +174,6 @@ class VoidOrderHandler implements SyncEventHandler
                 'commission_removed' => $commissionRemoved,
             ];
         });
-    }
-
-    private function isAmbiguousCounterRecovery(Order $order, Carbon $at): bool
-    {
-        if ($order->qr_session_id === null
-            || ! in_array($order->status, [
-                Order::STATUS_HELD,
-                Order::STATUS_OPEN,
-                Order::STATUS_KITCHEN,
-            ], true)) {
-            return false;
-        }
-
-        if (in_array($order->charge_outcome, [
-            Order::CHARGE_OUTCOME_LAPSED,
-            Order::CHARGE_OUTCOME_UNCERTAIN,
-        ], true)) {
-            return true;
-        }
-
-        return $order->charge_claimed_at !== null
-            && $order->charge_outcome === null
-            && $order->charge_deadline_at !== null
-            && $order->charge_deadline_at->lessThanOrEqualTo($at);
-    }
-
-    private function isAttendedDevice(Device $device): bool
-    {
-        return ! $device->isPaymentStation()
-            && $device->device_type !== 'customer_tablet';
     }
 
     /**

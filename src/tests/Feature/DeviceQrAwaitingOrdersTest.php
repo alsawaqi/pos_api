@@ -113,7 +113,6 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
         return $this->withToken((string) $device->device_token)
             ->postJson('/api/v1/device/qr/claim-charge', [
                 'order_uuid' => $orderUuid,
-                'roundup_amount_baisas' => 0,
             ]);
     }
 
@@ -172,7 +171,9 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
         $this->claimAs($station, $returnedOrderUuid)
             ->assertOk()
             ->assertJsonPath('data.order_uuid', $returnedOrderUuid)
-            ->assertJsonPath('data.charge_amount_baisas', 4750);
+            ->assertJsonPath('data.charge_amount_baisas', 4750)
+            ->assertJsonPath('data.roundup_amount_baisas', 0)
+            ->assertJsonPath('data.softpos_amount_baisas', 4750);
     }
 
     public function test_station_cannot_discover_or_claim_another_device_or_branch_order(): void

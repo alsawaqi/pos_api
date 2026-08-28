@@ -18,11 +18,8 @@ use RuntimeException;
 /**
  * Atomically admits and freezes a payment-station charge.
  *
- * The two-numbers rule is deliberate:
- *
- * charge_amount_baisas  = the frozen merchant sale and the order.pay tender.
- * roundup_amount_baisas = the optional donation slice recorded later.
- * softpos_amount_baisas = sale plus round-up, handed only to the SoftPOS APK.
+ * The frozen merchant sale is both the order.pay tender and the exact amount
+ * the SoftPOS APK must charge. QR round-up is deliberately disabled.
  */
 final class ClaimQrChargeAction
 {
@@ -33,7 +30,6 @@ final class ClaimQrChargeAction
     /**
      * @param  array{
      *     order_uuid: string,
-     *     roundup_amount_baisas?: int|float|string,
      *     gps?: array{lat: int|float|string, lng: int|float|string}|null
      * }  $payload
      * @return array<string, mixed>
@@ -41,7 +37,6 @@ final class ClaimQrChargeAction
     public function handle(Device $authenticatedDevice, array $payload): array
     {
         $orderUuid = trim($payload['order_uuid']);
-        $roundupBaisas = (int) ($payload['roundup_amount_baisas'] ?? 0);
         $gps = is_array($payload['gps'] ?? null)
             ? ['lat' => (float) $payload['gps']['lat'], 'lng' => (float) $payload['gps']['lng']]
             : null;
@@ -49,7 +44,6 @@ final class ClaimQrChargeAction
         $result = DB::transaction(function () use (
             $authenticatedDevice,
             $orderUuid,
-            $roundupBaisas,
             $gps,
         ): array {
             $now = now();
@@ -104,7 +98,7 @@ final class ClaimQrChargeAction
             $order->update([
                 'charge_device_id' => $authenticatedDevice->getKey(),
                 'charge_amount_baisas' => Money::toBaisas($order->grand_total),
-                'charge_roundup_amount_baisas' => $roundupBaisas,
+                'charge_roundup_amount_baisas' => 0,
                 'charge_claimed_at' => $now,
                 'charge_deadline_at' => $now->copy()->addSeconds($claimSeconds),
                 'charge_outcome' => null,
@@ -238,13 +232,12 @@ final class ClaimQrChargeAction
     private function present(Order $order, bool $alreadyClaimed): array
     {
         $chargeBaisas = (int) $order->charge_amount_baisas;
-        $roundupBaisas = (int) ($order->charge_roundup_amount_baisas ?? 0);
 
         return [
             'order_uuid' => (string) $order->uuid,
             'charge_amount_baisas' => $chargeBaisas,
-            'roundup_amount_baisas' => $roundupBaisas,
-            'softpos_amount_baisas' => $chargeBaisas + $roundupBaisas,
+            'roundup_amount_baisas' => 0,
+            'softpos_amount_baisas' => $chargeBaisas,
             'charge_claimed_at' => $order->charge_claimed_at?->toIso8601String(),
             'charge_deadline_at' => $order->charge_deadline_at?->toIso8601String(),
             'already_claimed_by_this_device' => $alreadyClaimed,

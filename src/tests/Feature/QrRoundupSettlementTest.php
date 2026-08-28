@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 final class QrRoundupSettlementTest extends TestCase
@@ -114,11 +115,10 @@ final class QrRoundupSettlementTest extends TestCase
         return $this->withToken((string) $device->device_token)->postJson($url, $payload);
     }
 
-    private function claim(Device $station, Order $order, int $roundupBaisas): TestResponse
+    private function claim(Device $station, Order $order): TestResponse
     {
         return $this->postAs($station, self::CLAIM_URL, [
             'order_uuid' => $order->uuid,
-            'roundup_amount_baisas' => $roundupBaisas,
         ]);
     }
 
@@ -230,66 +230,97 @@ final class QrRoundupSettlementTest extends TestCase
         ]);
     }
 
-    public function test_claim_persists_and_replays_the_frozen_roundup_intent(): void
+    public function test_claim_without_roundup_key_freezes_and_replays_sale_amount_only(): void
     {
         $station = $this->device('roundup-freeze');
         $order = $this->order($station);
 
-        $this->claim($station, $order, 250)
+        $this->claim($station, $order)
             ->assertOk()
             ->assertJsonPath('data.charge_amount_baisas', 4750)
-            ->assertJsonPath('data.roundup_amount_baisas', 250)
-            ->assertJsonPath('data.softpos_amount_baisas', 5000)
+            ->assertJsonPath('data.roundup_amount_baisas', 0)
+            ->assertJsonPath('data.softpos_amount_baisas', 4750)
             ->assertJsonPath('data.already_claimed_by_this_device', false);
 
         $order->forceFill(['grand_total' => '9.999'])->save();
 
-        $this->claim($station, $order, 999)
+        $this->claim($station, $order)
             ->assertOk()
             ->assertJsonPath('data.charge_amount_baisas', 4750)
-            ->assertJsonPath('data.roundup_amount_baisas', 250)
-            ->assertJsonPath('data.softpos_amount_baisas', 5000)
+            ->assertJsonPath('data.roundup_amount_baisas', 0)
+            ->assertJsonPath('data.softpos_amount_baisas', 4750)
             ->assertJsonPath('data.already_claimed_by_this_device', true);
 
         $frozen = $order->fresh();
         $this->assertSame(4750, $frozen->charge_amount_baisas);
-        $this->assertSame(250, $frozen->charge_roundup_amount_baisas);
+        $this->assertSame(0, $frozen->charge_roundup_amount_baisas);
+        $this->assertNoQrRoundupArtifacts($order);
     }
 
-    public function test_successful_station_pay_records_once_with_till_attribution_and_forwarding_parity(): void
+    #[DataProvider('presentRoundupValues')]
+    public function test_claim_rejects_any_present_roundup_key(mixed $roundupBaisas): void
+    {
+        $station = $this->device('roundup-present-'.Str::random(8));
+        $order = $this->order($station);
+
+        $this->postAs($station, self::CLAIM_URL, [
+            'order_uuid' => $order->uuid,
+            'roundup_amount_baisas' => $roundupBaisas,
+        ])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.0.code', 'validation_failed');
+
+        $unclaimed = $order->fresh();
+        $this->assertNull($unclaimed->charge_device_id);
+        $this->assertNull($unclaimed->charge_amount_baisas);
+        $this->assertNull($unclaimed->charge_roundup_amount_baisas);
+        $this->assertNoQrRoundupArtifacts($order);
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function presentRoundupValues(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'positive' => [250];
+        yield 'null' => [null];
+    }
+
+    public function test_successful_station_pay_records_no_roundup_and_till_donation_record_is_unchanged(): void
     {
         config(['services.charity.url' => 'http://charity.test']);
         Http::fake(['*' => Http::response(['success' => true], 201)]);
 
         $station = $this->device('roundup-success');
         $order = $this->order($station);
-        $this->claim($station, $order, 250)->assertOk();
+        $this->claim($station, $order)->assertOk();
         $payEvent = $this->payEvent($order);
 
         $this->push($station, [$payEvent])
             ->assertOk()
             ->assertJsonPath('data.results.0.status', 'processed')
-            ->assertJsonPath('data.results.0.result.status', 'paid')
-            ->assertJsonPath('data.results.0.result.roundup_status', 'success');
+            ->assertJsonPath('data.results.0.result.status', 'paid');
 
         $qrPayment = Payment::query()->where('order_id', $order->getKey())->sole();
-        $qrDonation = RoundupDonation::query()->where('order_id', $order->getKey())->sole();
         $this->assertSame('4.750', $qrPayment->amount);
-        $this->assertSame('0.250', $qrPayment->roundup_amount);
-        $this->assertSame((int) $qrDonation->id, (int) $qrPayment->charity_transaction_id);
-        $this->assertSame('0.250', $qrDonation->amount);
-        $this->assertSame($payEvent['client_event_id'], $qrDonation->client_event_id);
-        $this->assertNotNull($qrDonation->forwarded_at);
+        $this->assertNull($qrPayment->roundup_amount);
+        $this->assertNull($qrPayment->charity_transaction_id);
+        $this->assertSame(0, $order->fresh()->charge_roundup_amount_baisas);
+        $this->assertNoQrRoundupArtifacts($order);
+        Http::assertNothingSent();
 
         $this->push($station, [$payEvent])
             ->assertOk()
             ->assertJsonPath('data.summary.duplicates', 1);
-        $this->assertDatabaseCount('pos_roundup_donations', 1);
         $this->assertSame(1, Payment::query()->where('order_id', $order->getKey())->count());
-        Http::assertSentCount(1);
+        $this->assertNoQrRoundupArtifacts($order);
+        Http::assertNothingSent();
 
         $till = $this->device('roundup-till-parity', 'fixed_pos');
         [$tillOrder, $tillPayment, $donationEvent] = $this->tillDonationFixture($till);
+        $this->assertNull($tillPayment->roundup_amount);
+        $this->assertNull($tillPayment->charity_transaction_id);
+        $this->assertSame(0, RoundupDonation::query()->where('order_id', $tillOrder->getKey())->count());
+
         $this->push($till, [$donationEvent])
             ->assertOk()
             ->assertJsonPath('data.results.0.status', 'processed');
@@ -298,87 +329,63 @@ final class QrRoundupSettlementTest extends TestCase
         $tillPayment->refresh();
         $this->assertSame('0.250', $tillPayment->roundup_amount);
         $this->assertSame((int) $tillDonation->id, (int) $tillPayment->charity_transaction_id);
+        $this->assertSame('0.250', $tillDonation->amount);
+        $this->assertSame($donationEvent['client_event_id'], $tillDonation->client_event_id);
         $this->assertNotNull($tillDonation->forwarded_at);
-
-        foreach ([
-            'company_id',
-            'branch_id',
-            'branch_name',
-            'bank_id',
-            'terminal_id',
-            'commission_profile_id',
-            'organization_id',
-            'amount',
-            'bank_response',
-            'status',
-            'source',
-            'country_id',
-            'region_id',
-            'district_id',
-            'city_id',
-            'latitude',
-            'longitude',
-        ] as $attribute) {
-            $this->assertSame(
-                $tillDonation->getAttribute($attribute),
-                $qrDonation->getAttribute($attribute),
-                'Attribution mismatch for '.$attribute,
-            );
-        }
-        $this->assertSame((int) $station->getKey(), (int) $qrDonation->device_id);
         $this->assertSame((int) $till->getKey(), (int) $tillDonation->device_id);
-        $this->assertDatabaseCount('pos_roundup_donations', 2);
-        Http::assertSentCount(2);
+        $this->assertSame(0, RoundupDonation::query()->where('order_id', $order->getKey())->count());
+        $this->assertSame(1, RoundupDonation::query()->where('order_id', $tillOrder->getKey())->count());
+        Http::assertSentCount(1);
     }
 
-    public function test_declined_claim_without_success_evidence_retains_intent_but_records_no_money(): void
+    public function test_declined_claim_without_success_evidence_records_no_roundup_or_payment(): void
     {
         $station = $this->device('roundup-declined');
         $order = $this->order($station);
-        $this->claim($station, $order, 250)->assertOk();
+        $this->claim($station, $order)->assertOk();
         $this->release($station, $order, Order::CHARGE_OUTCOME_DECLINED)->assertOk();
 
-        $this->assertSame(250, $order->fresh()->charge_roundup_amount_baisas);
-        $this->assertNoRoundupMoney($order);
+        $this->assertSame(0, $order->fresh()->charge_roundup_amount_baisas);
+        $this->assertNoPaymentOrQrRoundup($order);
     }
 
-    public function test_cancelled_release_without_success_evidence_retains_intent_but_records_no_money(): void
+    public function test_cancelled_release_without_success_evidence_records_no_roundup_or_payment(): void
     {
         $station = $this->device('roundup-cancelled');
         $order = $this->order($station);
-        $this->claim($station, $order, 250)->assertOk();
+        $this->claim($station, $order)->assertOk();
         $this->release($station, $order, Order::CHARGE_OUTCOME_CANCELLED)->assertOk();
 
-        $this->assertSame(250, $order->fresh()->charge_roundup_amount_baisas);
-        $this->assertNoRoundupMoney($order);
+        $this->assertSame(0, $order->fresh()->charge_roundup_amount_baisas);
+        $this->assertNoPaymentOrQrRoundup($order);
     }
 
-    public function test_expired_claim_without_success_evidence_retains_intent_but_records_no_money(): void
+    public function test_lapsed_claim_without_success_evidence_records_no_roundup_or_payment(): void
     {
         $station = $this->device('roundup-expired');
         $order = $this->order($station);
-        $this->claim($station, $order, 250)->assertOk();
+        $this->claim($station, $order)->assertOk();
         $this->travel(211)->seconds();
 
         $this->artisan('qr:sweep-stale-charges')->assertSuccessful();
         $expired = $order->fresh();
         $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $expired->charge_outcome);
-        $this->assertSame(250, $expired->charge_roundup_amount_baisas);
-        $this->assertNoRoundupMoney($order);
+        $this->assertSame(0, $expired->charge_roundup_amount_baisas);
+        $this->assertNoPaymentOrQrRoundup($order);
     }
 
-    public function test_counter_fallback_retains_expired_intent_without_recording_money(): void
+    public function test_counter_fallback_retains_zero_roundup_provenance_without_recording_money(): void
     {
         $this->enableNumbering();
         $station = $this->device('roundup-fallback');
         $order = $this->order($station);
-        $this->claim($station, $order, 250)->assertOk();
+        $this->claim($station, $order)->assertOk();
         $claimed = $order->fresh();
         $this->travel(181)->seconds();
 
         $this->postAs($station, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
             ->assertConflict()
-            ->assertJsonPath('errors.0.code', 'device_not_attended_till');
+            ->assertJsonPath('errors.0.code', 'device_not_attended');
 
         $till = $this->device('roundup-fallback-till', 'fixed_pos');
         $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
@@ -392,17 +399,18 @@ final class QrRoundupSettlementTest extends TestCase
         $this->assertTrue($claimed->charge_claimed_at->equalTo($fallback->charge_claimed_at));
         $this->assertTrue($claimed->charge_deadline_at->equalTo($fallback->charge_deadline_at));
         $this->assertSame($claimed->charge_outcome, $fallback->charge_outcome);
-        $this->assertNoRoundupMoney($order);
+        $this->assertSame(0, $fallback->charge_roundup_amount_baisas);
+        $this->assertNoPaymentOrQrRoundup($order);
     }
 
-    public function test_accepted_late_evidence_records_one_pending_roundup_and_never_forwards_it(): void
+    public function test_accepted_late_and_replayed_evidence_records_one_payment_but_no_roundup(): void
     {
         config(['services.charity.url' => 'http://charity.test']);
         Http::fake(['*' => Http::response(['success' => true], 201)]);
 
         $station = $this->device('roundup-late-success');
         $order = $this->order($station);
-        $this->claim($station, $order, 250)->assertOk();
+        $this->claim($station, $order)->assertOk();
         $this->release($station, $order, Order::CHARGE_OUTCOME_CANCELLED)->assertOk();
         $payEvent = $this->payEvent($order);
 
@@ -410,34 +418,53 @@ final class QrRoundupSettlementTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.orphan_tender', true)
-            ->assertJsonPath('data.results.0.result.duplicate_softpos_evidence', false)
-            ->assertJsonPath('data.results.0.result.roundup_status', 'pending');
+            ->assertJsonPath('data.results.0.result.duplicate_softpos_evidence', false);
 
         $payment = Payment::query()->where('order_id', $order->getKey())->sole();
-        $donation = RoundupDonation::query()->where('order_id', $order->getKey())->sole();
         $this->assertSame(Payment::STATUS_PENDING_RECONCILIATION, $payment->status);
         $this->assertTrue((bool) $payment->pending_reconciliation);
         $this->assertSame('4.750', $payment->amount);
-        $this->assertSame('0.250', $payment->roundup_amount);
-        $this->assertSame((int) $donation->getKey(), (int) $payment->charity_transaction_id);
-        $this->assertSame('pending', $donation->status);
-        $this->assertSame('0.250', $donation->amount);
-        $this->assertSame($payEvent['client_event_id'], $donation->client_event_id);
-        $this->assertNull($donation->forwarded_at);
-        $this->assertSame(250, $order->fresh()->charge_roundup_amount_baisas);
+        $this->assertNull($payment->roundup_amount);
+        $this->assertNull($payment->charity_transaction_id);
+        $this->assertSame(0, $order->fresh()->charge_roundup_amount_baisas);
+        $this->assertNoQrRoundupArtifacts($order);
         Http::assertNothingSent();
+
+        $sameEvidence = $payEvent;
+        $sameEvidence['client_event_id'] = (string) Str::uuid();
+        $sameEvidenceResponse = $this->push($station, [$sameEvidence]);
+        $sameEvidenceResponse->assertOk();
+        $sameEvidenceResponse
+            ->assertJsonPath('data.results.0.status', 'failed')
+            ->assertJsonPath(
+                'data.results.0.result.error',
+                'cannot settle an uncertain charge outcome: '.$order->uuid,
+            );
 
         $this->push($station, [$payEvent])
             ->assertOk()
             ->assertJsonPath('data.summary.duplicates', 1);
+
         $this->assertSame(1, Payment::query()->where('order_id', $order->getKey())->count());
-        $this->assertSame(1, RoundupDonation::query()->where('order_id', $order->getKey())->count());
+        $this->assertNoQrRoundupArtifacts($order);
         Http::assertNothingSent();
     }
 
-    private function assertNoRoundupMoney(Order $order): void
+    private function assertNoPaymentOrQrRoundup(Order $order): void
     {
         $this->assertSame(0, Payment::query()->where('order_id', $order->getKey())->count());
+        $this->assertNoQrRoundupArtifacts($order);
+    }
+
+    private function assertNoQrRoundupArtifacts(Order $order): void
+    {
         $this->assertSame(0, RoundupDonation::query()->where('order_id', $order->getKey())->count());
+
+        Payment::query()
+            ->where('order_id', $order->getKey())
+            ->each(function (Payment $payment): void {
+                $this->assertNull($payment->roundup_amount);
+                $this->assertNull($payment->charity_transaction_id);
+            });
     }
 }

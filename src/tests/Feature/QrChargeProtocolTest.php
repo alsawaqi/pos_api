@@ -291,7 +291,7 @@ final class QrChargeProtocolTest extends TestCase
         ]);
     }
 
-    public function test_happy_claim_freezes_all_five_columns_and_returns_all_three_amounts(): void
+    public function test_happy_claim_freezes_charge_provenance_and_returns_sale_zero_sale_amounts(): void
     {
         Log::spy();
         $now = Carbon::parse('2026-08-27 12:00:00');
@@ -299,18 +299,19 @@ final class QrChargeProtocolTest extends TestCase
         $station = $this->device('station-happy');
         $order = $this->order($this->qrSession($station));
 
-        $this->claim($station, $order, ['roundup_amount_baisas' => 250])
+        $this->claim($station, $order)
             ->assertOk()
             ->assertJsonPath('data.order_uuid', $order->uuid)
             ->assertJsonPath('data.charge_amount_baisas', 4750)
-            ->assertJsonPath('data.roundup_amount_baisas', 250)
-            ->assertJsonPath('data.softpos_amount_baisas', 5000)
+            ->assertJsonPath('data.roundup_amount_baisas', 0)
+            ->assertJsonPath('data.softpos_amount_baisas', 4750)
             ->assertJsonPath('data.already_claimed_by_this_device', false)
             ->assertJsonPath('meta.money_unit', 'baisas');
 
         $claimed = $order->fresh();
         $this->assertSame((int) $station->id, (int) $claimed->charge_device_id);
         $this->assertSame(4750, $claimed->charge_amount_baisas);
+        $this->assertSame(0, $claimed->charge_roundup_amount_baisas);
         $this->assertTrue($now->equalTo($claimed->charge_claimed_at));
         $this->assertTrue($now->copy()->addSeconds(180)->equalTo($claimed->charge_deadline_at));
         $this->assertNull($claimed->charge_outcome);
@@ -513,24 +514,25 @@ final class QrChargeProtocolTest extends TestCase
         $this->assertSame($before, $order->fresh()->getAttributes());
     }
 
-    public function test_roundup_ceiling_rejects_1000_and_accepts_999(): void
+    public function test_claim_rejects_roundup_key_when_value_is_zero_or_null(): void
     {
-        $station = $this->device('station-roundup');
-        $order = $this->order($this->qrSession($station));
+        foreach ([0, null] as $index => $roundupAmount) {
+            $station = $this->device('station-roundup-absent-only-'.$index);
+            $order = $this->order($this->qrSession($station));
 
-        $this->claim($station, $order, ['roundup_amount_baisas' => 1000])
-            ->assertUnprocessable()
-            ->assertJsonPath('errors.0.code', 'roundup_out_of_range');
-        $this->assertNull($order->fresh()->charge_claimed_at);
+            $this->claim($station, $order, ['roundup_amount_baisas' => $roundupAmount])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.0.code', 'validation_failed');
 
-        $this->claim($station, $order, ['roundup_amount_baisas' => 999])
-            ->assertOk()
-            ->assertJsonPath('data.charge_amount_baisas', 4750)
-            ->assertJsonPath('data.roundup_amount_baisas', 999)
-            ->assertJsonPath('data.softpos_amount_baisas', 5749);
+            $unchanged = $order->fresh();
+            $this->assertNull($unchanged->charge_device_id);
+            $this->assertNull($unchanged->charge_amount_baisas);
+            $this->assertNull($unchanged->charge_roundup_amount_baisas);
+            $this->assertNull($unchanged->charge_claimed_at);
+        }
     }
 
-    public function test_roundup_numeric_representations_produce_identical_integer_amounts(): void
+    public function test_claim_rejects_positive_roundup_key_regardless_of_numeric_representation(): void
     {
         foreach ([
             ['value' => 250, 'options' => 0],
@@ -552,11 +554,14 @@ final class QrChargeProtocolTest extends TestCase
                 $case['options'],
             );
 
-            $response->assertOk()
-                ->assertJsonPath('data.charge_amount_baisas', 4750)
-                ->assertJsonPath('data.roundup_amount_baisas', 250)
-                ->assertJsonPath('data.softpos_amount_baisas', 5000);
-            $this->assertIsInt($response->json('data.roundup_amount_baisas'));
+            $response->assertUnprocessable()
+                ->assertJsonPath('errors.0.code', 'validation_failed');
+
+            $unchanged = $order->fresh();
+            $this->assertNull($unchanged->charge_device_id);
+            $this->assertNull($unchanged->charge_amount_baisas);
+            $this->assertNull($unchanged->charge_roundup_amount_baisas);
+            $this->assertNull($unchanged->charge_claimed_at);
         }
     }
 
@@ -685,7 +690,7 @@ final class QrChargeProtocolTest extends TestCase
         $void = $this->push($station, [$this->voidEvent($order)]);
         $this->assertSyncStatus($void, 'failed');
         $this->assertStringContainsString(
-            'live charge claim',
+            'ambiguous QR charge requires fallback-to-counter before void',
             $void->json('data.results.0.result.error'),
         );
         $this->assertSame(Order::CHARGE_OUTCOME_UNCERTAIN, $order->fresh()->charge_outcome);

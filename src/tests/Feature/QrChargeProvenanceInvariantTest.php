@@ -27,6 +27,8 @@ final class QrChargeProvenanceInvariantTest extends TestCase
 
     private const CHECKOUT_URL = '/api/v1/public/qr/checkout';
 
+    private const STATUS_URL = '/api/v1/public/qr/status';
+
     private const AWAITING_URL = '/api/v1/device/qr/awaiting-orders';
 
     private const CLAIM_URL = '/api/v1/device/qr/claim-charge';
@@ -63,6 +65,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             'qr.charge_claim_seconds' => 180,
             'qr.charge_sweep_grace_seconds' => 30,
             'qr.charge_sweep_enabled' => false,
+            'qr.session_lifetime_minutes' => 15,
             'qr.station_geofence_exempt' => false,
         ]);
 
@@ -195,39 +198,44 @@ final class QrChargeProvenanceInvariantTest extends TestCase
         $this->assertNoRoundupMoney();
     }
 
-    public function test_attended_fallback_recovers_every_ambiguous_state_to_pay_or_void(): void
+    public function test_attended_fallback_recovers_every_ambiguous_state_with_ordered_expired_and_closed_sessions(): void
     {
         $station = $this->device('recovery-station', 10);
-        $till = $this->device('recovery-till', 10, 'pos_terminal');
+        $till = $this->device('recovery-till', 10, 'fixed_pos');
         $customerTablet = $this->device('recovery-customer-tablet', 10, 'customer_tablet');
-        $otherBranchTill = $this->device('recovery-other-branch', 20, 'pos_terminal');
+        $otherBranchTill = $this->device('recovery-other-branch', 20, 'fixed_pos');
 
         $cases = [];
-        foreach (['expired_null', 'lapsed', 'uncertain'] as $state) {
-            foreach (['cash', 'card', 'void'] as $terminal) {
-                $cases[] = [$state, $terminal];
+        foreach ([QrSession::STATUS_ORDERED, QrSession::STATUS_EXPIRED, QrSession::STATUS_CLOSED] as $sessionState) {
+            foreach (['expired_null', 'lapsed', 'uncertain'] as $chargeState) {
+                foreach (['cash', 'card', 'void'] as $terminal) {
+                    $cases[] = [$sessionState, $chargeState, $terminal];
+                }
             }
         }
 
         $denialsProved = [];
-        foreach ($cases as [$state, $terminal]) {
-            $order = $this->ambiguousOrder($station, $state);
+        foreach ($cases as [$sessionState, $chargeState, $terminal]) {
+            $flow = $this->ambiguousFlow($station, $chargeState);
+            $this->putSessionInRecoveryState($flow, $sessionState);
+            $order = $flow['order']->fresh();
+            $context = $sessionState.' '.$chargeState.' '.$terminal;
             $before = $this->chargeProvenance($order->fresh());
             $beforeAttributes = $order->fresh()->getAttributes();
 
-            if (! isset($denialsProved[$state])) {
+            if (! isset($denialsProved[$chargeState])) {
                 $this->fallback($station, $order)
                     ->assertConflict()
-                    ->assertJsonPath('errors.0.code', 'device_not_attended_till');
+                    ->assertJsonPath('errors.0.code', 'device_not_attended');
                 $this->fallback($customerTablet, $order)
                     ->assertConflict()
-                    ->assertJsonPath('errors.0.code', 'device_not_attended_till');
+                    ->assertJsonPath('errors.0.code', 'device_not_attended');
                 $this->fallback($otherBranchTill, $order)
                     ->assertNotFound()
                     ->assertJsonPath('errors.0.code', 'order_not_found');
 
                 $this->assertSame($beforeAttributes, $order->fresh()->getAttributes());
-                $denialsProved[$state] = true;
+                $denialsProved[$chargeState] = true;
             }
 
             $fallback = $this->fallback($till, $order)
@@ -238,7 +246,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             $this->assertIsString($receipt);
             $this->assertNotSame('', trim($receipt));
             $held = $order->fresh();
-            $this->assertSame($before, $this->chargeProvenance($held), $state);
+            $this->assertSame($before, $this->chargeProvenance($held), $context);
 
             if ($terminal === 'cash') {
                 $stationPay = $this->push($station, [
@@ -250,14 +258,14 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                 ]);
                 $this->assertSyncStatus($stationPay, 'failed');
                 $this->assertStringContainsString(
-                    'device type cannot resolve an ambiguous QR charge',
+                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
                     (string) $stationPay->json('data.results.0.result.error'),
                 );
 
                 $tabletVoid = $this->push($customerTablet, [$this->voidEvent($order)]);
                 $this->assertSyncStatus($tabletVoid, 'failed');
                 $this->assertStringContainsString(
-                    'device type cannot resolve an ambiguous QR charge',
+                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
                     (string) $tabletVoid->json('data.results.0.result.error'),
                 );
                 $this->assertSame($held->getAttributes(), $order->fresh()->getAttributes());
@@ -292,7 +300,93 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                 $this->assertNull($payment->roundup_amount);
             }
 
-            $this->assertSame($before, $this->chargeProvenance($order->fresh()), $state.' '.$terminal);
+            $this->assertSame($before, $this->chargeProvenance($order->fresh()), $context);
+            $this->assertNoRoundupMoney();
+        }
+    }
+
+    public function test_ambiguous_recovery_uses_an_explicit_attended_device_allowlist(): void
+    {
+        $station = $this->device('allowlist-station');
+        $rescuer = $this->device('allowlist-rescuer', 10, 'fixed_pos');
+        $deviceTypes = [
+            'fixed_pos' => true,
+            'handheld' => true,
+            'customer_tablet' => false,
+            'payment_station' => false,
+            'pos_terminal' => false,
+            'unknown_attended_shape' => false,
+        ];
+
+        foreach ($deviceTypes as $deviceType => $allowed) {
+            $device = $this->device('allowlist-'.$deviceType, 10, $deviceType);
+            $order = $this->ambiguousOrder($station, 'lapsed');
+            $before = $order->fresh()->getAttributes();
+            $fallback = $this->fallback($device, $order);
+
+            if ($allowed) {
+                $fallback
+                    ->assertOk()
+                    ->assertJsonPath('data.status', Order::STATUS_HELD);
+
+                if ($deviceType === 'fixed_pos') {
+                    $this->assertSyncStatus($this->push($device, [
+                        $this->payEvent($order, [[
+                            'method' => Payment::METHOD_CASH,
+                            'amount_baisas' => 2500,
+                            'status' => Payment::STATUS_SUCCESS,
+                        ]]),
+                    ]), 'processed');
+                    $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
+                    $this->assertNull(
+                        Payment::query()->where('order_id', $order->id)->sole()->roundup_amount,
+                    );
+                } else {
+                    $this->assertSyncStatus(
+                        $this->push($device, [$this->voidEvent($order)]),
+                        'processed',
+                    );
+                    $this->assertSame(Order::STATUS_VOID, $order->fresh()->status);
+                }
+            } else {
+                $fallback
+                    ->assertConflict()
+                    ->assertJsonPath('errors.0.code', 'device_not_attended');
+                $this->assertSame($before, $order->fresh()->getAttributes(), $deviceType);
+
+                $this->fallback($rescuer, $order)
+                    ->assertOk()
+                    ->assertJsonPath('data.status', Order::STATUS_HELD);
+                $held = $order->fresh()->getAttributes();
+
+                $pay = $this->push($device, [
+                    $this->payEvent($order, [[
+                        'method' => Payment::METHOD_CASH,
+                        'amount_baisas' => 2500,
+                        'status' => Payment::STATUS_SUCCESS,
+                    ]]),
+                ]);
+                $this->assertSyncStatus($pay, 'failed');
+                $this->assertStringContainsString(
+                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
+                    (string) $pay->json('data.results.0.result.error'),
+                );
+
+                $void = $this->push($device, [$this->voidEvent($order)]);
+                $this->assertSyncStatus($void, 'failed');
+                $this->assertStringContainsString(
+                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
+                    (string) $void->json('data.results.0.result.error'),
+                );
+                $this->assertSame($held, $order->fresh()->getAttributes(), $deviceType);
+
+                $this->assertSyncStatus(
+                    $this->push($rescuer, [$this->voidEvent($order)]),
+                    'processed',
+                );
+                $this->assertSame(Order::STATUS_VOID, $order->fresh()->status);
+            }
+
             $this->assertNoRoundupMoney();
         }
     }
@@ -305,7 +399,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             ->delete();
 
         $station = $this->device('unnumbered-station');
-        $till = $this->device('unnumbered-till', 10, 'pos_terminal');
+        $till = $this->device('unnumbered-till', 10, 'fixed_pos');
 
         foreach (['lapsed', 'uncertain'] as $state) {
             $order = $this->ambiguousOrder($station, $state);
@@ -336,7 +430,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
     public function test_station_and_customer_tablet_cannot_resolve_ambiguous_kitchen_order(): void
     {
         $station = $this->device('kitchen-station');
-        $till = $this->device('kitchen-till', 10, 'pos_terminal');
+        $till = $this->device('kitchen-till', 10, 'fixed_pos');
         $tablet = $this->device('kitchen-tablet', 10, 'customer_tablet');
         $order = $this->ambiguousOrder($station, 'lapsed');
 
@@ -354,14 +448,14 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             ]);
             $this->assertSyncStatus($pay, 'failed');
             $this->assertStringContainsString(
-                'device type cannot resolve an ambiguous QR charge',
+                'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
                 (string) $pay->json('data.results.0.result.error'),
             );
 
             $void = $this->push($device, [$this->voidEvent($order)]);
             $this->assertSyncStatus($void, 'failed');
             $this->assertStringContainsString(
-                'device type cannot resolve an ambiguous QR charge',
+                'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
                 (string) $void->json('data.results.0.result.error'),
             );
         }
@@ -380,8 +474,8 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             $this->device('random-c-'.$seed, 20),
         ];
         $tills = [
-            10 => $this->device('random-till-10-'.$seed, 10, 'pos_terminal'),
-            20 => $this->device('random-till-20-'.$seed, 20, 'pos_terminal'),
+            10 => $this->device('random-till-10-'.$seed, 10, 'fixed_pos'),
+            20 => $this->device('random-till-20-'.$seed, 20, 'fixed_pos'),
         ];
 
         $flows = [];
@@ -442,6 +536,23 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                 $context,
             );
         }
+
+        $this->exerciseGuaranteedExpiredSessionArm(
+            $seed,
+            $flows,
+            $stations,
+            $tills,
+            $freshClaims,
+            $safeReleases,
+        );
+        $this->settleEveryReachableFlow(
+            $seed,
+            $flows,
+            $stations,
+            $tills,
+            $freshClaims,
+            $safeReleases,
+        );
     }
 
     /** @return array<string, array{int}> */
@@ -574,6 +685,236 @@ final class QrChargeProvenanceInvariantTest extends TestCase
     }
 
     /**
+     * This arm is deliberately appended to every random interleaving. It
+     * guarantees that each seed crosses the claim deadline, the sweep grace
+     * boundary, and the configured session lifetime in that order. The final
+     * transition to expired is made by the real public status route with the
+     * customer's credential; changing the model directly would miss the
+     * production dead end that this regression test exists to prevent.
+     *
+     * @param  list<array{station: Device, session: QrSession, secret: string, payload: array<string, mixed>, order: Order}>  $flows
+     * @param  list<Device>  $stations
+     * @param  array<int, Device>  $tills
+     * @param  array<string, int>  $freshClaims
+     * @param  array<string, int>  $safeReleases
+     */
+    private function exerciseGuaranteedExpiredSessionArm(
+        int $seed,
+        array &$flows,
+        array $stations,
+        array $tills,
+        array &$freshClaims,
+        array &$safeReleases,
+    ): void {
+        $station = $stations[0];
+        $flow = $this->checkout($station);
+        $flows[] = $flow;
+        $uuid = (string) $flow['order']->uuid;
+        $freshClaims[$uuid] = 0;
+        $safeReleases[$uuid] = 0;
+        $context = "seed={$seed} guaranteed-expiry";
+
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' checkout',
+        );
+
+        $this->claim($station, $flow['order'])
+            ->assertOk()
+            ->assertJsonPath('data.already_claimed_by_this_device', false);
+        $freshClaims[$uuid]++;
+        $claimed = $flow['order']->fresh();
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' fresh-claim',
+        );
+
+        $this->travelTo($claimed->charge_deadline_at->copy()->addSecond());
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' after-claim-deadline',
+        );
+
+        $this->travelTo($claimed->charge_deadline_at->copy()->addSeconds(31));
+        $this->assertSame(Command::SUCCESS, Artisan::call('qr:sweep-stale-charges'), $context);
+        $this->assertMatchesRegularExpression(
+            '/^lapsed=\d+ grace_seconds=30\s*$/',
+            Artisan::output(),
+            $context,
+        );
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $flow['order']->fresh()->charge_outcome);
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' after-sweeper-grace',
+        );
+
+        $this->expireSessionThroughPublicStatus($flow);
+        $this->assertSame(QrSession::STATUS_EXPIRED, $flow['session']->fresh()->status);
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' public-session-expiry',
+        );
+
+        $till = $tills[(int) $flow['order']->branch_id];
+        $this->fallback($till, $flow['order'])
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_HELD);
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' fallback-from-expired-session',
+        );
+
+        if ($seed === 0x51A7E) {
+            $this->assertSyncStatus($this->push($till, [
+                $this->payEvent($flow['order'], [[
+                    'method' => Payment::METHOD_CASH,
+                    'amount_baisas' => 2500,
+                    'status' => Payment::STATUS_SUCCESS,
+                ]]),
+            ]), 'processed');
+            $this->assertSame(Order::STATUS_PAID, $flow['order']->fresh()->status);
+            $this->assertNull(
+                Payment::query()->where('order_id', $flow['order']->id)->sole()->roundup_amount,
+            );
+        } else {
+            $this->assertSyncStatus(
+                $this->push($till, [$this->voidEvent($flow['order'])]),
+                'processed',
+            );
+            $this->assertSame(Order::STATUS_VOID, $flow['order']->fresh()->status);
+        }
+
+        $this->assertLifetimeInvariants(
+            $flows,
+            $stations,
+            $freshClaims,
+            $safeReleases,
+            $context.' terminal',
+        );
+    }
+
+    /**
+     * @param  list<array{station: Device, session: QrSession, secret: string, payload: array<string, mixed>, order: Order}>  $flows
+     * @param  list<Device>  $stations
+     * @param  array<int, Device>  $tills
+     * @param  array<string, int>  $freshClaims
+     * @param  array<string, int>  $safeReleases
+     */
+    private function settleEveryReachableFlow(
+        int $seed,
+        array $flows,
+        array $stations,
+        array $tills,
+        array $freshClaims,
+        array $safeReleases,
+    ): void {
+        foreach ($flows as $index => $flow) {
+            $order = $flow['order']->fresh();
+            $context = "seed={$seed} terminal-drain={$index}";
+            if (in_array($order->status, [Order::STATUS_PAID, Order::STATUS_VOID], true)) {
+                continue;
+            }
+
+            if ($order->status === Order::STATUS_AWAITING_PAYMENT) {
+                if ($order->charge_claimed_at !== null
+                    && $order->charge_outcome === null
+                    && $order->charge_deadline_at !== null
+                    && $order->charge_deadline_at->isAfter(now())) {
+                    $this->travelTo($order->charge_deadline_at->copy()->addSecond());
+                    $this->assertLifetimeInvariants(
+                        $flows,
+                        $stations,
+                        $freshClaims,
+                        $safeReleases,
+                        $context.' crossed-live-deadline',
+                    );
+                    $order = $flow['order']->fresh();
+                }
+
+                $this->assertNotSame(
+                    Order::CHARGE_OUTCOME_APPROVED,
+                    $order->charge_outcome,
+                    $context.' approved charge must already be terminal',
+                );
+                $recoveryDevice = $this->isAmbiguousForRecovery($order)
+                    ? $tills[(int) $order->branch_id]
+                    : $flow['station'];
+                $this->fallback($recoveryDevice, $order)
+                    ->assertOk()
+                    ->assertJsonPath('data.status', Order::STATUS_HELD);
+                $this->assertLifetimeInvariants(
+                    $flows,
+                    $stations,
+                    $freshClaims,
+                    $safeReleases,
+                    $context.' fallback',
+                );
+                $order = $flow['order']->fresh();
+            }
+
+            $this->assertContains(
+                $order->status,
+                [Order::STATUS_HELD, Order::STATUS_OPEN, Order::STATUS_KITCHEN],
+                $context,
+            );
+            $till = $tills[(int) $order->branch_id];
+            if (($seed + $index) % 2 === 0) {
+                $this->assertSyncStatus($this->push($till, [
+                    $this->payEvent($order, [[
+                        'method' => Payment::METHOD_CASH,
+                        'amount_baisas' => 2500,
+                        'status' => Payment::STATUS_SUCCESS,
+                    ]]),
+                ]), 'processed');
+                $this->assertSame(Order::STATUS_PAID, $flow['order']->fresh()->status, $context);
+                $this->assertNull(
+                    Payment::query()->where('order_id', $order->id)->sole()->roundup_amount,
+                );
+            } else {
+                $this->assertSyncStatus(
+                    $this->push($till, [$this->voidEvent($order)]),
+                    'processed',
+                );
+                $this->assertSame(Order::STATUS_VOID, $flow['order']->fresh()->status, $context);
+            }
+
+            $this->assertLifetimeInvariants(
+                $flows,
+                $stations,
+                $freshClaims,
+                $safeReleases,
+                $context.' terminal',
+            );
+        }
+
+        foreach ($flows as $flow) {
+            $this->assertContains(
+                $flow['order']->fresh()->status,
+                [Order::STATUS_PAID, Order::STATUS_VOID],
+                "seed={$seed} every reachable order reached a terminal state",
+            );
+        }
+    }
+
+    /**
      * The list is intentionally narrower than all HTTP 200 claim responses:
      * a same-holder live replay remains 200/idempotent. Agreement therefore
      * means list membership iff a fresh claim would be admitted.
@@ -695,6 +1036,21 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                 ], true));
     }
 
+    private function isAmbiguousForRecovery(Order $order): bool
+    {
+        if (in_array($order->charge_outcome, [
+            Order::CHARGE_OUTCOME_LAPSED,
+            Order::CHARGE_OUTCOME_UNCERTAIN,
+        ], true)) {
+            return true;
+        }
+
+        return $order->charge_claimed_at !== null
+            && $order->charge_outcome === null
+            && $order->charge_deadline_at !== null
+            && $order->charge_deadline_at->lessThanOrEqualTo(now());
+    }
+
     private function assertKnownClaimResponse(TestResponse $response, string $context): void
     {
         if ($response->getStatusCode() === 200) {
@@ -745,7 +1101,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             'order_not_awaiting_payment',
             'order_already_held',
             'charge_already_claimed',
-            'device_not_attended_till',
+            'device_not_attended',
             'device_not_payment_station',
             'order_not_bound_to_device_session',
             'session_not_ordered',
@@ -773,7 +1129,16 @@ final class QrChargeProvenanceInvariantTest extends TestCase
 
     private function ambiguousOrder(Device $station, string $state): Order
     {
-        $order = $this->checkout($station)['order'];
+        return $this->ambiguousFlow($station, $state)['order'];
+    }
+
+    /**
+     * @return array{station: Device, session: QrSession, secret: string, payload: array<string, mixed>, order: Order}
+     */
+    private function ambiguousFlow(Device $station, string $state): array
+    {
+        $flow = $this->checkout($station);
+        $order = $flow['order'];
         $this->claim($station, $order)
             ->assertOk()
             ->assertJsonPath('data.already_claimed_by_this_device', false);
@@ -794,8 +1159,72 @@ final class QrChargeProvenanceInvariantTest extends TestCase
         }
 
         $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $order->fresh()->status);
+        $flow['order'] = $order->fresh();
 
-        return $order->fresh();
+        return $flow;
+    }
+
+    /**
+     * @param  array{station: Device, session: QrSession, secret: string, payload: array<string, mixed>, order: Order}  $flow
+     */
+    private function putSessionInRecoveryState(array $flow, string $status): void
+    {
+        if ($status === QrSession::STATUS_ORDERED) {
+            $this->assertSame(QrSession::STATUS_ORDERED, $flow['session']->fresh()->status);
+            $this->publicStatus($flow)
+                ->assertOk()
+                ->assertJsonPath('data.status', QrSession::STATUS_ORDERED);
+
+            return;
+        }
+
+        if ($status === QrSession::STATUS_EXPIRED) {
+            $this->expireSessionThroughPublicStatus($flow);
+
+            return;
+        }
+
+        $this->assertSame(QrSession::STATUS_CLOSED, $status);
+        $flow['session']->update([
+            'status' => QrSession::STATUS_CLOSED,
+            'closed_at' => now(),
+        ]);
+        $this->assertSame(QrSession::STATUS_CLOSED, $flow['session']->fresh()->status);
+        $this->publicStatus($flow)
+            ->assertOk()
+            ->assertJsonPath('data.status', QrSession::STATUS_CLOSED);
+    }
+
+    /**
+     * @param  array{station: Device, session: QrSession, secret: string, payload: array<string, mixed>, order: Order}  $flow
+     */
+    private function expireSessionThroughPublicStatus(array $flow): void
+    {
+        $expiresAt = $flow['session']->fresh()->expires_at;
+        $this->assertNotNull($expiresAt);
+        $afterLifetime = $expiresAt->copy()->addSecond();
+        if ($afterLifetime->isAfter(now())) {
+            $this->travelTo($afterLifetime);
+        }
+
+        $this->publicStatus($flow)
+            ->assertNotFound()
+            ->assertJsonPath('errors.0.code', 'qr_session_not_found');
+
+        $expired = $flow['session']->fresh();
+        $this->assertSame(QrSession::STATUS_EXPIRED, $expired->status);
+        $this->assertNotNull($expired->closed_at);
+    }
+
+    /**
+     * @param  array{station: Device, session: QrSession, secret: string, payload: array<string, mixed>, order: Order}  $flow
+     */
+    private function publicStatus(array $flow): TestResponse
+    {
+        return $this->withHeaders([
+            'X-QR-Session' => $flow['session']->uuid,
+            'X-QR-Client-Secret' => $flow['secret'],
+        ])->getJson(self::STATUS_URL);
     }
 
     /**
@@ -816,7 +1245,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             'status' => QrSession::STATUS_ACTIVE,
             'bound_at' => now(),
             'last_seen_at' => now(),
-            'expires_at' => now()->addDay(),
+            'expires_at' => now()->addMinutes((int) config('qr.session_lifetime_minutes')),
         ]);
         $payload = [
             'client_request_id' => 'invariant-request-'.$this->checkoutSequence,
@@ -902,7 +1331,6 @@ final class QrChargeProvenanceInvariantTest extends TestCase
     {
         return $this->postAs($device, self::CLAIM_URL, [
             'order_uuid' => $order->uuid,
-            'roundup_amount_baisas' => 0,
         ]);
     }
 

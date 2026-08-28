@@ -1,5 +1,3 @@
-name: pos-api-true-client-ip
-
 services:
   test_redis:
     image: redis:8-alpine
@@ -10,11 +8,9 @@ services:
       timeout: 1s
       retries: 30
     networks:
-      app_net:
-        ipv4_address: 10.254.251.4
+      - app_net
 
   pos_api:
-    image: pos-api-true-client-ip-app
     build:
       context: ../../..
       dockerfile: docker/prod/php/php.dockerfile
@@ -55,8 +51,7 @@ services:
       test_redis:
         condition: service_healthy
     networks:
-      app_net:
-        ipv4_address: 10.254.251.3
+      - app_net
 
   pos_nginx:
     image: nginx:1.25-alpine
@@ -68,10 +63,8 @@ services:
     depends_on:
       - pos_api
     networks:
-      app_net:
-        ipv4_address: 10.254.251.2
-      npm_to_app:
-        ipv4_address: 10.254.252.3
+      - app_net
+      - npm_to_app
 
   fake_npm:
     image: nginx:1.25-alpine
@@ -80,14 +73,10 @@ services:
     depends_on:
       - pos_nginx
     networks:
-      npm_to_app:
-        ipv4_address: 10.254.252.2
-      cloudflare_to_npm_v4:
-        ipv4_address: 173.245.63.250
-      cloudflare_to_npm_v6:
-        ipv6_address: 2400:cb00:ffff:ffff::2
-      direct_to_npm:
-        ipv4_address: 203.0.113.2
+      - npm_to_app
+      - cloudflare_to_npm_v4
+      - cloudflare_to_npm_v6
+      - direct_to_npm
 
   fake_cloudflare_v4:
     image: nginx:1.25-alpine
@@ -96,10 +85,8 @@ services:
     depends_on:
       - fake_npm
     networks:
-      client_to_cloudflare_v4:
-        ipv4_address: 198.51.100.2
-      cloudflare_to_npm_v4:
-        ipv4_address: 173.245.63.251
+      - client_to_cloudflare_v4
+      - cloudflare_to_npm_v4
 
   fake_cloudflare_v6:
     image: nginx:1.25-alpine
@@ -108,85 +95,59 @@ services:
     depends_on:
       - fake_npm
     networks:
-      client_to_cloudflare_v6:
-        ipv6_address: 2001:db8:100::2
-      cloudflare_to_npm_v6:
-        ipv6_address: 2400:cb00:ffff:ffff::3
+      - client_to_cloudflare_v6
+      - cloudflare_to_npm_v6
 
   client_v4:
     image: curlimages/curl:8.12.1
     entrypoint: ["sh", "-c"]
     command: ["trap : TERM INT; sleep infinity & wait"]
     networks:
-      client_to_cloudflare_v4:
-        ipv4_address: 198.51.100.10
+      - client_to_cloudflare_v4
 
   client_v6_a:
     image: curlimages/curl:8.12.1
     entrypoint: ["sh", "-c"]
     command: ["trap : TERM INT; sleep infinity & wait"]
     networks:
-      client_to_cloudflare_v6:
-        ipv6_address: 2001:db8:100::10
+      - client_to_cloudflare_v6
 
   client_v6_b:
     image: curlimages/curl:8.12.1
     entrypoint: ["sh", "-c"]
     command: ["trap : TERM INT; sleep infinity & wait"]
     networks:
-      client_to_cloudflare_v6:
-        ipv6_address: 2001:db8:100::11
+      - client_to_cloudflare_v6
 
   direct_client:
     image: curlimages/curl:8.12.1
     entrypoint: ["sh", "-c"]
     command: ["trap : TERM INT; sleep infinity & wait"]
     networks:
-      direct_to_npm:
-        ipv4_address: 203.0.113.10
+      - direct_to_npm
 
 networks:
   app_net:
+    name: ${TRUE_CLIENT_IP_APP_NETWORK:?TRUE_CLIENT_IP_APP_NETWORK is required}
     internal: true
-    ipam:
-      config:
-        - subnet: 10.254.251.0/24
   npm_to_app:
+    name: ${TRUE_CLIENT_IP_NPM_APP_NETWORK:?TRUE_CLIENT_IP_NPM_APP_NETWORK is required}
     internal: true
-    ipam:
-      config:
-        - subnet: 10.254.252.0/24
   client_to_cloudflare_v4:
+    name: ${TRUE_CLIENT_IP_CLIENT_V4_NETWORK:?TRUE_CLIENT_IP_CLIENT_V4_NETWORK is required}
     internal: true
-    ipam:
-      config:
-        - subnet: 198.51.100.0/24
   client_to_cloudflare_v6:
-    internal: true
-    enable_ipv4: false
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: 2001:db8:100::/64
-  # Small subnets carved from ranges fetched into cloudflare-ips.conf on
-  # 2026-08-27. The runner first proves both remain in that live-fetched file.
+    name: ${TRUE_CLIENT_IP_CLIENT_V6_NETWORK:?TRUE_CLIENT_IP_CLIENT_V6_NETWORK is required}
+    external: true
   cloudflare_to_npm_v4:
-    internal: true
-    ipam:
-      config:
-        - subnet: 173.245.63.248/29
+    name: ${TRUE_CLIENT_IP_CF_V4_NETWORK:?TRUE_CLIENT_IP_CF_V4_NETWORK is required}
+    external: true
   cloudflare_to_npm_v6:
-    internal: true
-    enable_ipv4: false
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: 2400:cb00:ffff:ffff::/124
+    name: ${TRUE_CLIENT_IP_CF_V6_NETWORK:?TRUE_CLIENT_IP_CF_V6_NETWORK is required}
+    external: true
   direct_to_npm:
+    name: ${TRUE_CLIENT_IP_DIRECT_NETWORK:?TRUE_CLIENT_IP_DIRECT_NETWORK is required}
     internal: true
-    ipam:
-      config:
-        - subnet: 203.0.113.0/24
 
 volumes:
   app_storage:

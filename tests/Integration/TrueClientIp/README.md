@@ -20,6 +20,14 @@ PHP-FPM requests. The PHP-FPM container uses a fixture `routes/web.php` mounted
 only inside this stack; it touches Laravel's real web session and reports both
 Laravel's IP and PHP's `$_SERVER['REMOTE_ADDR']`.
 
+Every invocation creates a unique Compose project. Ordinary IPv4 networks use
+Docker's dynamic IPAM; the IPv6 client network and both Cloudflare-range edge
+networks are atomically reserved from random, non-overlapping subnets before
+Compose starts. The runner discovers each container address from Docker rather
+than assuming fixed values. Containers, Redis, volumes, the built application
+image, networks, and teardown are therefore scoped to one invocation, so two
+runs can execute concurrently without sharing counters or deleting each other.
+
 Run from the `pos_api` repository root:
 
 ```bash
@@ -34,17 +42,18 @@ the pre-change FastCGI fixture and requires honest attribution to fail. That
 negative control prevents a synthetic or ineffective test from passing when
 the production nginx change is reverted.
 
-By default the exact Compose project is removed with its named volumes on exit.
-Set `TRUE_CLIENT_IP_KEEP_STACK=1` only when interactive inspection is needed,
-then clean it explicitly:
+By default the exact Compose project, its named volumes, its locally built
+image, and its three pre-reserved external networks are removed on exit. Set
+`TRUE_CLIENT_IP_KEEP_STACK=1` only when interactive inspection is needed. The
+runner prints that invocation's exact project name, subnets, and cleanup
+commands; use those printed commands when finished.
 
 ```bash
-docker compose --project-name pos-api-true-client-ip \
-  --file tests/Integration/TrueClientIp/docker-compose.yml \
-  down --volumes --remove-orphans
+TRUE_CLIENT_IP_KEEP_STACK=1 bash tests/Integration/TrueClientIp/run.sh
 ```
 
-The fake Cloudflare-to-NPM networks use tiny subnets carved from the ranges
+The fake Cloudflare-to-NPM networks use random subnets carved from the ranges
 fetched live on 2026-08-27. The runner verifies that both containing ranges are
-still present in `cloudflare-ips.conf` before starting. After refreshing the
-published ranges, update these test subnets only if that preflight fails.
+still present in `cloudflare-ips.conf` before reserving them. After refreshing
+the published ranges, update the two parent ranges in `run.sh` only if that
+preflight fails.

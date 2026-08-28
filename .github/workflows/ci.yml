@@ -45,15 +45,53 @@ jobs:
       - run: php artisan key:generate
       - run: php artisan config:clear && php artisan test
 
+  # Exercise the production nginx boundary through a real, isolated
+  # client -> Cloudflare -> NPM -> nginx -> PHP-FPM/Laravel request chain.
+  # This cannot live in PHPUnit: reverting the nginx configuration leaves the
+  # PHP suite green, while this job's legacy negative control proves the
+  # attribution assertions fail without the production nginx change.
+  true-client-ip-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: ctype, curl, dom, fileinfo, filter, iconv, mbstring, openssl, pcntl, pdo_sqlite, sqlite3, simplexml, tokenizer, xml, xmlreader, xmlwriter, zlib
+          coverage: none
+      - name: Composer cache dir
+        id: cc
+        working-directory: src
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.cc.outputs.dir }}
+          key: ${{ runner.os }}-composer-api-${{ hashFiles('src/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-api-
+      - name: Prepare Laravel dependencies
+        working-directory: src
+        run: |
+          mkdir -p storage/framework/cache storage/framework/sessions storage/framework/testing storage/framework/views storage/logs bootstrap/cache
+          cp .env.example .env
+          composer install --prefer-dist --no-interaction --no-progress
+      - name: Verify the real true-client-IP request chain
+        run: bash tests/Integration/TrueClientIp/run.sh
+
   # ---- CD: auto-deploy to the production VPS ----
   # Push to main only (never PRs), and only after the device-contract tests
-  # are green. SSHes into the VPS, pulls, and runs deploy/deploy.sh — the
-  # same documented sequence as a manual release, ending in a health check.
+  # and real true-client-IP integration gate are green. SSHes into the VPS,
+  # fetches without changing the bind-mounted checkout, verifies remote main
+  # is the exact SHA those jobs tested, then fast-forwards and runs
+  # deploy/deploy.sh — ending in the same health check as a manual release.
   # Secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY (the dedicated gha-pos-deploy
   # key), VPS_KNOWN_HOSTS (pinned host key).
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [php-tests]
+    needs: [php-tests, true-client-ip-integration]
     runs-on: ubuntu-latest
     concurrency:
       group: prod-deploy-pos-api
@@ -71,4 +109,4 @@ jobs:
       - name: Pull + deploy on the VPS
         run: |
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            'cd ~/pos_api && git pull --ff-only && bash deploy/deploy.sh'
+            'cd ~/pos_api && git fetch origin main && test "$(git rev-parse FETCH_HEAD)" = "${{ github.sha }}" && git merge --ff-only FETCH_HEAD && bash deploy/deploy.sh'

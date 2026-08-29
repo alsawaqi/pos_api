@@ -21,6 +21,8 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
 
     private const URL = '/api/v1/device/qr/awaiting-orders';
 
+    private const PUBLIC_STATUS_URL = '/api/v1/public/qr/status';
+
     /**
      * @param  array<string, mixed>  $attributes
      */
@@ -120,8 +122,11 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
     {
         $this->travelTo(Carbon::parse('2026-08-28 09:15:00'));
         $station = $this->device('station-read-compose');
-        $session = $this->qrSession($station);
-        $order = $this->order($session);
+        $secret = 'station-read-public-status-secret';
+        $session = $this->qrSession($station, [
+            'client_secret_hash' => QrSession::hashClientSecret($secret),
+        ]);
+        $order = $this->order($session, ['receipt_number' => 'QR-0042']);
         $this->addItem($order, 'Private product one');
         $this->addItem($order, 'Private product two');
 
@@ -130,6 +135,7 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
                 'orders' => [[
                     'session_uuid' => $session->uuid,
                     'order_uuid' => $order->uuid,
+                    'receipt_number' => 'QR-0042',
                     'status' => Order::STATUS_AWAITING_PAYMENT,
                     'amount_baisas' => 4750,
                     'item_count' => 2,
@@ -147,6 +153,7 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
         $this->assertSame([
             'session_uuid',
             'order_uuid',
+            'receipt_number',
             'status',
             'amount_baisas',
             'item_count',
@@ -165,6 +172,17 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
         ] as $forbidden) {
             $this->assertStringNotContainsString($forbidden, $encoded);
         }
+
+        $publicStatus = $this->withHeaders([
+            'X-QR-Session' => $session->uuid,
+            'X-QR-Client-Secret' => $secret,
+        ])->getJson(self::PUBLIC_STATUS_URL)
+            ->assertOk()
+            ->assertJsonPath('data.order.receipt_number', 'QR-0042');
+        $this->assertSame(
+            $publicStatus->json('data.order.receipt_number'),
+            $listed['receipt_number'],
+        );
 
         $returnedOrderUuid = (string) $listed['order_uuid'];
         $this->assertSame($order->uuid, $returnedOrderUuid);
@@ -204,12 +222,23 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
             ->assertJsonPath('errors.0.code', 'order_not_found');
     }
 
-    public function test_poll_omits_terminal_claim_outcomes_and_keeps_claimable_outcomes(): void
+    public function test_poll_preserves_the_full_live_claim_eligibility_matrix(): void
     {
         $station = $this->device('station-read-outcomes');
         $unclaimed = $this->order($this->qrSession($station));
-        $declined = $this->order($this->qrSession($station), [
-            'charge_outcome' => Order::CHARGE_OUTCOME_DECLINED,
+        $inFlight = $this->order($this->qrSession($station), [
+            'charge_device_id' => $station->getKey(),
+            'charge_amount_baisas' => 4750,
+            'charge_claimed_at' => now(),
+            'charge_deadline_at' => now()->addMinutes(3),
+            'charge_outcome' => null,
+        ]);
+        $lapsed = $this->order($this->qrSession($station), [
+            'charge_device_id' => $station->getKey(),
+            'charge_amount_baisas' => 4750,
+            'charge_claimed_at' => now()->subMinutes(5),
+            'charge_deadline_at' => now()->subMinutes(2),
+            'charge_outcome' => Order::CHARGE_OUTCOME_LAPSED,
         ]);
         $uncertain = $this->order($this->qrSession($station), [
             'charge_device_id' => $station->getKey(),
@@ -225,20 +254,41 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
             'charge_deadline_at' => now()->addMinutes(3),
             'charge_outcome' => Order::CHARGE_OUTCOME_APPROVED,
         ]);
+        $declined = $this->order($this->qrSession($station), [
+            'charge_device_id' => $station->getKey(),
+            'charge_amount_baisas' => 4750,
+            'charge_claimed_at' => now(),
+            'charge_deadline_at' => now()->addMinutes(3),
+            'charge_outcome' => Order::CHARGE_OUTCOME_DECLINED,
+        ]);
+        $cancelled = $this->order($this->qrSession($station), [
+            'charge_device_id' => $station->getKey(),
+            'charge_amount_baisas' => 4750,
+            'charge_claimed_at' => now(),
+            'charge_deadline_at' => now()->addMinutes(3),
+            'charge_outcome' => Order::CHARGE_OUTCOME_CANCELLED,
+        ]);
 
-        $listedUuids = collect(
-            $this->getAs($station)
-                ->assertOk()
-                ->assertJsonCount(2, 'data.orders')
-                ->json('data.orders'),
-        )->pluck('order_uuid')->all();
+        $listedOrders = $this->getAs($station)
+            ->assertOk()
+            ->assertJsonCount(3, 'data.orders')
+            ->json('data.orders');
+        $this->assertIsArray($listedOrders);
+        foreach ($listedOrders as $listedOrder) {
+            $this->assertArrayHasKey('receipt_number', $listedOrder);
+            $this->assertNull($listedOrder['receipt_number']);
+        }
+        $listedUuids = collect($listedOrders)->pluck('order_uuid')->all();
 
-        $this->assertSame([$unclaimed->uuid, $declined->uuid], $listedUuids);
+        $this->assertSame([$unclaimed->uuid, $declined->uuid, $cancelled->uuid], $listedUuids);
+        $this->assertNotContains($inFlight->uuid, $listedUuids);
+        $this->assertNotContains($lapsed->uuid, $listedUuids);
         $this->assertNotContains($uncertain->uuid, $listedUuids);
         $this->assertNotContains($approved->uuid, $listedUuids);
 
         $this->claimAs($station, (string) $unclaimed->uuid)->assertOk();
         $this->claimAs($station, (string) $declined->uuid)->assertOk();
+        $this->claimAs($station, (string) $cancelled->uuid)->assertOk();
     }
 
     public function test_only_an_authenticated_assigned_payment_station_can_poll(): void

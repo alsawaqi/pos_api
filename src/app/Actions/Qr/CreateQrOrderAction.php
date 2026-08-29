@@ -114,7 +114,7 @@ final class CreateQrOrderAction
             $status = $choice === 'machine'
                 ? Order::STATUS_AWAITING_PAYMENT
                 : Order::STATUS_HELD;
-            $allocation = $choice === 'counter' ? $this->numbers->handle($device) : null;
+            $allocation = $this->numbers->handle($device);
             $receiptNumber = $allocation['formatted'] ?? null;
 
             $order = Order::query()->create([

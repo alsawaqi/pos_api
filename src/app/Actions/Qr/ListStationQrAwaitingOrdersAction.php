@@ -17,6 +17,7 @@ final class ListStationQrAwaitingOrdersAction
      * @return list<array{
      *     session_uuid: string,
      *     order_uuid: string,
+     *     receipt_number: string|null,
      *     status: string,
      *     amount_baisas: int,
      *     item_count: int,
@@ -51,6 +52,7 @@ final class ListStationQrAwaitingOrdersAction
                 static fn (Order $order): array => [
                     'session_uuid' => (string) $session->uuid,
                     'order_uuid' => (string) $order->uuid,
+                    'receipt_number' => $order->receipt_number,
                     'status' => (string) $order->status,
                     'amount_baisas' => Money::toBaisas($order->grand_total),
                     'item_count' => (int) $order->items_count,

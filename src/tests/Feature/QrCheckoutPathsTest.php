@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\QrSession;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -91,6 +92,23 @@ final class QrCheckoutPathsTest extends TestCase
         ]);
     }
 
+    private function disableNumbering(): void
+    {
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100,
+            'key' => 'order_numbering',
+            'value' => json_encode([
+                'enabled' => false,
+                'prefix' => 'QR-',
+                'pad' => 4,
+                'scope' => 'branch',
+                'daily_reset' => false,
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
     private function postCheckout(
         QrSession $session,
         string $secret,
@@ -142,9 +160,10 @@ final class QrCheckoutPathsTest extends TestCase
         ], $attributes));
     }
 
-    public function test_machine_checkout_writes_awaiting_without_number_or_device_event_id(): void
+    public function test_machine_checkout_tolerates_disabled_numbering(): void
     {
         $this->seedCheckoutProduct();
+        $this->disableNumbering();
         $station = $this->createStation();
         $secret = 'machine-checkout-secret';
         $session = $this->createQrSession($station, $secret);
@@ -164,6 +183,55 @@ final class QrCheckoutPathsTest extends TestCase
         $this->assertNull($order->staff_id);
         $this->assertNull($order->receipt_number);
         $this->assertNull($order->client_event_id);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+    }
+
+    public function test_machine_and_counter_checkouts_share_one_interleaved_sequence(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        $this->seedCheckoutProduct();
+        $this->enableNumbering();
+        $station = $this->createStation();
+        $receipts = [];
+
+        for ($number = 1; $number <= 20; $number++) {
+            $choice = $number % 2 === 1 ? 'machine' : 'counter';
+            $status = $choice === 'machine'
+                ? Order::STATUS_AWAITING_PAYMENT
+                : Order::STATUS_HELD;
+            $secret = 'interleaved-secret-'.$number;
+            $session = $this->createQrSession($station, $secret);
+            $expectedReceipt = sprintf('QR-%04d', $number);
+
+            $response = $this->postCheckout(
+                $session,
+                $secret,
+                $choice,
+                'interleaved-request-'.$number,
+            )->assertCreated()
+                ->assertJsonPath('data.order.status', $status)
+                ->assertJsonPath('data.order.receipt_number', $expectedReceipt);
+
+            $order = Order::query()
+                ->where('uuid', $response->json('data.order.uuid'))
+                ->sole();
+            $this->assertSame($expectedReceipt, $order->receipt_number);
+            $receipts[] = $order->receipt_number;
+        }
+
+        $expectedReceipts = array_map(
+            static fn (int $number): string => sprintf('QR-%04d', $number),
+            range(1, 20),
+        );
+        $this->assertSame($expectedReceipts, $receipts);
+        $this->assertCount(20, array_unique($receipts));
+        $this->assertSame(10, Order::query()->where('status', Order::STATUS_AWAITING_PAYMENT)->count());
+        $this->assertSame(10, Order::query()->where('status', Order::STATUS_HELD)->count());
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'next_number' => 21,
+        ]);
     }
 
     public function test_counter_checkout_allocates_and_returns_the_same_receipt_number(): void
@@ -193,6 +261,7 @@ final class QrCheckoutPathsTest extends TestCase
     public function test_counter_checkout_still_writes_when_numbering_is_disabled(): void
     {
         $this->seedCheckoutProduct();
+        $this->disableNumbering();
         $station = $this->createStation();
         $secret = 'counter-unnumbered-secret';
         $session = $this->createQrSession($station, $secret);
@@ -289,6 +358,7 @@ final class QrCheckoutPathsTest extends TestCase
     public function test_replaying_a_client_request_returns_the_original_response_and_order(): void
     {
         $this->seedCheckoutProduct();
+        $this->enableNumbering();
         $station = $this->createStation();
         $secret = 'checkout-replay-secret';
         $session = $this->createQrSession($station, $secret);
@@ -300,8 +370,15 @@ final class QrCheckoutPathsTest extends TestCase
 
         $this->assertSame($first->getContent(), $replay->getContent());
         $this->assertSame($first->json('data.order.uuid'), $replay->json('data.order.uuid'));
+        $this->assertSame('QR-0001', $replay->json('data.order.receipt_number'));
         $this->assertDatabaseCount('pos_orders', 1);
         $this->assertDatabaseCount('pos_order_items', 1);
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => null,
+            'next_number' => 2,
+        ]);
     }
 
     public function test_client_request_id_is_stored_verbatim(): void

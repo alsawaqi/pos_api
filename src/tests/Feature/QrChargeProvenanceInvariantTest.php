@@ -168,6 +168,71 @@ final class QrChargeProvenanceInvariantTest extends TestCase
         $this->assertNoRoundupMoney();
     }
 
+    public function test_existing_reference_survives_safe_fallback_and_attended_lapsed_recovery(): void
+    {
+        $station = $this->device('reference-station');
+        $till = $this->device('reference-till', 10, 'fixed_pos');
+
+        $safeOrder = $this->checkout($station)['order'];
+        $safeReference = $safeOrder->receipt_number;
+        $this->assertSame('INV-0001', $safeReference);
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => null,
+            'next_number' => 2,
+        ]);
+        $this->assertDatabaseCount('pos_order_sequences', 1);
+
+        $this->fallback($station, $safeOrder)
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_HELD)
+            ->assertJsonPath('data.receipt_number', $safeReference);
+        $this->assertSame($safeReference, $safeOrder->fresh()->receipt_number);
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => null,
+            'next_number' => 2,
+        ]);
+
+        $lapsedOrder = $this->checkout($station)['order'];
+        $lapsedReference = $lapsedOrder->receipt_number;
+        $this->assertSame('INV-0002', $lapsedReference);
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => null,
+            'next_number' => 3,
+        ]);
+
+        $this->claim($station, $lapsedOrder)->assertOk();
+        $deadline = $lapsedOrder->fresh()->charge_deadline_at;
+        $this->assertNotNull($deadline);
+        $this->travelTo($deadline->copy()->addSeconds(30));
+        $this->artisan('qr:sweep-stale-charges')
+            ->expectsOutput('lapsed=1 grace_seconds=30')
+            ->assertSuccessful();
+        $lapsed = $lapsedOrder->fresh();
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $lapsed->charge_outcome);
+        $provenance = $this->chargeProvenance($lapsed);
+
+        $this->fallback($till, $lapsed)
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_HELD)
+            ->assertJsonPath('data.receipt_number', $lapsedReference);
+        $recovered = $lapsedOrder->fresh();
+        $this->assertSame($lapsedReference, $recovered->receipt_number);
+        $this->assertSame($provenance, $this->chargeProvenance($recovered));
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => null,
+            'next_number' => 3,
+        ]);
+        $this->assertNoRoundupMoney();
+    }
+
     public function test_inflight_and_scoped_orders_are_omitted_from_every_other_station(): void
     {
         $first = $this->device('scope-first', 10);

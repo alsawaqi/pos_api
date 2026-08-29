@@ -78,8 +78,14 @@ final class FallbackQrOrderToCounterAction
                 $this->lockBoundOrderedSession($order, $device);
             }
 
-            $allocation = $this->allocateOrderNumber->handle($device);
-            if ($allocation === null && ! $isAttendedRecovery) {
+            $receiptNumber = is_string($order->receipt_number)
+                && trim($order->receipt_number) !== ''
+                    ? (string) $order->receipt_number
+                    : null;
+            $allocation = $receiptNumber === null
+                ? $this->allocateOrderNumber->handle($device)
+                : null;
+            if ($receiptNumber === null && $allocation === null && ! $isAttendedRecovery) {
                 throw new QrChargeException(
                     'numbering_disabled',
                     409,
@@ -88,7 +94,7 @@ final class FallbackQrOrderToCounterAction
             }
 
             $updates = [
-                'receipt_number' => $allocation['formatted'] ?? $order->receipt_number,
+                'receipt_number' => $receiptNumber ?? $allocation['formatted'] ?? null,
                 'status' => Order::STATUS_HELD,
             ];
 

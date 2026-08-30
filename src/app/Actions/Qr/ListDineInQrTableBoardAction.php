@@ -50,6 +50,25 @@ final class ListDineInQrTableBoardAction
             return [];
         }
 
+        // A dine-in browser may disappear after finish-and-pay without ever
+        // touching a public route again. Staff reads are therefore also a
+        // lazy-expiry boundary: make the same conditional, one-way transition
+        // as ResolveQrSession before projecting the board. Scoping to the
+        // authenticated branch's concrete table ids prevents a board reader
+        // from sweeping unrelated sessions.
+        $now = now();
+        QrSession::query()
+            ->whereIn('table_id', $tableIds)
+            ->where('company_id', (int) $device->company_id)
+            ->where('branch_id', (int) $device->branch_id)
+            ->whereIn('status', QrSession::EXPIRABLE_STATUSES)
+            ->where('expires_at', '<=', $now)
+            ->update([
+                'status' => QrSession::STATUS_EXPIRED,
+                'closed_at' => $now,
+                'updated_at' => $now,
+            ]);
+
         /** @var Collection<int, Collection<int, QrSession>> $sessions */
         $sessions = QrSession::query()
             ->whereIn('table_id', $tableIds)

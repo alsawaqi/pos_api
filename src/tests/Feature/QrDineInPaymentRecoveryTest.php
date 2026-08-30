@@ -16,6 +16,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -43,6 +44,8 @@ final class QrDineInPaymentRecoveryTest extends TestCase
     private const AWAITING_URL = '/api/v1/device/qr/awaiting-orders';
 
     private const CLAIM_URL = '/api/v1/device/qr/claim-charge';
+
+    private const CLAIM_SETTLEMENT_URL = '/api/v1/device/qr/claim-settlement';
 
     private const RELEASE_URL = '/api/v1/device/qr/release-charge';
 
@@ -72,6 +75,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $this->withoutMiddleware(ThrottleRequests::class);
         config([
             'qr.charge_claim_seconds' => 180,
+            'qr.settlement_claim_seconds' => 300,
             'qr.charge_sweep_enabled' => false,
             'qr.dine_in_session_lifetime_hours' => 6,
             'qr.station_geofence_exempt' => false,
@@ -143,6 +147,341 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         }
 
         $this->assertNoRoundupArtifacts();
+    }
+
+    public function test_attended_claim_atomically_freezes_and_blocks_every_live_consumer(): void
+    {
+        $station = $this->device('payment_station');
+        $holder = $this->device('fixed_pos');
+        $competitor = $this->device('fixed_pos');
+        $table = $this->table(10, 'CLAIM-CONSUMERS');
+        $secret = 'claim-consumer-secret';
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE, $secret);
+        $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
+        $pending = $this->round(
+            $session,
+            null,
+            QrOrderRound::STATUS_PENDING_CONFIRMATION,
+        );
+
+        $claimed = $this->claimSettlement($holder, $order)
+            ->assertOk()
+            ->assertJsonPath('data.order_uuid', $order->uuid)
+            ->assertJsonPath('data.status', Order::STATUS_AWAITING_PAYMENT)
+            ->assertJsonPath('data.charge_amount_baisas', 4750)
+            ->assertJsonPath('data.already_claimed_by_this_device', false);
+        $deadline = Carbon::parse((string) $claimed->json('data.charge_deadline_at'));
+        $this->assertSame(300, (int) now()->diffInSeconds($deadline, false));
+        $frozen = $order->fresh();
+        $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $frozen->status);
+        $this->assertSame((int) $holder->id, (int) $frozen->charge_device_id);
+        $this->assertSame(4750, (int) $frozen->charge_amount_baisas);
+        $this->assertNull($frozen->charge_roundup_amount_baisas);
+        $this->assertNull($frozen->charge_outcome);
+        $this->assertSame(QrSession::STATUS_ORDERED, $session->fresh()->status);
+        $this->assertSame(QrOrderRound::STATUS_REJECTED, $pending->fresh()->status);
+        $this->assertSame((int) $holder->id, (int) $pending->fresh()->resolved_by_device_id);
+        $this->assertNotNull($pending->fresh()->resolved_at);
+        $this->qrStatus($session, $secret)
+            ->assertOk()
+            ->assertJsonPath('data.dine_in.payment_state', 'awaiting_counter');
+
+        $claimedAt = $frozen->charge_claimed_at;
+        $this->claimSettlement($holder, $order)
+            ->assertOk()
+            ->assertJsonPath('data.already_claimed_by_this_device', true);
+        $this->assertTrue($claimedAt->equalTo($order->fresh()->charge_claimed_at));
+        $this->assertTrue($deadline->equalTo($order->fresh()->charge_deadline_at));
+
+        $this->claimSettlement($competitor, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'charge_already_claimed');
+        $this->claim($station, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'charge_already_claimed');
+        $this->assertNull($this->listedOrder(
+            $this->getAs($station, self::AWAITING_URL)->assertOk(),
+            $order,
+        ));
+
+        $this->withHeaders([
+            'X-QR-Session' => $session->uuid,
+            'X-QR-Client-Secret' => $secret,
+        ])->postJson(self::TABLE_ROUND_URL, [
+            'client_request_id' => 'blocked-after-attended-claim',
+            'lines' => [[
+                'product_id' => 999999,
+                'qty' => 1,
+                'addon_ids' => [],
+                'notes' => null,
+            ]],
+        ])->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_round_session_not_active');
+        $this->finish($session, $secret, 'counter')
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_finish_session_not_active');
+
+        $void = $this->push($holder, [$this->voidEvent($order)])->assertOk();
+        $this->assertSame('failed', $void->json('data.results.0.status'));
+        $this->assertStringContainsString(
+            'cannot void an order with a live charge claim',
+            (string) $void->json('data.results.0.result.error'),
+        );
+        $this->postAs($holder, self::CLEAR_URL, ['table_id' => $table->id])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_table_charge_live');
+        $this->postAs($holder, self::REOPEN_URL, ['order_uuid' => $order->uuid])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
+        $this->postAs($holder, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'charge_already_claimed');
+        $this->assertSame($frozen->getRawOriginal(), $order->fresh()->getRawOriginal());
+    }
+
+    public function test_cancelled_attended_claim_reopens_and_accepts_another_frozen_round(): void
+    {
+        $productId = $this->seedStationDeletionRoundPrerequisites();
+        $station = $this->device('payment_station');
+        $till = $this->device('fixed_pos');
+        $table = $this->table(10, 'CLAIM-CANCELLED');
+        $secret = 'claim-cancelled-secret';
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ORDERED, $secret);
+        $order = $this->order($station, $table, $session, Order::STATUS_HELD);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
+
+        $this->claimSettlement($till, $order)->assertOk();
+        $this->postAs($till, self::RELEASE_URL, [
+            'order_uuid' => $order->uuid,
+            'outcome' => Order::CHARGE_OUTCOME_CANCELLED,
+        ])->assertOk()
+            ->assertJsonPath('data.charge_outcome', Order::CHARGE_OUTCOME_CANCELLED);
+        $this->postAs($till, self::REOPEN_URL, ['order_uuid' => $order->uuid])
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_OPEN)
+            ->assertJsonPath('data.session_status', QrSession::STATUS_ACTIVE);
+        $this->assertChargeFieldsNull($order->fresh());
+
+        $this->withHeaders([
+            'X-QR-Session' => $session->uuid,
+            'X-QR-Client-Secret' => $secret,
+        ])->postJson(self::TABLE_ROUND_URL, [
+            'client_request_id' => 'round-after-cancelled-settlement',
+            'lines' => [[
+                'product_id' => $productId,
+                'qty' => 1,
+                'addon_ids' => [],
+                'notes' => null,
+            ]],
+        ])->assertCreated()
+            ->assertJsonPath('data.order.grand_total_baisas', 9500);
+    }
+
+    public function test_lapsed_attended_claim_enters_ambiguity_and_manager_recovery(): void
+    {
+        config([
+            'qr.settlement_claim_seconds' => 5,
+            'qr.charge_sweep_grace_seconds' => 1,
+        ]);
+        $station = $this->device('payment_station');
+        $holder = $this->device('fixed_pos');
+        $competitor = $this->device('fixed_pos');
+        $table = $this->table(10, 'CLAIM-LAPSED');
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
+        $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+
+        $this->claimSettlement($holder, $order)->assertOk();
+        $this->travel(7)->seconds();
+        $this->artisan('qr:sweep-stale-charges')->assertSuccessful();
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $order->fresh()->charge_outcome);
+
+        $this->claimSettlement($competitor, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
+        $this->postAs($holder, self::REOPEN_URL, ['order_uuid' => $order->uuid])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
+
+        $this->postAs($holder, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_HELD);
+        $this->assertSame(Order::CHARGE_OUTCOME_LAPSED, $order->fresh()->charge_outcome);
+        $this->assertSyncProcessed($this->push($holder, [
+            $this->payEvent($order, $this->cashTender()),
+        ]));
+        $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
+        $this->assertSame(QrSession::STATUS_CLOSED, $session->fresh()->status);
+    }
+
+    public function test_uncertain_attended_release_requires_manager_recovery(): void
+    {
+        $station = $this->device('payment_station');
+        $holder = $this->device('fixed_pos');
+        $manager = $this->device('handheld');
+        $table = $this->table(10, 'CLAIM-UNCERTAIN');
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
+        $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+
+        $this->claimSettlement($holder, $order)->assertOk();
+        $this->postAs($holder, self::RELEASE_URL, [
+            'order_uuid' => $order->uuid,
+            'outcome' => Order::CHARGE_OUTCOME_UNCERTAIN,
+        ])->assertOk()
+            ->assertJsonPath('data.charge_outcome', Order::CHARGE_OUTCOME_UNCERTAIN);
+        $this->claimSettlement($holder, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'charge_already_claimed');
+        $this->postAs($holder, self::REOPEN_URL, ['order_uuid' => $order->uuid])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
+
+        $this->postAs($manager, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_HELD);
+        $this->assertSame(Order::CHARGE_OUTCOME_UNCERTAIN, $order->fresh()->charge_outcome);
+        $this->assertSyncProcessed($this->push($manager, [
+            $this->payEvent($order, $this->cashTender()),
+        ]));
+        $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
+        $this->assertSame(QrSession::STATUS_CLOSED, $session->fresh()->status);
+    }
+
+    public function test_attended_claim_enforces_geofence_and_exact_frozen_tender(): void
+    {
+        Branch::query()->whereKey(10)->update([
+            'latitude' => 23.5880,
+            'longitude' => 58.3829,
+            'geofence_radius_m' => 100,
+        ]);
+        $station = $this->device('payment_station');
+        $till = $this->device('fixed_pos');
+        $table = $this->table(10, 'CLAIM-GEOFENCE');
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
+        $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+
+        $this->claimSettlement($till, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'geofence_fix_required');
+        $this->claimSettlement($till, $order, ['lat' => 24.0, 'lng' => 58.3829])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'geofence_outside');
+        $this->claimSettlement($till, $order, ['lat' => 23.5880, 'lng' => 58.3829])
+            ->assertOk()
+            ->assertJsonPath('data.charge_amount_baisas', 4750);
+
+        $minusOne = $this->cashTender();
+        $minusOne['amount_baisas'] = 4749;
+        $refused = $this->push($till, [$this->payEvent($order, $minusOne)])->assertOk();
+        $this->assertSame('failed', $refused->json('data.results.0.status'));
+        $this->assertStringContainsString(
+            'charge_amount_baisas 4750',
+            (string) $refused->json('data.results.0.result.error'),
+        );
+        $this->assertSame(0, Payment::query()->where('order_id', $order->id)->count());
+
+        // The live claim paid the fail-closed fence at reservation time. The
+        // inherited order.pay path accepts the exact frozen amount.
+        $this->assertSyncProcessed($this->push($till, [
+            $this->payEvent($order, $this->cashTender()),
+        ]));
+        $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
+    }
+
+    public function test_attended_claim_refusal_and_route_contract_is_stable(): void
+    {
+        $station = $this->device('payment_station');
+        $till = $this->device('fixed_pos');
+
+        $eligibleTable = $this->table(10, 'CLAIM-REFUSALS-ELIGIBLE');
+        $eligibleSession = $this->qrSession($station, $eligibleTable, QrSession::STATUS_ACTIVE);
+        $eligibleOrder = $this->order(
+            $station,
+            $eligibleTable,
+            $eligibleSession,
+            Order::STATUS_OPEN,
+        );
+        $this->claimSettlement($station, $eligibleOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'device_not_attended');
+        $this->postAs($till, self::CLAIM_SETTLEMENT_URL, ['order_uuid' => 'not-a-uuid'])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.0.code', 'validation_failed');
+        $this->postAs($till, self::CLAIM_SETTLEMENT_URL, [
+            'order_uuid' => (string) Str::uuid(),
+        ])->assertNotFound()
+            ->assertJsonPath('errors.0.code', 'order_not_found');
+
+        $quickSession = $this->qrSession($station, null, QrSession::STATUS_ACTIVE);
+        $quickOrder = $this->order($station, null, $quickSession, Order::STATUS_OPEN);
+        $this->claimSettlement($till, $quickOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_order_not_settleable');
+
+        $mismatchTable = $this->table(10, 'CLAIM-REFUSALS-MISMATCH');
+        $mismatchSession = $this->qrSession($station, $mismatchTable, QrSession::STATUS_ACTIVE);
+        $mismatchOrder = $this->order(
+            $station,
+            $mismatchTable,
+            $mismatchSession,
+            Order::STATUS_OPEN,
+        );
+        $otherTable = $this->table(10, 'CLAIM-REFUSALS-OTHER');
+        $mismatchOrder->update(['table_id' => $otherTable->id]);
+        $this->claimSettlement($till, $mismatchOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'order_not_bound_to_device_session');
+
+        $expiredTable = $this->table(10, 'CLAIM-REFUSALS-EXPIRED');
+        $expiredSession = $this->qrSession($station, $expiredTable, QrSession::STATUS_ACTIVE);
+        $expiredOrder = $this->order(
+            $station,
+            $expiredTable,
+            $expiredSession,
+            Order::STATUS_OPEN,
+        );
+        $expiredSession->update(['expires_at' => now()->subSecond()]);
+        $this->claimSettlement($till, $expiredOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_session_expired');
+
+        $stateTable = $this->table(10, 'CLAIM-REFUSALS-STATE');
+        $stateSession = $this->qrSession($station, $stateTable, QrSession::STATUS_PENDING);
+        $stateOrder = $this->order($station, $stateTable, $stateSession, Order::STATUS_OPEN);
+        $this->claimSettlement($till, $stateOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_session_not_settleable');
+
+        $residueTable = $this->table(10, 'CLAIM-REFUSALS-RESIDUE');
+        $residueSession = $this->qrSession($station, $residueTable, QrSession::STATUS_ORDERED);
+        $residueOrder = $this->order(
+            $station,
+            $residueTable,
+            $residueSession,
+            Order::STATUS_HELD,
+            $this->chargeProvenance($station, Order::CHARGE_OUTCOME_LAPSED, false),
+        );
+        $this->claimSettlement($till, $residueOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
+
+        $replayTable = $this->table(10, 'CLAIM-REFUSALS-REPLAY');
+        $replaySession = $this->qrSession($station, $replayTable, QrSession::STATUS_ACTIVE);
+        $replayOrder = $this->order(
+            $station,
+            $replayTable,
+            $replaySession,
+            Order::STATUS_OPEN,
+        );
+        $this->claimSettlement($till, $replayOrder)->assertOk();
+        $replaySession->update(['status' => QrSession::STATUS_CLOSED]);
+        $this->claimSettlement($till, $replayOrder)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_session_not_settleable');
+
+        $route = Route::getRoutes()->getByName('device.qr.claim-settlement');
+        $this->assertNotNull($route);
+        $this->assertContains('throttle:qr-settlement-claim', $route->gatherMiddleware());
     }
 
     public function test_dine_in_payment_is_branch_wide_while_quick_payment_remains_device_pinned(): void
@@ -365,23 +704,38 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $session->update(['expires_at' => now()->addMinute()]);
 
         $this->travel(61)->seconds();
-        $this->qrStatus($session, $secret)
-            ->assertNotFound()
-            ->assertJsonPath('errors.0.code', 'qr_session_not_found');
-        $this->assertSame(QrSession::STATUS_EXPIRED, $session->fresh()->status);
+        // No customer request performs the lazy flip: the staff board is the
+        // recovery boundary for a browser that finished and disappeared.
+        $this->assertSame(QrSession::STATUS_ORDERED, $session->fresh()->status);
 
         $board = $this->getAs($till, self::BOARD_URL)
             ->assertOk()
             ->assertJsonCount(1, 'data.tables')
             ->assertJsonPath('data.tables.0.table_id', $table->id)
+            ->assertJsonPath('data.tables.0.session_status', QrSession::STATUS_EXPIRED)
             ->assertJsonPath('data.tables.0.orphaned', true)
             ->assertJsonPath('data.tables.0.order.uuid', $order->uuid);
+        $this->assertSame(QrSession::STATUS_EXPIRED, $session->fresh()->status);
         $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $board->json('data.tables.0.order.status'));
 
+        $this->claimSettlement($till, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_order_not_settleable');
         $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
             ->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD);
         $this->assertChargeFieldsNull($order->fresh());
+        $this->claimSettlement($station, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'device_not_attended');
+        $this->claimSettlement($till, $order)
+            ->assertOk()
+            ->assertJsonPath('data.charge_amount_baisas', 4750)
+            ->assertJsonPath('data.already_claimed_by_this_device', false);
+        $this->claimSettlement($till, $order)
+            ->assertOk()
+            ->assertJsonPath('data.already_claimed_by_this_device', true);
+        $this->assertSame(QrSession::STATUS_EXPIRED, $session->fresh()->status);
 
         $this->assertSyncProcessed($this->push($till, [
             $this->payEvent($order, $this->cashTender()),
@@ -406,6 +760,49 @@ final class QrDineInPaymentRecoveryTest extends TestCase
                 ->count(),
         );
         $this->assertNoRoundupArtifacts();
+    }
+
+    public function test_fallback_and_refused_clear_are_independent_table_scoped_expiry_boundaries(): void
+    {
+        $station = $this->device('payment_station');
+        $till = $this->device('fixed_pos');
+
+        $fallbackTable = $this->table(10, 'DIRECT-FALLBACK');
+        $fallbackSession = $this->qrSession(
+            $station,
+            $fallbackTable,
+            QrSession::STATUS_ORDERED,
+        );
+        $fallbackOrder = $this->order(
+            $station,
+            $fallbackTable,
+            $fallbackSession,
+            Order::STATUS_AWAITING_PAYMENT,
+        );
+
+        $clearTable = $this->table(10, 'REFUSED-CLEAR');
+        $clearSession = $this->qrSession($station, $clearTable, QrSession::STATUS_ORDERED);
+        $this->order(
+            $station,
+            $clearTable,
+            $clearSession,
+            Order::STATUS_AWAITING_PAYMENT,
+        );
+        $fallbackSession->update(['expires_at' => now()->addMinute()]);
+        $clearSession->update(['expires_at' => now()->addMinute()]);
+        $this->travel(61)->seconds();
+
+        $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $fallbackOrder->uuid])
+            ->assertOk()
+            ->assertJsonPath('data.status', Order::STATUS_HELD);
+        $this->assertSame(QrSession::STATUS_EXPIRED, $fallbackSession->fresh()->status);
+        $this->assertSame(QrSession::STATUS_ORDERED, $clearSession->fresh()->status);
+
+        $this->postAs($till, self::CLEAR_URL, ['table_id' => $clearTable->id])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_table_payment_pending');
+        // The classified refusal must not roll the staff-triggered expiry back.
+        $this->assertSame(QrSession::STATUS_EXPIRED, $clearSession->fresh()->status);
     }
 
     public function test_hard_deleted_opening_station_leaves_a_fail_closed_table_scoped_recovery_path(): void
@@ -466,6 +863,10 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             ->assertJsonPath('data.tables.0.order.uuid', $order->uuid)
             ->assertJsonPath('data.tables.0.order.status', Order::STATUS_AWAITING_PAYMENT);
 
+        $this->claimSettlement($till, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'order_not_bound_to_device_session');
+
         $safeBefore = $order->fresh()->getRawOriginal();
         $this->postAs($wrongBranchTill, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
             ->assertNotFound()
@@ -489,15 +890,31 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         ));
         $ambiguousBefore = $this->chargeSnapshot($order->fresh());
         $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
-            ->assertConflict();
-        $this->assertSame($ambiguousBefore, $this->chargeSnapshot($order->fresh()));
-
-        $order->update(array_fill_keys(self::CHARGE_FIELDS, null));
-        $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
             ->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD)
             ->assertJsonPath('data.receipt_number', $order->receipt_number);
+        $this->assertSame($ambiguousBefore, $this->chargeSnapshot($order->fresh()));
+        $this->claimSettlement($till, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
+
+        $order->update(array_fill_keys(self::CHARGE_FIELDS, null));
         $this->assertChargeFieldsNull($order->fresh());
+
+        $this->claimSettlement($wrongBranchTill, $order)
+            ->assertNotFound()
+            ->assertJsonPath('errors.0.code', 'order_not_found');
+        $this->claimSettlement($unattendedStation, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'device_not_attended');
+        $this->claimSettlement($till, $order)
+            ->assertOk()
+            ->assertJsonPath('data.charge_amount_baisas', 4750)
+            ->assertJsonPath('data.already_claimed_by_this_device', false);
+        $this->claimSettlement($till, $order)
+            ->assertOk()
+            ->assertJsonPath('data.already_claimed_by_this_device', true);
+        $this->assertNull($order->fresh()->qr_session_id);
 
         $this->assertSyncProcessed($this->push($till, [
             $this->payEvent($order, $this->cashTender()),
@@ -744,6 +1161,20 @@ final class QrDineInPaymentRecoveryTest extends TestCase
     private function claim(Device $device, Order $order): TestResponse
     {
         return $this->postAs($device, self::CLAIM_URL, ['order_uuid' => $order->uuid]);
+    }
+
+    /** @param array{lat: float, lng: float}|null $gps */
+    private function claimSettlement(
+        Device $device,
+        Order $order,
+        ?array $gps = null,
+    ): TestResponse {
+        $payload = ['order_uuid' => $order->uuid];
+        if ($gps !== null) {
+            $payload['gps'] = $gps;
+        }
+
+        return $this->postAs($device, self::CLAIM_SETTLEMENT_URL, $payload);
     }
 
     /** @param list<array<string, mixed>> $events */

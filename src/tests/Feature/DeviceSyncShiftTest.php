@@ -646,4 +646,161 @@ class DeviceSyncShiftTest extends TestCase
         $res = $this->push('mdev_b', [$this->closeEvent($shiftB, 9000)])->assertOk();
         $this->assertSame(9000, $res->json('data.results.0.result.expected_cash_baisas'));
     }
+
+    /**
+     * QR sales follow the successful payment's device and captured_at across
+     * every close aggregate. The opening station and meal start time are not
+     * drawer facts.
+     */
+    public function test_qr_settlements_follow_payment_device_and_capture_window_across_the_full_shift_summary(): void
+    {
+        $till = $this->device('mdev_a', 100, 10);
+        $station = Device::factory()->paired('mdev_qr_shift_station')->create([
+            'company_id' => 100,
+            'branch_id' => 10,
+            'device_type' => 'payment_station',
+        ]);
+        $openedAt = now()->subHours(2);
+        $closedAt = now();
+        $shiftUuid = (string) Str::uuid();
+
+        $this->push('mdev_a', [
+            $this->openEvent($shiftUuid, 10000, $openedAt->toIso8601String()),
+        ])->assertOk();
+
+        $insertSettlement = function (
+            string $status,
+            string $method,
+            Device $payer,
+            string $capturedAt,
+            int $grandBaisas,
+            array $totals = [],
+            ?Device $openingDevice = null,
+            ?int $staffId = null,
+        ) use ($station): array {
+            $orderId = DB::table('pos_orders')->insertGetId([
+                'uuid' => (string) Str::uuid(),
+                'company_id' => 100,
+                'branch_id' => 10,
+                'device_id' => ($openingDevice ?? $station)->getKey(),
+                'staff_id' => $staffId,
+                'order_type' => 'dine_in',
+                'status' => $status,
+                'source' => 'qr_web',
+                'subtotal' => number_format(($totals['subtotal'] ?? $grandBaisas) / 1000, 3, '.', ''),
+                'discount_total' => number_format(($totals['discount'] ?? 0) / 1000, 3, '.', ''),
+                'comp_total' => number_format(($totals['comp'] ?? 0) / 1000, 3, '.', ''),
+                'tax_total' => number_format(($totals['tax'] ?? 0) / 1000, 3, '.', ''),
+                'grand_total' => number_format($grandBaisas / 1000, 3, '.', ''),
+                // Deliberately outside this shift: QR summary timing must use
+                // the settlement capture, not the meal's opening time.
+                'opened_at' => now()->subHours(5),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $paymentId = DB::table('pos_payments')->insertGetId([
+                'uuid' => (string) Str::uuid(),
+                'order_id' => $orderId,
+                'method' => $method,
+                'amount' => number_format($grandBaisas / 1000, 3, '.', ''),
+                'status' => 'success',
+                'pending_reconciliation' => false,
+                'device_id' => $payer->getKey(),
+                'captured_at' => $capturedAt,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return [$orderId, $paymentId];
+        };
+
+        [$paidOrderId, $paidPaymentId] = $insertSettlement(
+            'paid',
+            'cash',
+            $till,
+            now()->subHour()->toDateTimeString(),
+            4750,
+            ['subtotal' => 5000, 'discount' => 500, 'comp' => 250, 'tax' => 500],
+        );
+        DB::table('pos_roundup_donations')->insert([
+            'uuid' => (string) Str::uuid(),
+            'company_id' => 100,
+            'branch_id' => 10,
+            'device_id' => $till->getKey(),
+            'order_id' => $paidOrderId,
+            'payment_id' => $paidPaymentId,
+            'amount' => '0.250',
+            'status' => 'success',
+            'source' => 'pos_roundup',
+            'occurred_at' => now()->subHour(),
+            'created_at' => now()->subHour(),
+            'updated_at' => now()->subHour(),
+        ]);
+
+        // A paid-then-void QR row follows its settlement into the void lines.
+        $insertSettlement(
+            'void',
+            'cash',
+            $till,
+            now()->subMinutes(30)->toDateTimeString(),
+            700,
+        );
+        // Station card money belongs to no till shift.
+        $insertSettlement(
+            'paid',
+            'card',
+            $station,
+            now()->subMinutes(20)->toDateTimeString(),
+            6000,
+        );
+        // Adversarial legacy matches: neither opening on this drawer with
+        // null staff nor asserting this shift's staff may override the QR
+        // payment-device rule.
+        $insertSettlement(
+            'paid',
+            'card',
+            $station,
+            now()->subMinutes(19)->toDateTimeString(),
+            6100,
+            openingDevice: $till,
+        );
+        $insertSettlement(
+            'paid',
+            'card',
+            $station,
+            now()->subMinutes(18)->toDateTimeString(),
+            6200,
+            staffId: 7,
+        );
+        // Opened during/around this shift but captured before it: excluded.
+        $insertSettlement(
+            'paid',
+            'cash',
+            $till,
+            $openedAt->copy()->subSecond()->toDateTimeString(),
+            800,
+        );
+
+        $res = $this->push('mdev_a', [
+            $this->closeEvent($shiftUuid, 15450, $closedAt->toIso8601String()),
+        ])->assertOk();
+        $summary = $res->json('data.results.0.result.summary');
+
+        $this->assertSame(15450, $res->json('data.results.0.result.expected_cash_baisas'));
+        $this->assertSame(0, $res->json('data.results.0.result.variance_baisas'));
+        $this->assertSame(1, $summary['order_count']);
+        $this->assertSame(5000, $summary['gross_sales_baisas']);
+        $this->assertSame(500, $summary['discount_total_baisas']);
+        $this->assertSame(250, $summary['comp_total_baisas']);
+        $this->assertSame(500, $summary['tax_total_baisas']);
+        $this->assertSame(4750, $summary['grand_total_baisas']);
+        $this->assertSame(1, $summary['void_count']);
+        $this->assertSame(700, $summary['void_total_baisas']);
+        $this->assertSame(250, $summary['round_up_baisas']);
+
+        $cash = collect($summary['tenders'])->firstWhere('method', 'cash');
+        $this->assertSame(5450, $cash['amount_baisas']);
+        $this->assertSame(2, $cash['count']);
+        $this->assertNull(collect($summary['tenders'])->firstWhere('method', 'card'));
+    }
 }

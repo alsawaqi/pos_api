@@ -80,7 +80,11 @@ class CloseShiftHandler implements SyncEventHandler
                 ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
                 ->where('pos_payments.method', Payment::METHOD_CASH)
                 ->where('pos_payments.status', Payment::STATUS_SUCCESS)
-                ->where($this->orderBelongsToShift($shift, 'pos_payments.captured_at'))
+                ->where($this->orderBelongsToShift(
+                    $shift,
+                    'pos_payments.captured_at',
+                    'pos_payments.device_id',
+                ))
                 ->whereBetween('pos_payments.captured_at', [$shift->opened_at, $closedAt])
                 ->selectRaw('COALESCE(SUM(pos_payments.amount), 0) as amt')
                 ->first();
@@ -127,52 +131,138 @@ class CloseShiftHandler implements SyncEventHandler
      * can land in exactly one close. DB-001's explicit shift_id supersedes this
      * temporal fallback.
      *
+     * QR settlements are the exception to opener/staff attribution. When the
+     * caller supplies a payment-device column, a QR order belongs exclusively
+     * to the shift whose device took that payment; its opening station and
+     * null staff must never pull it into another drawer.
+     *
      * @return \Closure(Builder): void
      */
     private function orderBelongsToShift(
         Shift $shift,
         string $activityAtColumn = 'pos_orders.opened_at',
+        ?string $paymentDeviceColumn = null,
     ): \Closure {
-        return function ($q) use ($shift, $activityAtColumn): void {
+        return function ($q) use ($shift, $activityAtColumn, $paymentDeviceColumn): void {
             $q->where('pos_orders.company_id', $shift->company_id)
                 ->where('pos_orders.branch_id', $shift->branch_id)
-                ->where(function ($scope) use ($shift, $activityAtColumn): void {
-                    if ($shift->is_shared && $shift->staff_id !== null) {
-                        $scope->where('pos_orders.staff_id', $shift->staff_id)
-                            ->orWhere(function ($fallback) use ($shift): void {
-                                $fallback
-                                    ->where('pos_orders.device_id', $shift->device_id)
-                                    ->whereNull('pos_orders.staff_id');
-                            });
+                ->where(function ($scope) use ($shift, $activityAtColumn, $paymentDeviceColumn): void {
+                    if ($paymentDeviceColumn === null) {
+                        $this->applyLegacyOrderIdentity($scope, $shift, $activityAtColumn);
 
-                        // Unlike SQL equality, Laravel turns a null value into
-                        // IS NULL. A deleted opening device must not make this
-                        // shift claim every unrelated null-device order.
-                        if ($shift->device_id !== null) {
-                            $scope->orWhere(function ($fallback) use ($shift, $activityAtColumn): void {
-                                $fallback
-                                    ->where('pos_orders.device_id', $shift->device_id)
-                                    ->whereNotNull('pos_orders.staff_id')
-                                    ->where('pos_orders.staff_id', '!=', $shift->staff_id)
-                                    ->whereNotExists(function ($covering) use ($activityAtColumn): void {
-                                        $covering->selectRaw('1')
-                                            ->from('pos_shifts as covering_shift')
-                                            ->whereColumn('covering_shift.company_id', 'pos_orders.company_id')
-                                            ->whereColumn('covering_shift.branch_id', 'pos_orders.branch_id')
-                                            ->whereColumn('covering_shift.staff_id', 'pos_orders.staff_id')
-                                            ->where('covering_shift.is_shared', true)
-                                            ->whereColumn('covering_shift.opened_at', '<=', $activityAtColumn)
-                                            ->where(function ($end) use ($activityAtColumn): void {
-                                                $end->whereNull('covering_shift.closed_at')
-                                                    ->orWhereColumn('covering_shift.closed_at', '>=', $activityAtColumn);
-                                            });
-                                    });
-                            });
-                        }
-                    } else {
-                        $scope->where('pos_orders.device_id', $shift->device_id);
+                        return;
                     }
+
+                    // A null shift device must never match nullable payment
+                    // rows. Deleted-device shifts have no drawer identity.
+                    if ($shift->device_id !== null) {
+                        $scope->where(function ($qr) use ($shift, $paymentDeviceColumn): void {
+                            $qr->where('pos_orders.source', Order::SOURCE_QR_WEB)
+                                ->where($paymentDeviceColumn, $shift->device_id);
+                        });
+                    } else {
+                        $scope->whereRaw('0 = 1');
+                    }
+
+                    $scope->orWhere(function ($legacy) use ($shift, $activityAtColumn): void {
+                        $legacy
+                            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
+                            ->where(function ($identity) use ($shift, $activityAtColumn): void {
+                                $this->applyLegacyOrderIdentity(
+                                    $identity,
+                                    $shift,
+                                    $activityAtColumn,
+                                );
+                            });
+                    });
                 });
+        };
+    }
+
+    private function applyLegacyOrderIdentity(
+        Builder $scope,
+        Shift $shift,
+        string $activityAtColumn,
+    ): void {
+        if ($shift->is_shared && $shift->staff_id !== null) {
+            $scope->where('pos_orders.staff_id', $shift->staff_id)
+                ->orWhere(function ($fallback) use ($shift): void {
+                    $fallback
+                        ->where('pos_orders.device_id', $shift->device_id)
+                        ->whereNull('pos_orders.staff_id');
+                });
+
+            // Unlike SQL equality, Laravel turns a null value into IS NULL.
+            // A deleted opening device must not make this shift claim every
+            // unrelated null-device order.
+            if ($shift->device_id !== null) {
+                $scope->orWhere(function ($fallback) use ($shift, $activityAtColumn): void {
+                    $fallback
+                        ->where('pos_orders.device_id', $shift->device_id)
+                        ->whereNotNull('pos_orders.staff_id')
+                        ->where('pos_orders.staff_id', '!=', $shift->staff_id)
+                        ->whereNotExists(function ($covering) use ($activityAtColumn): void {
+                            $covering->selectRaw('1')
+                                ->from('pos_shifts as covering_shift')
+                                ->whereColumn('covering_shift.company_id', 'pos_orders.company_id')
+                                ->whereColumn('covering_shift.branch_id', 'pos_orders.branch_id')
+                                ->whereColumn('covering_shift.staff_id', 'pos_orders.staff_id')
+                                ->where('covering_shift.is_shared', true)
+                                ->whereColumn('covering_shift.opened_at', '<=', $activityAtColumn)
+                                ->where(function ($end) use ($activityAtColumn): void {
+                                    $end->whereNull('covering_shift.closed_at')
+                                        ->orWhereColumn('covering_shift.closed_at', '>=', $activityAtColumn);
+                                });
+                        });
+                });
+            }
+
+            return;
+        }
+
+        $scope->where('pos_orders.device_id', $shift->device_id);
+    }
+
+    /**
+     * Select QR orders by the successful settlement row captured on this
+     * shift's physical device and inside this shift's time window.
+     *
+     * @param  array{0: mixed, 1: mixed}  $window
+     * @return \Closure(Builder): void
+     */
+    private function qrSettlementBelongsToShift(
+        Shift $shift,
+        array $window,
+        ?string $linkedPaymentIdColumn = null,
+    ): \Closure {
+        return function ($orders) use ($shift, $window, $linkedPaymentIdColumn): void {
+            $orders
+                ->where('pos_orders.company_id', $shift->company_id)
+                ->where('pos_orders.branch_id', $shift->branch_id)
+                ->where('pos_orders.source', Order::SOURCE_QR_WEB);
+
+            if ($shift->device_id === null) {
+                $orders->whereRaw('0 = 1');
+
+                return;
+            }
+
+            $orders->whereExists(function ($payments) use (
+                $shift,
+                $window,
+                $linkedPaymentIdColumn,
+            ): void {
+                $payments->selectRaw('1')
+                    ->from('pos_payments as qr_shift_payment')
+                    ->whereColumn('qr_shift_payment.order_id', 'pos_orders.id')
+                    ->where('qr_shift_payment.status', Payment::STATUS_SUCCESS)
+                    ->where('qr_shift_payment.device_id', $shift->device_id)
+                    ->whereBetween('qr_shift_payment.captured_at', $window);
+
+                if ($linkedPaymentIdColumn !== null) {
+                    $payments->whereColumn('qr_shift_payment.id', $linkedPaymentIdColumn);
+                }
+            });
         };
     }
 
@@ -194,7 +284,8 @@ class CloseShiftHandler implements SyncEventHandler
     {
         $window = [$shift->opened_at, $closedAt];
 
-        $orders = DB::table('pos_orders')
+        $legacyOrders = DB::table('pos_orders')
+            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
             ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_PAID)
             // P-G7 — confirmed delivery-provider orders never put money in
@@ -213,11 +304,28 @@ class CloseShiftHandler implements SyncEventHandler
                 .' COALESCE(SUM(grand_total), 0) as grand'
             )
             ->first();
+        $qrOrders = DB::table('pos_orders')
+            ->where($this->qrSettlementBelongsToShift($shift, $window))
+            ->where('status', Order::STATUS_PAID)
+            ->whereNull('delivery_confirmed_at')
+            ->selectRaw(
+                'COUNT(*) as cnt,'
+                .' COALESCE(SUM(subtotal), 0) as sub,'
+                .' COALESCE(SUM(discount_total), 0) as disc,'
+                .' COALESCE(SUM(comp_total), 0) as comp,'
+                .' COALESCE(SUM(tax_total), 0) as tax,'
+                .' COALESCE(SUM(grand_total), 0) as grand'
+            )
+            ->first();
 
         $tenders = Payment::query()
             ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
             ->where('pos_payments.status', Payment::STATUS_SUCCESS)
-            ->where($this->orderBelongsToShift($shift, 'pos_payments.captured_at'))
+            ->where($this->orderBelongsToShift(
+                $shift,
+                'pos_payments.captured_at',
+                'pos_payments.device_id',
+            ))
             ->whereBetween('pos_payments.captured_at', $window)
             ->groupBy('pos_payments.method')
             ->orderBy('pos_payments.method')
@@ -230,19 +338,38 @@ class CloseShiftHandler implements SyncEventHandler
             )
             ->get();
 
-        $voids = DB::table('pos_orders')
+        $legacyVoids = DB::table('pos_orders')
+            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
             ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_VOID)
             ->whereBetween('opened_at', $window)
             ->selectRaw('COUNT(*) as cnt, COALESCE(SUM(grand_total), 0) as amt')
             ->first();
+        // A never-settled QR void has no drawer identity and is deliberately
+        // excluded. A paid-then-voided QR order follows its successful
+        // settlement device/time, like every other QR money aggregate.
+        $qrVoids = DB::table('pos_orders')
+            ->where($this->qrSettlementBelongsToShift($shift, $window))
+            ->where('status', Order::STATUS_VOID)
+            ->selectRaw('COUNT(*) as cnt, COALESCE(SUM(grand_total), 0) as amt')
+            ->first();
 
-        // Round-ups ride their order (order_id NOT NULL), so they follow the
-        // same device-or-staff attribution as every other money line.
-        $roundUp = DB::table('pos_roundup_donations')
+        $legacyRoundUp = DB::table('pos_roundup_donations')
             ->join('pos_orders', 'pos_roundup_donations.order_id', '=', 'pos_orders.id')
+            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
             ->where($this->orderBelongsToShift($shift, 'pos_roundup_donations.created_at'))
             ->whereBetween('pos_roundup_donations.created_at', $window)
+            ->sum('pos_roundup_donations.amount');
+        // QR round-up is currently disabled. If historical residue exists,
+        // attribute it through its linked successful settlement payment
+        // rather than the opening station or donation timestamp.
+        $qrRoundUp = DB::table('pos_roundup_donations')
+            ->join('pos_orders', 'pos_roundup_donations.order_id', '=', 'pos_orders.id')
+            ->where($this->qrSettlementBelongsToShift(
+                $shift,
+                $window,
+                'pos_roundup_donations.payment_id',
+            ))
             ->sum('pos_roundup_donations.amount');
 
         $expenses = DB::table('pos_expenses')
@@ -251,20 +378,27 @@ class CloseShiftHandler implements SyncEventHandler
             ->sum('amount');
 
         return [
-            'order_count' => (int) ($orders->cnt ?? 0),
-            'gross_sales_baisas' => Money::toBaisas($orders->sub ?? 0),
-            'discount_total_baisas' => Money::toBaisas($orders->disc ?? 0),
-            'comp_total_baisas' => Money::toBaisas($orders->comp ?? 0),
-            'tax_total_baisas' => Money::toBaisas($orders->tax ?? 0),
-            'grand_total_baisas' => Money::toBaisas($orders->grand ?? 0),
+            'order_count' => (int) ($legacyOrders->cnt ?? 0) + (int) ($qrOrders->cnt ?? 0),
+            'gross_sales_baisas' => Money::toBaisas($legacyOrders->sub ?? 0)
+                + Money::toBaisas($qrOrders->sub ?? 0),
+            'discount_total_baisas' => Money::toBaisas($legacyOrders->disc ?? 0)
+                + Money::toBaisas($qrOrders->disc ?? 0),
+            'comp_total_baisas' => Money::toBaisas($legacyOrders->comp ?? 0)
+                + Money::toBaisas($qrOrders->comp ?? 0),
+            'tax_total_baisas' => Money::toBaisas($legacyOrders->tax ?? 0)
+                + Money::toBaisas($qrOrders->tax ?? 0),
+            'grand_total_baisas' => Money::toBaisas($legacyOrders->grand ?? 0)
+                + Money::toBaisas($qrOrders->grand ?? 0),
             'tenders' => $tenders->map(fn ($t): array => [
                 'method' => (string) $t->method,
                 'amount_baisas' => Money::toBaisas($t->amt),
                 'count' => (int) $t->cnt,
             ])->values()->all(),
-            'void_count' => (int) ($voids->cnt ?? 0),
-            'void_total_baisas' => Money::toBaisas($voids->amt ?? 0),
-            'round_up_baisas' => Money::toBaisas($roundUp),
+            'void_count' => (int) ($legacyVoids->cnt ?? 0) + (int) ($qrVoids->cnt ?? 0),
+            'void_total_baisas' => Money::toBaisas($legacyVoids->amt ?? 0)
+                + Money::toBaisas($qrVoids->amt ?? 0),
+            'round_up_baisas' => Money::toBaisas($legacyRoundUp)
+                + Money::toBaisas($qrRoundUp),
             'branch_expenses_baisas' => Money::toBaisas($expenses),
         ];
     }

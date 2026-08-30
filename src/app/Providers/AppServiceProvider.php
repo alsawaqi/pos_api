@@ -193,6 +193,9 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('qr-table-device-write', fn (Request $request) => Limit::perMinute(30)
             ->by('qr-table-device-write:'.(string) $request->user()?->getAuthIdentifier())
             ->response($qrRateLimited));
+        RateLimiter::for('qr-settlement-claim', fn (Request $request) => Limit::perMinute(30)
+            ->by('qr-settlement-claim:'.(string) $request->user()?->getAuthIdentifier())
+            ->response($qrRateLimited));
 
         // POS staff PIN login is a 6-digit brute-force surface — throttle it
         // hard per-device (the device is already resolved by the guard before

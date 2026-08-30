@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrAwaitingOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrClaimSettlementController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClearTableController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrOpenTableController;
@@ -151,6 +152,9 @@ Route::prefix('v1')->group(function (): void {
             ->name('device.qr.awaiting-orders');
         Route::post('device/qr/claim-charge', DeviceQrClaimChargeController::class)
             ->name('device.qr.claim-charge');
+        Route::post('device/qr/claim-settlement', DeviceQrClaimSettlementController::class)
+            ->middleware('throttle:qr-settlement-claim')
+            ->name('device.qr.claim-settlement');
         Route::post('device/qr/release-charge', DeviceQrReleaseChargeController::class)
             ->name('device.qr.release-charge');
         Route::post('device/qr/fallback-to-counter', DeviceQrFallbackToCounterController::class)

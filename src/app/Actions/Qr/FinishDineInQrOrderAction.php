@@ -16,7 +16,23 @@ final class FinishDineInQrOrderAction
     /** @return array<string, mixed> */
     public function handle(int $sessionId, string $paymentChoice): array
     {
-        $result = DB::transaction(function () use ($sessionId, $paymentChoice): array|QrDineInException {
+        $knownOrderId = Order::query()
+            ->where('qr_session_id', $sessionId)
+            ->latest('id')
+            ->value('id');
+
+        $result = DB::transaction(function () use (
+            $sessionId,
+            $paymentChoice,
+            $knownOrderId,
+        ): array|QrDineInException {
+            $order = $knownOrderId === null
+                ? null
+                : Order::query()
+                    ->whereKey((int) $knownOrderId)
+                    ->where('qr_session_id', $sessionId)
+                    ->lockForUpdate()
+                    ->first();
             $session = QrSession::query()->whereKey($sessionId)->lockForUpdate()->first();
             if ($session === null || ! $session->isDineIn()) {
                 throw new QrDineInException(
@@ -25,8 +41,7 @@ final class FinishDineInQrOrderAction
                     'A live dine-in QR session is required.',
                 );
             }
-
-            $order = Order::query()
+            $order ??= Order::query()
                 ->where('qr_session_id', $session->id)
                 ->latest('id')
                 ->lockForUpdate()

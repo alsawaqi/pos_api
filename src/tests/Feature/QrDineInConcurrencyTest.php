@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
+use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table as PosTable;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
@@ -30,6 +31,8 @@ use Throwable;
 final class QrDineInConcurrencyTest extends TestCase
 {
     private const CLAIM_URL = '/api/v1/device/qr/claim-charge';
+
+    private const CLAIM_SETTLEMENT_URL = '/api/v1/device/qr/claim-settlement';
 
     private const OPEN_TABLE_URL = '/api/v1/device/qr/open-table';
 
@@ -216,6 +219,211 @@ final class QrDineInConcurrencyTest extends TestCase
         }
     }
 
+    public function test_two_tills_concurrently_claim_one_running_tab_with_one_winner(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-settlement-claim-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $station = $this->paymentStation('mdev_qr_settlement_opening_station');
+            $firstTill = $this->attendedTill('mdev_qr_settlement_till_one');
+            $secondTill = $this->attendedTill('mdev_qr_settlement_till_two');
+            $table = $this->activeTable('Concurrency T-3');
+            [$session, $order] = $this->runningDineInOrder($station, $table);
+            $tillIds = [(int) $firstTill->id, (int) $secondTill->id];
+            $requests = [
+                [
+                    'url' => self::CLAIM_SETTLEMENT_URL,
+                    'token' => (string) $firstTill->device_token,
+                    'payload' => ['order_uuid' => (string) $order->uuid],
+                    'observe_table_id' => null,
+                ],
+                [
+                    'url' => self::CLAIM_SETTLEMENT_URL,
+                    'token' => (string) $secondTill->device_token,
+                    'payload' => ['order_uuid' => (string) $order->uuid],
+                    'observe_table_id' => null,
+                ],
+            ];
+
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+
+            $winner = null;
+            foreach ($results as $worker => $result) {
+                $this->assertNull($result['error'], (string) $result['error']);
+                $this->assertNotSame(500, $result['status']);
+                $body = $this->decodeBody($result['body']);
+                if ($result['status'] === 200) {
+                    $this->assertNull($winner, 'Both tills acquired the settlement claim.');
+                    $winner = $worker;
+                    $this->assertSame(4750, data_get($body, 'data.charge_amount_baisas'));
+                    $this->assertFalse((bool) data_get(
+                        $body,
+                        'data.already_claimed_by_this_device',
+                    ));
+                } else {
+                    $this->assertSame(409, $result['status']);
+                    $this->assertSame('charge_already_claimed', data_get($body, 'errors.0.code'));
+                }
+            }
+
+            $this->assertNotNull($winner);
+            DB::purge('sqlite');
+            $order->refresh();
+            $session->refresh();
+            $this->assertSame($tillIds[$winner], (int) $order->charge_device_id);
+            $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $order->status);
+            $this->assertSame(4750, (int) $order->charge_amount_baisas);
+            $this->assertSame(QrSession::STATUS_ORDERED, $session->status);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles(
+                $databasePath,
+                $originalDefault,
+                $originalSqlite,
+            );
+        }
+    }
+
+    public function test_round_and_attended_claim_race_freezes_a_complete_tab_without_deadlock(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-settlement-round-race-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $station = $this->paymentStation('mdev_qr_round_race_station');
+            $till = $this->attendedTill('mdev_qr_round_race_till');
+            $table = $this->activeTable('Concurrency T-4');
+            [$session, $order] = $this->runningDineInOrder($station, $table);
+            $this->seedRoundProduct();
+            $requests = [
+                [
+                    'url' => self::CLAIM_SETTLEMENT_URL,
+                    'token' => (string) $till->device_token,
+                    'payload' => ['order_uuid' => (string) $order->uuid],
+                    'observe_table_id' => null,
+                ],
+                [
+                    'url' => '/api/v1/public/qr/table-round',
+                    'token' => '',
+                    'headers' => [
+                        'X-QR-Session' => (string) $session->uuid,
+                        'X-QR-Client-Secret' => 'concurrent-running-secret',
+                    ],
+                    'payload' => [
+                        'client_request_id' => 'concurrent-second-round',
+                        'lines' => [[
+                            'product_id' => 99001,
+                            'qty' => 1,
+                            'addon_ids' => [],
+                            'notes' => null,
+                        ]],
+                    ],
+                    'observe_table_id' => null,
+                ],
+            ];
+
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertSame(200, $results[0]['status'], (string) $results[0]['error']);
+            $this->assertContains($results[1]['status'], [201, 409]);
+            if ($results[1]['status'] === 409) {
+                $this->assertSame(
+                    'qr_round_session_not_active',
+                    data_get($this->decodeBody($results[1]['body']), 'errors.0.code'),
+                );
+            } else {
+                $this->assertSame(201, $results[1]['status']);
+            }
+
+            DB::purge('sqlite');
+            $order->refresh();
+            $session->refresh();
+            $acceptedTotal = (int) QrOrderRound::query()
+                ->where('order_id', $order->id)
+                ->where('status', QrOrderRound::STATUS_ACCEPTED)
+                ->sum('total_baisas');
+            $this->assertContains($acceptedTotal, [4750, 9500]);
+            $this->assertSame($acceptedTotal, (int) $order->charge_amount_baisas);
+            $this->assertSame($acceptedTotal, (int) round((float) $order->grand_total * 1000));
+            $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $order->status);
+            $this->assertSame(QrSession::STATUS_ORDERED, $session->status);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles(
+                $databasePath,
+                $originalDefault,
+                $originalSqlite,
+            );
+        }
+    }
+
+    public function test_finish_and_attended_claim_race_has_no_lock_inversion_or_unreserved_state(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-settlement-finish-race-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $station = $this->paymentStation('mdev_qr_finish_race_station');
+            $till = $this->attendedTill('mdev_qr_finish_race_till');
+            $table = $this->activeTable('Concurrency T-5');
+            [$session, $order] = $this->runningDineInOrder($station, $table);
+            $requests = [
+                [
+                    'url' => self::CLAIM_SETTLEMENT_URL,
+                    'token' => (string) $till->device_token,
+                    'payload' => ['order_uuid' => (string) $order->uuid],
+                    'observe_table_id' => null,
+                ],
+                [
+                    'url' => '/api/v1/public/qr/table-finish',
+                    'token' => '',
+                    'headers' => [
+                        'X-QR-Session' => (string) $session->uuid,
+                        'X-QR-Client-Secret' => 'concurrent-running-secret',
+                    ],
+                    'payload' => ['payment_choice' => 'counter'],
+                    'observe_table_id' => null,
+                ],
+            ];
+
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertSame(200, $results[0]['status'], (string) $results[0]['error']);
+            $this->assertContains($results[1]['status'], [200, 409]);
+            if ($results[1]['status'] === 409) {
+                $this->assertSame(
+                    'qr_finish_session_not_active',
+                    data_get($this->decodeBody($results[1]['body']), 'errors.0.code'),
+                );
+            } else {
+                $this->assertSame(200, $results[1]['status']);
+            }
+
+            DB::purge('sqlite');
+            $order->refresh();
+            $session->refresh();
+            $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $order->status);
+            $this->assertSame((int) $till->id, (int) $order->charge_device_id);
+            $this->assertSame(4750, (int) $order->charge_amount_baisas);
+            $this->assertSame(QrSession::STATUS_ORDERED, $session->status);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles(
+                $databasePath,
+                $originalDefault,
+                $originalSqlite,
+            );
+        }
+    }
+
     /**
      * @param  list<array{
      *     url: string,
@@ -370,18 +578,24 @@ final class QrDineInConcurrencyTest extends TestCase
         try {
             $app = $this->bootWorkerApplication($databasePath);
             $kernel = $app->make(HttpKernel::class);
+            $server = [
+                'CONTENT_TYPE' => 'application/json',
+                'HTTP_ACCEPT' => 'application/json',
+                'REMOTE_ADDR' => '127.0.0.1',
+            ];
+            if ($requestData['token'] !== '') {
+                $server['HTTP_AUTHORIZATION'] = 'Bearer '.$requestData['token'];
+            }
+            foreach (($requestData['headers'] ?? []) as $name => $value) {
+                $server['HTTP_'.strtoupper(str_replace('-', '_', $name))] = $value;
+            }
             $request = Request::create(
                 $requestData['url'],
                 'POST',
                 [],
                 [],
                 [],
-                [
-                    'CONTENT_TYPE' => 'application/json',
-                    'HTTP_ACCEPT' => 'application/json',
-                    'HTTP_AUTHORIZATION' => 'Bearer '.$requestData['token'],
-                    'REMOTE_ADDR' => '127.0.0.1',
-                ],
+                $server,
                 json_encode($requestData['payload'], JSON_THROW_ON_ERROR),
             );
 
@@ -554,6 +768,15 @@ final class QrDineInConcurrencyTest extends TestCase
         ]);
     }
 
+    private function attendedTill(string $token): Device
+    {
+        return Device::factory()->paired($token)->create([
+            'company_id' => 100,
+            'branch_id' => 10,
+            'device_type' => 'fixed_pos',
+        ]);
+    }
+
     private function activeTable(string $label): PosTable
     {
         $floor = Floor::query()->create([
@@ -618,6 +841,87 @@ final class QrDineInConcurrencyTest extends TestCase
         ]);
 
         return [$session, $order];
+    }
+
+    /** @return array{QrSession, Order} */
+    private function runningDineInOrder(Device $station, PosTable $table): array
+    {
+        $now = now();
+        $session = QrSession::query()->create([
+            'uuid' => (string) Str::uuid(),
+            'company_id' => $station->company_id,
+            'branch_id' => $station->branch_id,
+            'device_id' => $station->getKey(),
+            'table_id' => $table->getKey(),
+            'token' => hash('sha256', (string) Str::uuid()),
+            'token_expires_at' => $now->copy()->addHours(6),
+            'client_secret_hash' => QrSession::hashClientSecret('concurrent-running-secret'),
+            'status' => QrSession::STATUS_ACTIVE,
+            'bound_at' => $now,
+            'last_seen_at' => $now,
+            'expires_at' => $now->copy()->addHours(6),
+        ]);
+        $order = Order::query()->create([
+            'uuid' => (string) Str::uuid(),
+            'company_id' => $station->company_id,
+            'branch_id' => $station->branch_id,
+            'device_id' => $station->getKey(),
+            'qr_session_id' => $session->getKey(),
+            'client_request_id' => (string) Str::uuid(),
+            'table_id' => $table->getKey(),
+            'order_type' => 'dine_in',
+            'status' => Order::STATUS_OPEN,
+            'source' => Order::SOURCE_QR_WEB,
+            'subtotal' => '4.750',
+            'discount_total' => '0.000',
+            'comp_total' => '0.000',
+            'tax_total' => '0.000',
+            'grand_total' => '4.750',
+            'opened_at' => $now,
+            'receipt_number' => 'QR-RUNNING',
+        ]);
+        QrOrderRound::query()->create([
+            'qr_session_id' => $session->id,
+            'order_id' => $order->id,
+            'round_no' => 1,
+            'status' => QrOrderRound::STATUS_ACCEPTED,
+            'client_request_id' => 'concurrent-first-round',
+            'priced_lines' => [['line_total_baisas' => 4750]],
+            'subtotal_baisas' => 4750,
+            'tax_baisas' => 0,
+            'total_baisas' => 4750,
+            'submitted_at' => $now,
+            'resolved_at' => $now,
+        ]);
+
+        return [$session, $order];
+    }
+
+    private function seedRoundProduct(): void
+    {
+        $timestamps = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_products')->insert([
+            'id' => 99001,
+            'uuid' => (string) Str::uuid(),
+            'company_id' => 100,
+            'category_id' => null,
+            'name' => 'Concurrent coffee',
+            'base_price' => '4.750',
+            'stock_mode' => 'untracked',
+            'display_order' => 1,
+            'status' => 'active',
+            'show_on_customer_tablet' => true,
+            'is_internal' => false,
+            'available_from' => null,
+            'available_until' => null,
+            'deleted_at' => null,
+        ] + $timestamps);
+        DB::table('pos_branch_product')->insert([
+            'branch_id' => 10,
+            'product_id' => 99001,
+            'is_available' => true,
+            'stock_qty' => null,
+        ] + $timestamps);
     }
 
     /** @return array<string, mixed> */

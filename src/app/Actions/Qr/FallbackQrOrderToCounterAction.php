@@ -37,6 +37,9 @@ final class FallbackQrOrderToCounterAction
                 throw new QrChargeException('order_not_found', 404, 'The order was not found.');
             }
 
+            $this->expireTouchedDineInSession($order, $now);
+            $order->refresh();
+
             if ($order->status === Order::STATUS_HELD) {
                 $isAttendedRecovery = $this->recoveryGuard->isAmbiguousCharge($order, $now);
                 if ($isAttendedRecovery) {
@@ -153,6 +156,31 @@ final class FallbackQrOrderToCounterAction
             ->exists();
     }
 
+    /**
+     * Staff fallback is a lazy-expiry boundary for the exact dine-in session
+     * it touches. The update is conditional and one-way, matching
+     * ResolveQrSession; a successful recovery commits it with the fallback.
+     */
+    private function expireTouchedDineInSession(Order $order, CarbonInterface $at): void
+    {
+        if (! $this->isDineInOrder($order) || $order->qr_session_id === null) {
+            return;
+        }
+
+        QrSession::query()
+            ->whereKey((int) $order->qr_session_id)
+            ->where('company_id', (int) $order->company_id)
+            ->where('branch_id', (int) $order->branch_id)
+            ->where('table_id', (int) $order->table_id)
+            ->whereIn('status', QrSession::EXPIRABLE_STATUSES)
+            ->where('expires_at', '<=', $at)
+            ->update([
+                'status' => QrSession::STATUS_EXPIRED,
+                'closed_at' => $at,
+                'updated_at' => $at,
+            ]);
+    }
+
     private function assertAttendedDevice(Device $device): void
     {
         if (! $this->recoveryGuard->isAttendedDevice($device)) {
@@ -164,9 +192,15 @@ final class FallbackQrOrderToCounterAction
         }
     }
 
-    private function lockSessionForAttendedRecovery(Order $order, Device $device): QrSession
+    private function lockSessionForAttendedRecovery(Order $order, Device $device): ?QrSession
     {
         if ($order->qr_session_id === null) {
+            if ($this->isDineInOrder($order)
+                && (int) $order->company_id === (int) $device->company_id
+                && (int) $order->branch_id === (int) $device->branch_id) {
+                return null;
+            }
+
             throw new QrChargeException(
                 'order_not_bound_to_device_session',
                 409,

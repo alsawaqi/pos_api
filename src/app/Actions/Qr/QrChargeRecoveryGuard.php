@@ -37,7 +37,12 @@ final class QrChargeRecoveryGuard
 
     public function isAmbiguousCounterRecovery(Order $order, CarbonInterface $at): bool
     {
-        return $order->qr_session_id !== null
+        $hasQrProvenance = $order->qr_session_id !== null
+            || ($order->source === Order::SOURCE_QR_WEB
+                && $order->order_type === 'dine_in'
+                && $order->table_id !== null);
+
+        return $hasQrProvenance
             && in_array($order->status, [
                 Order::STATUS_HELD,
                 Order::STATUS_OPEN,

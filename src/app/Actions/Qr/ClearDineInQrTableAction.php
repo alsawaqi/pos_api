@@ -27,6 +27,24 @@ final class ClearDineInQrTableAction
             );
         }
 
+        // Keep this outside the refusal transaction. An unpaid table is
+        // expected to return a classified 409; placing the lazy flip inside
+        // that transaction would roll it back and leave the recovery wedge
+        // intact. Tenant + table scoping makes this safe even when clear is
+        // refused after the touch.
+        $now = now();
+        QrSession::query()
+            ->where('table_id', $tableId)
+            ->where('company_id', (int) $device->company_id)
+            ->where('branch_id', (int) $device->branch_id)
+            ->whereIn('status', QrSession::EXPIRABLE_STATUSES)
+            ->where('expires_at', '<=', $now)
+            ->update([
+                'status' => QrSession::STATUS_EXPIRED,
+                'closed_at' => $now,
+                'updated_at' => $now,
+            ]);
+
         return DB::transaction(function () use ($device, $tableId): array {
             $table = Table::query()
                 ->withTrashed()

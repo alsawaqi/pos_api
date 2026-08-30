@@ -25,6 +25,10 @@ return [
     // How long a station owns the frozen sale amount after a successful claim.
     'charge_claim_seconds' => (int) env('QR_CHARGE_CLAIM_SECONDS', 180),
 
+    // An attended till needs longer than a station tap to select a tender and
+    // take cash/card, but still enters ambiguity if staff abandon the sheet.
+    'settlement_claim_seconds' => (int) env('QR_SETTLEMENT_CLAIM_SECONDS', 300),
+
     // Audit-release margin beyond the claim deadline so the sweeper does not
     // stamp cancellation while an on-time station result is still arriving.
     'charge_sweep_grace_seconds' => (int) env('QR_CHARGE_SWEEP_GRACE_SECONDS', 30),

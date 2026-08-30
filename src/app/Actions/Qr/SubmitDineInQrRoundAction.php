@@ -38,7 +38,27 @@ final class SubmitDineInQrRoundAction
      */
     public function handle(int $sessionId, array $payload, string $ip): array
     {
-        return DB::transaction(function () use ($sessionId, $payload, $ip): array {
+        // When a tab already exists, every writer locks order -> session.
+        // First-round creation has no order yet and is safely serialized by
+        // the session lock alone.
+        $knownOrderId = Order::query()
+            ->where('qr_session_id', $sessionId)
+            ->latest('id')
+            ->value('id');
+
+        return DB::transaction(function () use (
+            $sessionId,
+            $payload,
+            $ip,
+            $knownOrderId,
+        ): array {
+            $order = $knownOrderId === null
+                ? null
+                : Order::query()
+                    ->whereKey((int) $knownOrderId)
+                    ->where('qr_session_id', $sessionId)
+                    ->lockForUpdate()
+                    ->first();
             $session = QrSession::query()->whereKey($sessionId)->lockForUpdate()->first();
             if ($session === null || ! $session->isDineIn()) {
                 throw new QrDineInException(
@@ -47,6 +67,11 @@ final class SubmitDineInQrRoundAction
                     'A live dine-in QR session is required.',
                 );
             }
+            $order ??= Order::query()
+                ->where('qr_session_id', $session->id)
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
 
             $clientRequestId = (string) $payload['client_request_id'];
             $existing = QrOrderRound::query()
@@ -54,10 +79,9 @@ final class SubmitDineInQrRoundAction
                 ->where('client_request_id', $clientRequestId)
                 ->first();
             if ($existing !== null) {
-                $order = $existing->order_id === null
-                    ? null
-                    : Order::query()->find((int) $existing->order_id);
-                if (! $order instanceof Order) {
+                if ($existing->order_id === null
+                    || ! $order instanceof Order
+                    || (int) $order->getKey() !== (int) $existing->order_id) {
                     throw new QrDineInException(
                         'qr_round_pending_confirmation',
                         409,
@@ -112,10 +136,6 @@ final class SubmitDineInQrRoundAction
                 );
             }
 
-            $order = Order::query()
-                ->where('qr_session_id', $session->id)
-                ->latest('id')
-                ->first();
             if ($order !== null && $order->status !== Order::STATUS_OPEN) {
                 throw new QrDineInException(
                     'qr_round_order_not_open',

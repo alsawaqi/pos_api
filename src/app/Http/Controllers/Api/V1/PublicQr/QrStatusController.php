@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1\PublicQr;
 
+use App\Actions\Qr\QrChargeRecoveryGuard;
+use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
@@ -122,7 +124,14 @@ class QrStatusController
         if ($order->status === Order::STATUS_AWAITING_PAYMENT) {
             $claimed = Order::query()->whereKey($order->id)->withLiveClaim()->exists();
             if ($claimed) {
-                return 'station_ready';
+                $attendedHolder = Device::query()
+                    ->whereKey((int) $order->charge_device_id)
+                    ->where('company_id', (int) $order->company_id)
+                    ->where('branch_id', (int) $order->branch_id)
+                    ->whereIn('device_type', QrChargeRecoveryGuard::ATTENDED_DEVICE_TYPES)
+                    ->exists();
+
+                return $attendedHolder ? 'awaiting_counter' : 'station_ready';
             }
 
             $safeToClaim = Order::query()->whereKey($order->id)->withoutLiveClaim()->exists();

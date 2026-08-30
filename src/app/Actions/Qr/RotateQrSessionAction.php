@@ -34,6 +34,7 @@ final class RotateQrSessionAction
 
             QrSession::query()
                 ->where('device_id', $device->getKey())
+                ->whereNull('table_id')
                 ->where('status', QrSession::STATUS_PENDING)
                 ->update([
                     'status' => QrSession::STATUS_EXPIRED,

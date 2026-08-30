@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync\Handlers;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Pos\Loyalty\WriteLoyaltyTransactionAction;
+use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
@@ -57,6 +58,7 @@ class VoidOrderHandler implements SyncEventHandler
         private readonly ConsumeInventoryAction $inventory,
         private readonly WriteLoyaltyTransactionAction $loyalty,
         private readonly QrChargeRecoveryGuard $qrChargeRecovery,
+        private readonly CloseDineInQrSessionAction $closeDineInSession,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -152,6 +154,7 @@ class VoidOrderHandler implements SyncEventHandler
                 'void_reason_label' => $voidReason?->name,
                 'note' => $this->appendReason($order->note, $reason ?? $voidReason?->name),
             ]);
+            $this->closeDineInSession->handle($order, $voidedAt);
 
             OrderItem::query()->where('order_id', $order->id)->update(['status' => OrderItem::STATUS_VOID]);
 

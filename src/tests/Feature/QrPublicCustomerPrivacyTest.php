@@ -303,6 +303,10 @@ final class QrPublicCustomerPrivacyTest extends TestCase
             'public.qr.menu',
             'public.qr.quote',
             'public.qr.status',
+            'public.qr.table-bind',
+            'public.qr.table-finish',
+            'public.qr.table-menu',
+            'public.qr.table-round',
         ], $routes->pluck('action.as')->sort()->values()->all());
 
         foreach ($routes as $route) {
@@ -460,11 +464,13 @@ final class QrPublicCustomerPrivacyTest extends TestCase
             'company_id',
             'branch_id',
             'device_id',
+            'table_id',
             'token',
             'token_expires_at',
             'status',
             'client_secret_hash',
             'bound_at',
+            'secret_rotated_at',
             'last_seen_at',
             'expires_at',
             'closed_at',

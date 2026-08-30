@@ -25,12 +25,18 @@ class QrSessionGroundworkTest extends TestCase
     private function qrSession(array $attributes = []): int
     {
         $now = now();
+        $deviceId = (int) ($attributes['device_id'] ?? 1);
+        DB::table('pos_devices')->insertOrIgnore([
+            'id' => $deviceId,
+            'uuid' => (string) Str::uuid(),
+            'serial_number' => "qr-groundwork-device-{$deviceId}",
+        ]);
 
         return (int) DB::table('pos_qr_sessions')->insertGetId(array_merge([
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,
             'branch_id' => 10,
-            'device_id' => 1,
+            'device_id' => $deviceId,
             'token' => hash('sha256', (string) Str::uuid()),
             'token_expires_at' => $now->copy()->addMinute(),
             'status' => 'pending',
@@ -59,7 +65,7 @@ class QrSessionGroundworkTest extends TestCase
 
     public function test_sqlite_mirror_has_the_qr_columns_and_named_indexes(): void
     {
-        $this->assertCount(15, Schema::getColumnListing('pos_qr_sessions'));
+        $this->assertCount(17, Schema::getColumnListing('pos_qr_sessions'));
         foreach ([
             'qr_session_id',
             'charge_device_id',

@@ -18,8 +18,10 @@ use Illuminate\Support\Facades\Schema;
  * The `testing`-env guard ensures this NEVER runs against the real
  * shared DB — a stray `php artisan migrate` in dev is a no-op.
  *
- * FK columns are plain integers here (no ->constrained) so tests
- * don't need to seed parent rows; the real schema enforces them.
+ * FK columns are generally plain integers here so tests don't need to seed
+ * parent rows. The QR session/round delete actions used by QR2 are deliberately
+ * enforced because session, order, and round lifetime correctness depends on
+ * their exact behaviour.
  */
 return new class extends Migration
 {
@@ -531,19 +533,31 @@ return new class extends Migration
             $table->uuid('uuid')->unique();
             $table->unsignedBigInteger('company_id');
             $table->unsignedBigInteger('branch_id');
-            $table->unsignedBigInteger('device_id');
+            $table->foreignId('device_id')
+                ->constrained('pos_devices')
+                ->cascadeOnDelete();
+            $table->foreignId('table_id')
+                ->nullable()
+                ->constrained('pos_tables')
+                ->nullOnDelete();
             $table->string('token', 64)->unique();
             $table->timestamp('token_expires_at');
             $table->string('status', 16)->default('pending');
             $table->string('client_secret_hash', 64)->nullable();
             $table->timestamp('bound_at')->nullable();
             $table->timestamp('last_seen_at')->nullable();
+            $table->timestamp('secret_rotated_at')->nullable();
             $table->timestamp('expires_at');
             $table->timestamp('closed_at')->nullable();
             $table->timestamps();
             $table->index(['device_id', 'status'], 'pos_qr_sessions_device_status_idx');
             $table->index(['status', 'expires_at'], 'pos_qr_sessions_status_expires_idx');
         });
+
+        DB::statement(
+            'CREATE UNIQUE INDEX pos_qr_sessions_table_live_unique ON pos_qr_sessions (table_id) '.
+            "WHERE table_id IS NOT NULL AND status IN ('pending', 'active', 'ordered')"
+        );
 
         // ---- Phase 8.3 order-lifecycle slice (sync ingestion writes here) ----
 
@@ -553,7 +567,10 @@ return new class extends Migration
             $table->unsignedBigInteger('company_id');
             $table->unsignedBigInteger('branch_id');
             $table->unsignedBigInteger('device_id')->nullable();
-            $table->unsignedBigInteger('qr_session_id')->nullable();
+            $table->foreignId('qr_session_id')
+                ->nullable()
+                ->constrained('pos_qr_sessions')
+                ->nullOnDelete();
             $table->string('client_request_id', 64)->nullable();
             $table->unsignedBigInteger('charge_device_id')->nullable();
             $table->unsignedInteger('charge_amount_baisas')->nullable();
@@ -624,6 +641,40 @@ return new class extends Migration
             'CREATE INDEX pos_orders_qr_session_idx ON pos_orders (qr_session_id) '.
             'WHERE qr_session_id IS NOT NULL'
         );
+
+        Schema::create('pos_qr_order_rounds', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('qr_session_id')
+                ->constrained('pos_qr_sessions')
+                ->cascadeOnDelete();
+            $table->foreignId('order_id')
+                ->nullable()
+                ->constrained('pos_orders')
+                ->nullOnDelete();
+            $table->unsignedInteger('round_no');
+            $table->string('status', 24);
+            $table->string('client_request_id', 64);
+            $table->json('priced_lines');
+            $table->unsignedInteger('subtotal_baisas');
+            $table->unsignedInteger('tax_baisas');
+            $table->unsignedInteger('total_baisas');
+            $table->timestamp('submitted_at');
+            $table->timestamp('resolved_at')->nullable();
+            $table->foreignId('resolved_by_device_id')
+                ->nullable()
+                ->constrained('pos_devices')
+                ->nullOnDelete();
+            $table->timestamps();
+
+            $table->unique(
+                ['qr_session_id', 'client_request_id'],
+                'pos_qr_rounds_session_request_unique',
+            );
+            $table->index(
+                ['order_id', 'status'],
+                'pos_qr_rounds_order_status_idx',
+            );
+        });
 
         Schema::create('pos_order_items', function (Blueprint $table): void {
             $table->id();
@@ -1305,6 +1356,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_order_discounts');
         Schema::dropIfExists('pos_order_item_addons');
         Schema::dropIfExists('pos_order_items');
+        Schema::dropIfExists('pos_qr_order_rounds');
         Schema::dropIfExists('pos_orders');
         Schema::dropIfExists('pos_qr_sessions');
         Schema::dropIfExists('pos_customers');

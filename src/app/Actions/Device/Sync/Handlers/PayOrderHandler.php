@@ -10,6 +10,7 @@ use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
+use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Exceptions\InsufficientLoyaltyBalanceException;
 use App\Models\Branch;
@@ -47,6 +48,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
         private readonly RecordSaleCommissionAction $saleCommission,
         private readonly DonationRecordHandler $donationRecord,
         private readonly QrChargeRecoveryGuard $qrChargeRecovery,
+        private readonly CloseDineInQrSessionAction $closeDineInSession,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -274,7 +276,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 $orderUpdate['charge_outcome'] = Order::CHARGE_OUTCOME_APPROVED;
             }
             $order->update($orderUpdate);
-            if ($order->qr_session_id !== null) {
+            $dineInSessionClosed = $this->closeDineInSession->handle($order, $capturedAt);
+            if ($order->qr_session_id !== null && ! $dineInSessionClosed) {
                 DB::table('pos_qr_sessions')
                     ->where('id', (int) $order->qr_session_id)
                     ->where('company_id', (int) $order->company_id)

@@ -65,6 +65,8 @@ final class FallbackQrOrderToCounterAction
             }
 
             $isAttendedRecovery = $this->recoveryGuard->isAmbiguousCharge($order, $now);
+            $isExpiredDineInRecovery = false;
+            $isDeletedSessionDineInRecovery = false;
             if ($isAttendedRecovery) {
                 $this->assertAttendedDevice($device);
                 $this->lockSessionForAttendedRecovery($order, $device);
@@ -75,7 +77,23 @@ final class FallbackQrOrderToCounterAction
                     'A live charge claim prevents fallback to the counter.',
                 );
             } else {
-                $this->lockBoundOrderedSession($order, $device);
+                // r2's orphan flow can lazily move an ordered dine-in session
+                // to expired while its never-claimed awaiting-payment order
+                // remains unpaid. A payment station can no longer prove the
+                // ordered-session gate in that state, so only an attended
+                // same-branch device may recover the affirmatively-safe order.
+                // Ambiguous claims stay on the separate residue-preserving path.
+                if ($this->isDeletedSessionDineInSafeRecovery($order, $device)) {
+                    // Hard-deleting the opening station cascades its session
+                    // and NULLs the surviving order FK. The table-scoped board
+                    // remains the recovery root, but only an attended device
+                    // may move this affirmatively never-charged order onward.
+                    $isDeletedSessionDineInRecovery = true;
+                } elseif ($this->lockExpiredDineInSessionForSafeRecovery($order, $device) !== null) {
+                    $isExpiredDineInRecovery = true;
+                } else {
+                    $this->lockBoundOrderedSession($order, $device);
+                }
             }
 
             $receiptNumber = is_string($order->receipt_number)
@@ -111,6 +129,14 @@ final class FallbackQrOrderToCounterAction
                     'charge_deadline_at' => null,
                     'charge_outcome' => null,
                 ];
+                if ($isExpiredDineInRecovery
+                    || $isDeletedSessionDineInRecovery
+                    || $this->isDineInOrder($order)) {
+                    // Dine-in never carries round-up. Clear the sixth shipped
+                    // provenance column as well; quick's legacy zero remains
+                    // byte-compatible on its existing fallback path.
+                    $updates['charge_roundup_amount_baisas'] = null;
+                }
             }
 
             $order->update($updates);
@@ -170,6 +196,45 @@ final class FallbackQrOrderToCounterAction
         return $session;
     }
 
+    private function lockExpiredDineInSessionForSafeRecovery(
+        Order $order,
+        Device $device,
+    ): ?QrSession {
+        if (! $this->recoveryGuard->isAttendedDevice($device)
+            || ! $this->isDineInOrder($order)
+            || $order->qr_session_id === null) {
+            return null;
+        }
+
+        $session = QrSession::query()
+            ->whereKey((int) $order->qr_session_id)
+            ->where('company_id', (int) $device->company_id)
+            ->where('branch_id', (int) $device->branch_id)
+            ->whereNotNull('table_id')
+            ->lockForUpdate()
+            ->first();
+
+        return $session?->status === QrSession::STATUS_EXPIRED
+            ? $session
+            : null;
+    }
+
+    private function isDeletedSessionDineInSafeRecovery(Order $order, Device $device): bool
+    {
+        return $order->qr_session_id === null
+            && $this->recoveryGuard->isAttendedDevice($device)
+            && $this->isDineInOrder($order)
+            && (int) $order->company_id === (int) $device->company_id
+            && (int) $order->branch_id === (int) $device->branch_id;
+    }
+
+    private function isDineInOrder(Order $order): bool
+    {
+        return $order->source === Order::SOURCE_QR_WEB
+            && $order->order_type === 'dine_in'
+            && $order->table_id !== null;
+    }
+
     private function lockBoundOrderedSession(Order $order, Device $device): QrSession
     {
         if (! $device->isPaymentStation() || $order->qr_session_id === null) {
@@ -192,7 +257,8 @@ final class FallbackQrOrderToCounterAction
         if ($session === null
             || (int) $session->company_id !== (int) $device->company_id
             || (int) $session->branch_id !== (int) $device->branch_id
-            || (int) $session->device_id !== (int) $device->getKey()) {
+            || (! $session->isDineIn()
+                && (int) $session->device_id !== (int) $device->getKey())) {
             throw new QrChargeException(
                 'order_not_bound_to_device_session',
                 409,

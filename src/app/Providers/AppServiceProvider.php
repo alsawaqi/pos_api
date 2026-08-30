@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use App\Models\Device;
+use App\Models\QrSession;
+use App\Models\Table;
 use App\Support\QrApiResponse;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -118,6 +120,79 @@ class AppServiceProvider extends ServiceProvider
                 ->by('qr-checkout:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
                 ->response($qrRateLimited),
         ]);
+
+        // Printed table menus are sessionless. This is only an anonymous read
+        // backstop; table/branch catalogue caching remains the scaling layer.
+        RateLimiter::for('qr-table-read', fn (Request $request) => Limit::perMinute(3000)
+            ->by('qr-table-read:ip:'.self::rateLimitIpKey($request->ip()))
+            ->response($qrRateLimited));
+
+        RateLimiter::for('qr-table-bind', function (Request $request) use ($qrRateLimited): array {
+            $submitted = $request->input('table_token');
+            $tableToken = is_string($submitted) ? $submitted : '';
+            $sessionId = null;
+            if ($tableToken !== '' && strlen($tableToken) <= 255) {
+                $tableId = Table::query()->where('qr_token', trim($tableToken))->value('id');
+                if ($tableId !== null) {
+                    $sessionId = QrSession::query()
+                        ->where('table_id', (int) $tableId)
+                        ->whereIn('status', [
+                            QrSession::STATUS_PENDING,
+                            QrSession::STATUS_ACTIVE,
+                            QrSession::STATUS_ORDERED,
+                        ])
+                        ->latest('id')
+                        ->value('id');
+                }
+            }
+            $credentialKey = $sessionId === null
+                ? 'token:'.hash('sha256', $tableToken)
+                : 'session:'.(string) $sessionId;
+
+            return [
+                // A table may legitimately rejoin many times during a long meal.
+                Limit::perHour(60)
+                    ->by('qr-table-bind:'.$credentialKey)
+                    ->response($qrRateLimited),
+                Limit::perMinute(600)
+                    ->by('qr-table-bind:ip:'.self::rateLimitIpKey($request->ip()))
+                    ->response($qrRateLimited),
+            ];
+        });
+
+        // Separate from quick checkout: a six-hour table can send many rounds.
+        // Twenty/minute per credential permits normal bursts while bounding the
+        // full pricing pipeline; the IP axis is a generous NAT-safe backstop.
+        RateLimiter::for('qr-dine-in-round', fn (Request $request) => [
+            Limit::perMinute(20)
+                ->by('qr-dine-in-round:session:'.hash(
+                    'sha256',
+                    (string) $request->header('X-QR-Session'),
+                ))
+                ->response($qrRateLimited),
+            Limit::perMinute(400)
+                ->by('qr-dine-in-round:ip:'.self::rateLimitIpKey($request->ip()))
+                ->response($qrRateLimited),
+        ]);
+
+        RateLimiter::for('qr-dine-in-finish', fn (Request $request) => [
+            Limit::perMinute(10)
+                ->by('qr-dine-in-finish:session:'.hash(
+                    'sha256',
+                    (string) $request->header('X-QR-Session'),
+                ))
+                ->response($qrRateLimited),
+            Limit::perMinute(200)
+                ->by('qr-dine-in-finish:ip:'.self::rateLimitIpKey($request->ip()))
+                ->response($qrRateLimited),
+        ]);
+
+        RateLimiter::for('qr-table-device-read', fn (Request $request) => Limit::perMinute(60)
+            ->by('qr-table-device-read:'.(string) $request->user()?->getAuthIdentifier())
+            ->response($qrRateLimited));
+        RateLimiter::for('qr-table-device-write', fn (Request $request) => Limit::perMinute(30)
+            ->by('qr-table-device-write:'.(string) $request->user()?->getAuthIdentifier())
+            ->response($qrRateLimited));
 
         // POS staff PIN login is a 6-digit brute-force surface — throttle it
         // hard per-device (the device is already resolved by the guard before

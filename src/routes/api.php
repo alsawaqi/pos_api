@@ -19,9 +19,13 @@ use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrAwaitingOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrClearTableController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrOpenTableController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrReleaseChargeController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrReopenPaymentController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrRotateController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
@@ -31,6 +35,10 @@ use App\Http\Controllers\Api\V1\PublicQr\QrCheckoutController;
 use App\Http\Controllers\Api\V1\PublicQr\QrMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrQuoteController;
 use App\Http\Controllers\Api\V1\PublicQr\QrStatusController;
+use App\Http\Controllers\Api\V1\PublicQr\QrTableBindController;
+use App\Http\Controllers\Api\V1\PublicQr\QrTableFinishController;
+use App\Http\Controllers\Api\V1\PublicQr\QrTableMenuController;
+use App\Http\Controllers\Api\V1\PublicQr\QrTableRoundController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -81,6 +89,18 @@ Route::prefix('v1')->group(function (): void {
     Route::get('public/qr/status', QrStatusController::class)
         ->middleware(['throttle:qr-read', 'qr.session:include-closed'])
         ->name('public.qr.status');
+    Route::get('public/qr/table-menu', QrTableMenuController::class)
+        ->middleware('throttle:qr-table-read')
+        ->name('public.qr.table-menu');
+    Route::post('public/qr/table-bind', QrTableBindController::class)
+        ->middleware('throttle:qr-table-bind')
+        ->name('public.qr.table-bind');
+    Route::post('public/qr/table-round', QrTableRoundController::class)
+        ->middleware(['throttle:qr-dine-in-round', 'qr.session'])
+        ->name('public.qr.table-round');
+    Route::post('public/qr/table-finish', QrTableFinishController::class)
+        ->middleware(['throttle:qr-dine-in-finish', 'qr.session'])
+        ->name('public.qr.table-finish');
 
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
@@ -114,6 +134,18 @@ Route::prefix('v1')->group(function (): void {
 
         Route::post('device/heartbeat', HeartbeatController::class)->name('device.heartbeat');
         Route::post('device/qr/rotate', DeviceQrRotateController::class)->name('device.qr.rotate');
+        Route::post('device/qr/open-table', DeviceQrOpenTableController::class)
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.open-table');
+        Route::get('device/qr/table-board', DeviceQrTableBoardController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.qr.table-board');
+        Route::post('device/qr/clear-table', DeviceQrClearTableController::class)
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.clear-table');
+        Route::post('device/qr/reopen-payment', DeviceQrReopenPaymentController::class)
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.reopen-payment');
         Route::get('device/qr/awaiting-orders', DeviceQrAwaitingOrdersController::class)
             ->middleware('throttle:qr-station-read')
             ->name('device.qr.awaiting-orders');

@@ -51,6 +51,7 @@ class QrSession extends Model
             'token_expires_at' => 'datetime',
             'bound_at' => 'datetime',
             'last_seen_at' => 'datetime',
+            'secret_rotated_at' => 'datetime',
             'expires_at' => 'datetime',
             'closed_at' => 'datetime',
         ];
@@ -87,5 +88,26 @@ class QrSession extends Model
     public function orders(): HasMany
     {
         return $this->hasMany(Order::class, 'qr_session_id');
+    }
+
+    /**
+     * @return BelongsTo<Table, $this>
+     */
+    public function table(): BelongsTo
+    {
+        return $this->belongsTo(Table::class);
+    }
+
+    /**
+     * @return HasMany<QrOrderRound, $this>
+     */
+    public function rounds(): HasMany
+    {
+        return $this->hasMany(QrOrderRound::class, 'qr_session_id');
+    }
+
+    public function isDineIn(): bool
+    {
+        return $this->table_id !== null;
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1\PublicQr;
 
 use App\Models\Order;
+use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Support\Money;
 use App\Support\QrApiResponse;
@@ -28,7 +29,7 @@ class QrStatusController
 
         $order = $session->orders()->latest('id')->first();
 
-        return QrApiResponse::success([
+        $data = [
             'session_uuid' => $session->uuid,
             'status' => $session->status,
             'expires_at' => $session->expires_at?->toIso8601String(),
@@ -41,8 +42,97 @@ class QrStatusController
                 'tax_total_baisas' => Money::toBaisas($order->tax_total),
                 'grand_total_baisas' => Money::toBaisas($order->grand_total),
             ] : null,
-        ], [
+        ];
+
+        // Quick is deliberately returned through the exact shipped shape.
+        if (! $session->isDineIn()) {
+            return QrApiResponse::success($data, [
+                'money_unit' => 'baisas',
+            ]);
+        }
+
+        $rounds = QrOrderRound::query()
+            ->where('qr_session_id', $session->id)
+            ->orderBy('round_no')
+            ->get();
+        $roundAllowed = $session->status === QrSession::STATUS_ACTIVE
+            && ($order === null || $order->status === Order::STATUS_OPEN);
+        $finishAllowed = $roundAllowed
+            && $order !== null
+            && $rounds->contains(
+                static fn (QrOrderRound $round): bool => $round->status === QrOrderRound::STATUS_ACCEPTED,
+            );
+        $finishRefusal = null;
+        if (! $finishAllowed) {
+            if ($order === null || ! $rounds->contains(
+                static fn (QrOrderRound $round): bool => $round->status === QrOrderRound::STATUS_ACCEPTED,
+            )) {
+                $finishRefusal = 'qr_dine_in_order_required';
+            } elseif ($session->status !== QrSession::STATUS_ACTIVE) {
+                $finishRefusal = 'qr_finish_session_not_active';
+            } else {
+                $finishRefusal = 'qr_finish_order_not_open';
+            }
+        }
+
+        $data['dine_in'] = [
+            'table_id' => (int) $session->table_id,
+            'rounds' => $rounds->map(static fn (QrOrderRound $round): array => [
+                'id' => (int) $round->id,
+                'round_no' => (int) $round->round_no,
+                'status' => (string) $round->status,
+                'priced_lines' => $round->priced_lines,
+                'subtotal_baisas' => (int) $round->subtotal_baisas,
+                'tax_baisas' => (int) $round->tax_baisas,
+                'total_baisas' => (int) $round->total_baisas,
+                'submitted_at' => $round->submitted_at?->toIso8601String(),
+                'resolved_at' => $round->resolved_at?->toIso8601String(),
+            ])->values()->all(),
+            'running_total_baisas' => $order instanceof Order
+                ? Money::toBaisas($order->grand_total)
+                : 0,
+            'payment_state' => $this->paymentState($order),
+            'round_submission' => [
+                'allowed' => $roundAllowed,
+                'refusal_code' => $roundAllowed
+                    ? null
+                    : ($session->status !== QrSession::STATUS_ACTIVE
+                        ? 'qr_round_session_not_active'
+                        : 'qr_round_order_not_open'),
+            ],
+            'finish_and_pay' => [
+                'allowed' => $finishAllowed,
+                'refusal_code' => $finishRefusal,
+            ],
+        ];
+
+        return QrApiResponse::success($data, [
             'money_unit' => 'baisas',
         ]);
+    }
+
+    private function paymentState(?Order $order): ?string
+    {
+        if ($order === null || $order->status === Order::STATUS_OPEN) {
+            return null;
+        }
+        if ($order->status === Order::STATUS_HELD) {
+            return 'awaiting_counter';
+        }
+        if ($order->status === Order::STATUS_AWAITING_PAYMENT) {
+            $claimed = Order::query()->whereKey($order->id)->withLiveClaim()->exists();
+            if ($claimed) {
+                return 'station_ready';
+            }
+
+            $safeToClaim = Order::query()->whereKey($order->id)->withoutLiveClaim()->exists();
+
+            return $safeToClaim ? 'awaiting_station' : 'recovery_required';
+        }
+        if (in_array($order->status, [Order::STATUS_PAID, Order::STATUS_VOID], true)) {
+            return 'terminal';
+        }
+
+        return null;
     }
 }

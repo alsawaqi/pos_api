@@ -177,4 +177,12 @@ class Order extends Model
     {
         return $this->hasMany(Payment::class);
     }
+
+    /**
+     * @return HasMany<QrOrderRound, $this>
+     */
+    public function qrRounds(): HasMany
+    {
+        return $this->hasMany(QrOrderRound::class, 'order_id');
+    }
 }

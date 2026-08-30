@@ -98,7 +98,9 @@ final class ClaimQrChargeAction
             $order->update([
                 'charge_device_id' => $authenticatedDevice->getKey(),
                 'charge_amount_baisas' => Money::toBaisas($order->grand_total),
-                'charge_roundup_amount_baisas' => 0,
+                // Dine-in carries no round-up intent at all. Quick keeps its
+                // shipped zero snapshot and byte-identical response.
+                'charge_roundup_amount_baisas' => $session?->isDineIn() ? null : 0,
                 'charge_claimed_at' => $now,
                 'charge_deadline_at' => $now->copy()->addSeconds($claimSeconds),
                 'charge_outcome' => null,
@@ -148,10 +150,16 @@ final class ClaimQrChargeAction
 
     private function assertBoundSession(?QrSession $session, Device $device): QrSession
     {
+        $deviceMatches = $session !== null && (
+            $session->isDineIn()
+                ? (int) $session->company_id === (int) $device->company_id
+                    && (int) $session->branch_id === (int) $device->branch_id
+                : (int) $session->device_id === (int) $device->getKey()
+        );
         if ($session === null
             || (int) $session->company_id !== (int) $device->company_id
             || (int) $session->branch_id !== (int) $device->branch_id
-            || (int) $session->device_id !== (int) $device->getKey()) {
+            || ! $deviceMatches) {
             throw new QrChargeException(
                 'order_not_bound_to_device_session',
                 409,

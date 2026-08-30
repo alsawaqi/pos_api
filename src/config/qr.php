@@ -9,6 +9,10 @@ return [
     // Hard lifetime of the browser session after the row is minted.
     'session_lifetime_minutes' => (int) env('QR_SESSION_LIFETIME_MINUTES', 30),
 
+    // A dine-in tab survives quick-QR rotations and browser replacement, but
+    // is bounded so abandoned tables eventually enter attended recovery.
+    'dine_in_session_lifetime_hours' => (int) env('QR_DINE_IN_SESSION_LIFETIME_HOURS', 6),
+
     // Anti-automation backstop for distinct phones seen from one branch/IP.
     // This is not identity control: real branches can share NAT egress. If a
     // genuine branch reaches this ceiling, the configured number is wrong and

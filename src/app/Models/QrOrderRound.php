@@ -32,6 +32,8 @@ final class QrOrderRound extends Model
     {
         return [
             'priced_lines' => 'array',
+            'confirm_payload' => 'array',
+            'accepted_seq' => 'integer',
             'subtotal_baisas' => 'integer',
             'tax_baisas' => 'integer',
             'total_baisas' => 'integer',

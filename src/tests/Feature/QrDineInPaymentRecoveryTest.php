@@ -290,6 +290,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $table = $this->table(10, 'CLAIM-LAPSED');
         $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
         $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
 
         $this->claimSettlement($holder, $order)->assertOk();
         $this->travel(7)->seconds();
@@ -322,6 +323,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $table = $this->table(10, 'CLAIM-UNCERTAIN');
         $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
         $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
 
         $this->claimSettlement($holder, $order)->assertOk();
         $this->postAs($holder, self::RELEASE_URL, [
@@ -359,6 +361,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $table = $this->table(10, 'CLAIM-GEOFENCE');
         $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
         $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
 
         $this->claimSettlement($till, $order)
             ->assertConflict()
@@ -473,6 +476,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             $replaySession,
             Order::STATUS_OPEN,
         );
+        $this->round($replaySession, $replayOrder, QrOrderRound::STATUS_ACCEPTED);
         $this->claimSettlement($till, $replayOrder)->assertOk();
         $replaySession->update(['status' => QrSession::STATUS_CLOSED]);
         $this->claimSettlement($till, $replayOrder)
@@ -701,6 +705,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             $session,
             Order::STATUS_AWAITING_PAYMENT,
         );
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
         $session->update(['expires_at' => now()->addMinute()]);
 
         $this->travel(61)->seconds();
@@ -853,6 +858,13 @@ final class QrDineInPaymentRecoveryTest extends TestCase
 
         $this->assertDatabaseMissing('pos_qr_sessions', ['id' => $session->id]);
         $this->assertDatabaseMissing('pos_qr_order_rounds', ['id' => $roundId]);
+        $this->assertSame(
+            0,
+            QrOrderRound::query()
+                ->where('order_id', $order->id)
+                ->where('status', QrOrderRound::STATUS_ACCEPTED)
+                ->count(),
+        );
         $this->assertNull($order->fresh()->qr_session_id);
         $this->getAs($till, self::BOARD_URL)
             ->assertOk()

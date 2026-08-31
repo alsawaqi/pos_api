@@ -17,16 +17,20 @@ use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrAcceptedRoundsController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrAwaitingOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimSettlementController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClearTableController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrConfirmRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrOpenTableController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrRejectRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrReleaseChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrReopenPaymentController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrRotateController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrTableBoardController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrTableRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
@@ -141,6 +145,18 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/qr/table-board', DeviceQrTableBoardController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.qr.table-board');
+        Route::post('device/qr/confirm-round', DeviceQrConfirmRoundController::class)
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.confirm-round');
+        Route::post('device/qr/reject-round', DeviceQrRejectRoundController::class)
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.reject-round');
+        Route::get('device/qr/table-round/{round_id}', DeviceQrTableRoundController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.qr.table-round');
+        Route::get('device/qr/accepted-rounds', DeviceQrAcceptedRoundsController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.qr.accepted-rounds');
         Route::post('device/qr/clear-table', DeviceQrClearTableController::class)
             ->middleware('throttle:qr-table-device-write')
             ->name('device.qr.clear-table');

@@ -30,6 +30,8 @@ class QrDineInSchemaTest extends TestCase
             'status',
             'client_request_id',
             'priced_lines',
+            'confirm_payload',
+            'accepted_seq',
             'subtotal_baisas',
             'tax_baisas',
             'total_baisas',
@@ -50,6 +52,8 @@ class QrDineInSchemaTest extends TestCase
         $this->assertSame(1, (int) $roundIndexes['pos_qr_rounds_session_request_unique']->unique);
         $this->assertTrue($roundIndexes->has('pos_qr_rounds_order_status_idx'));
         $this->assertSame(0, (int) $roundIndexes['pos_qr_rounds_order_status_idx']->unique);
+        $this->assertTrue($roundIndexes->has('pos_qr_order_rounds_accepted_seq_unique'));
+        $this->assertSame(1, (int) $roundIndexes['pos_qr_order_rounds_accepted_seq_unique']->unique);
 
         $sessionForeignKeys = collect(DB::select("PRAGMA foreign_key_list('pos_qr_sessions')"))->keyBy('from');
         $roundForeignKeys = collect(DB::select("PRAGMA foreign_key_list('pos_qr_order_rounds')"))->keyBy('from');

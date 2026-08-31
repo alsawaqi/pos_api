@@ -121,6 +121,7 @@ final class ClearDineInQrTableAction
                         'status' => QrOrderRound::STATUS_REJECTED,
                         'resolved_at' => $now,
                         'resolved_by_device_id' => $device->id,
+                        'confirm_payload' => null,
                         'updated_at' => $now,
                     ]);
                 QrSession::query()->whereIn('id', $sessionIds)->update([

@@ -9,6 +9,7 @@ use App\Models\Floor;
 use App\Models\Order;
 use App\Models\QrSession;
 use App\Models\Table;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -109,26 +110,34 @@ final class OpenDineInTableAction
                 );
             }
 
-            // The session index no longer guards a lazily-expired orphan. Keep
-            // its unpaid order authoritative until staff settle or void it.
-            $hasUnpaidQrOrder = Order::query()
+            // Unified occupancy: a table cannot open a QR tab while any
+            // unpaid order references it, either as the primary table or as
+            // an extra joined table. The board remains QR/session-rooted.
+            $hasUnpaidOrder = Order::query()
                 ->where('company_id', (int) $device->company_id)
                 ->where('branch_id', (int) $device->branch_id)
-                ->where('table_id', $table->getKey())
-                ->where('source', Order::SOURCE_QR_WEB)
-                ->where('order_type', 'dine_in')
                 ->whereIn('status', [
                     Order::STATUS_OPEN,
                     Order::STATUS_HELD,
                     Order::STATUS_AWAITING_PAYMENT,
                 ])
+                ->where(static function (Builder $orders) use ($table): void {
+                    $orders
+                        ->where('table_id', $table->getKey())
+                        ->orWhereIn(
+                            'id',
+                            DB::table('pos_order_tables')
+                                ->select('order_id')
+                                ->where('table_id', $table->getKey()),
+                        );
+                })
                 ->exists();
 
-            if ($hasUnpaidQrOrder) {
+            if ($hasUnpaidOrder) {
                 throw new QrDineInException(
                     'qr_table_has_unpaid_order',
                     409,
-                    'The table still has an unpaid QR order.',
+                    'The table still has an unpaid order.',
                 );
             }
 

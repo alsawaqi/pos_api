@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device;
 
+use App\Actions\Qr\DineInRoundMode;
 use App\Models\AddOn;
 use App\Models\AddOnGroup;
 use App\Models\Branch;
@@ -51,6 +52,8 @@ use Illuminate\Support\Facades\DB;
  */
 class BuildDeviceConfigAction
 {
+    public function __construct(private readonly DineInRoundMode $dineInRoundMode) {}
+
     /**
      * @return array{data: array<string, mixed>, meta: array<string, mixed>}
      */
@@ -389,6 +392,9 @@ class BuildDeviceConfigAction
                 // POST /device/orders/next-number at payment time and uses
                 // prefix/pad to format its OFFLINE local-counter fallback.
                 'order_numbering' => OrderNumbering::forCompany($companyId),
+                // QR-002 S5 — server reads this policy again on every round;
+                // the device copy is an additive UI hint, never money authority.
+                'dine_in_round_mode' => $this->dineInRoundMode->forCompany($companyId),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),

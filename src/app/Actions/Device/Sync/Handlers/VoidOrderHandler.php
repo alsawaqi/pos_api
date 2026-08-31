@@ -15,6 +15,7 @@ use App\Models\LoyaltyTransaction;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Payment;
+use App\Models\QrOrderRound;
 use App\Models\RoundupDonation;
 use App\Models\SaleCommission;
 use App\Models\SyncEvent;
@@ -155,6 +156,16 @@ class VoidOrderHandler implements SyncEventHandler
                 'note' => $this->appendReason($order->note, $reason ?? $voidReason?->name),
             ]);
             $this->closeDineInSession->handle($order, $voidedAt);
+            QrOrderRound::query()
+                ->where('order_id', $order->getKey())
+                ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
+                ->update([
+                    'status' => QrOrderRound::STATUS_REJECTED,
+                    'resolved_at' => $voidedAt,
+                    'resolved_by_device_id' => $device->getKey(),
+                    'confirm_payload' => null,
+                    'updated_at' => $voidedAt,
+                ]);
 
             OrderItem::query()->where('order_id', $order->id)->update(['status' => OrderItem::STATUS_VOID]);
 

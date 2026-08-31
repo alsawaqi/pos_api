@@ -655,6 +655,12 @@ return new class extends Migration
             $table->string('status', 24);
             $table->string('client_request_id', 64);
             $table->json('priced_lines');
+            // Private append-ready inventory/discount snapshot. NULL for
+            // kitchen-direct and every resolved staff-confirm round.
+            $table->json('confirm_payload')->nullable();
+            // SQLite has no independent sequence; allocation uses MAX+1
+            // inside the five-retry acceptance transaction.
+            $table->unsignedBigInteger('accepted_seq')->nullable()->unique();
             $table->unsignedInteger('subtotal_baisas');
             $table->unsignedInteger('tax_baisas');
             $table->unsignedInteger('total_baisas');

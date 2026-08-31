@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Device\AllocateOrderNumberAction;
+use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -25,6 +26,9 @@ final class SubmitDineInQrRoundAction
         private readonly AllocateOrderNumberAction $numbers,
         private readonly FreezeQrRoundLinesAction $freeze,
         private readonly AppendQrPricedLinesAction $append,
+        private readonly DineInRoundMode $roundMode,
+        private readonly RefreshQrOrderTotalsAction $refreshTotals,
+        private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
     ) {}
 
     /**
@@ -116,23 +120,27 @@ final class SubmitDineInQrRoundAction
             $roundNo = ((int) QrOrderRound::query()
                 ->where('qr_session_id', $session->id)
                 ->max('round_no')) + 1;
-            $firstRound = $roundNo === 1;
+            $acceptedRoundExists = QrOrderRound::query()
+                ->where('qr_session_id', $session->id)
+                ->where('status', QrOrderRound::STATUS_ACCEPTED)
+                ->exists();
+            $identityAllowed = ! $acceptedRoundExists;
             $phonePresent = array_key_exists('phone', $payload)
                 && is_string($payload['phone'])
                 && $payload['phone'] !== '';
-            if ($firstRound && ! $phonePresent) {
+            if ($identityAllowed && ! $phonePresent) {
                 throw new QrDineInException(
                     'qr_round_phone_required',
                     422,
-                    'A phone number is required for the first round.',
+                    'A phone number is required until the first round is accepted.',
                 );
             }
-            if (! $firstRound
+            if (! $identityAllowed
                 && (array_key_exists('phone', $payload) || array_key_exists('plate_number', $payload))) {
                 throw new QrDineInException(
                     'qr_round_identity_already_set',
                     422,
-                    'Customer identity is accepted on the first round only.',
+                    'Customer identity is already fixed by an accepted round.',
                 );
             }
 
@@ -143,7 +151,7 @@ final class SubmitDineInQrRoundAction
                     'This dine-in order is not open.',
                 );
             }
-            if (! $firstRound && $order === null) {
+            if ($acceptedRoundExists && $order === null) {
                 throw new QrDineInException(
                     'qr_round_order_not_open',
                     409,
@@ -161,9 +169,20 @@ final class SubmitDineInQrRoundAction
             $price = Totals::priceOrder($loaded->pricingInput);
 
             $customer = null;
-            if ($firstRound) {
-                $phone = (string) $payload['phone'];
-                if (! $this->phoneGuard->allows(
+            $identityDiffers = false;
+            if ($identityAllowed) {
+                $phone = trim((string) $payload['phone']);
+                $plate = isset($payload['plate_number'])
+                    ? ResolveQrCustomerAction::normalisePlate((string) $payload['plate_number'])
+                    : null;
+                $currentPhone = $order?->customer_id === null
+                    ? null
+                    : Customer::query()->whereKey((int) $order->customer_id)->value('phone');
+                $identityDiffers = $order === null
+                    || trim((string) $currentPhone) !== $phone
+                    || $order->plate_number !== $plate;
+
+                if ($identityDiffers && ! $this->phoneGuard->allows(
                     (string) $session->uuid,
                     (int) $session->branch_id,
                     $ip,
@@ -178,22 +197,32 @@ final class SubmitDineInQrRoundAction
                 $customer = $this->customers->handle(
                     (int) $session->company_id,
                     $phone,
-                    isset($payload['plate_number']) ? (string) $payload['plate_number'] : null,
+                    $plate,
                 );
             }
+
+            $staffConfirm = $this->roundMode->forCompany((int) $session->company_id)
+                === DineInRoundMode::STAFF_CONFIRM;
+            $confirmPayload = $staffConfirm
+                ? $this->append->buildPayload($session, $loaded, $price, $now)
+                : null;
 
             $round = QrOrderRound::query()->create([
                 'qr_session_id' => $session->id,
                 'order_id' => $order?->id,
                 'round_no' => $roundNo,
-                'status' => QrOrderRound::STATUS_ACCEPTED,
+                'status' => $staffConfirm
+                    ? QrOrderRound::STATUS_PENDING_CONFIRMATION
+                    : QrOrderRound::STATUS_ACCEPTED,
                 'client_request_id' => $clientRequestId,
                 'priced_lines' => $this->freeze->handle($loaded, $price),
+                'confirm_payload' => $confirmPayload,
+                'accepted_seq' => null,
                 'subtotal_baisas' => $price->rawSubtotalBaisas,
                 'tax_baisas' => $price->taxTotalBaisas,
                 'total_baisas' => $price->grandTotalBaisas,
                 'submitted_at' => $now,
-                'resolved_at' => $now,
+                'resolved_at' => $staffConfirm ? null : $now,
                 'resolved_by_device_id' => null,
             ]);
 
@@ -224,11 +253,27 @@ final class SubmitDineInQrRoundAction
                     'receipt_number' => $allocation['formatted'] ?? null,
                 ]);
                 $round->update(['order_id' => $order->id]);
+            } elseif ($identityDiffers && $customer !== null) {
+                $order->update([
+                    'customer_id' => $customer->customerId,
+                    'plate_number' => $customer->plateNumber,
+                ]);
             }
 
-            $this->append->handle($order, $session, $loaded, $price, $now);
-            $this->refreshOrderTotals($order);
+            if (! $staffConfirm) {
+                $this->append->handle($order, $session, $loaded, $price, $now);
+                $this->refreshTotals->handle($order);
+            }
             $session->update(['last_seen_at' => $now]);
+
+            if (! $staffConfirm) {
+                // Allocate as late as possible: PostgreSQL holds the fixed
+                // advisory xact lock from here through commit, making sequence
+                // order match visibility order for feed cursors.
+                $round->update([
+                    'accepted_seq' => $this->acceptedSequence->next(),
+                ]);
+            }
 
             return [
                 'round' => $round->fresh(),
@@ -247,30 +292,5 @@ final class SubmitDineInQrRoundAction
             && $device->isPaymentStation()
             && (int) $device->company_id === (int) $session->company_id
             && (int) $device->branch_id === (int) $session->branch_id;
-    }
-
-    private function refreshOrderTotals(Order $order): void
-    {
-        $totals = QrOrderRound::query()
-            ->where('order_id', $order->id)
-            ->where('status', QrOrderRound::STATUS_ACCEPTED)
-            ->selectRaw(
-                'COALESCE(SUM(subtotal_baisas), 0) AS subtotal_baisas, '.
-                'COALESCE(SUM(tax_baisas), 0) AS tax_baisas, '.
-                'COALESCE(SUM(total_baisas), 0) AS total_baisas',
-            )
-            ->first();
-
-        $subtotal = (int) $totals->subtotal_baisas;
-        $tax = (int) $totals->tax_baisas;
-        $total = (int) $totals->total_baisas;
-        $discount = max(0, $subtotal + $tax - $total);
-
-        $order->update([
-            'subtotal' => Money::toOmr($subtotal),
-            'discount_total' => Money::toOmr($discount),
-            'tax_total' => Money::toOmr($tax),
-            'grand_total' => Money::toOmr($total),
-        ]);
     }
 }

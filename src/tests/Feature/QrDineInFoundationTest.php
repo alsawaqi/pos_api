@@ -155,15 +155,54 @@ final class QrDineInFoundationTest extends TestCase
         );
     }
 
-    public function test_till_origin_dine_in_order_does_not_block_open_table_in_s1(): void
+    public function test_any_source_unpaid_primary_or_joined_table_occupancy_blocks_open_table(): void
     {
         $station = $this->device('payment_station');
         $till = $this->device('fixed_pos');
-        $table = $this->table(branchId: 10, label: 'T-TILL');
-        $this->order($till, $table, null, 'main_pos');
+        $cases = [
+            ['status' => Order::STATUS_OPEN, 'source' => 'main_pos'],
+            ['status' => Order::STATUS_HELD, 'source' => 'delivery'],
+            ['status' => Order::STATUS_AWAITING_PAYMENT, 'source' => Order::SOURCE_QR_WEB],
+        ];
 
-        $this->postAs($station, self::OPEN_TABLE_URL, ['table_id' => $table->id])
-            ->assertCreated();
+        foreach ($cases as $index => $case) {
+            foreach (['primary', 'pivot'] as $placement) {
+                $target = $this->table(
+                    branchId: 10,
+                    label: sprintf('T-OCC-%d-%s', $index, $placement),
+                );
+                $primary = $placement === 'primary'
+                    ? $target
+                    : $this->table(
+                        branchId: 10,
+                        label: sprintf('T-OCC-%d-PARENT', $index),
+                    );
+                $order = $this->order(
+                    $till,
+                    $primary,
+                    null,
+                    $case['source'],
+                    $case['status'],
+                );
+                if ($placement === 'pivot') {
+                    DB::table('pos_order_tables')->insert([
+                        'order_id' => $order->id,
+                        'table_id' => $target->id,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+
+                $this->postAs($station, self::OPEN_TABLE_URL, ['table_id' => $target->id])
+                    ->assertConflict()
+                    ->assertJsonPath('errors.0.code', 'qr_table_has_unpaid_order');
+                $this->assertSame(
+                    0,
+                    QrSession::query()->where('table_id', $target->id)->count(),
+                    sprintf('%s %s occupancy created a QR session', $case['source'], $placement),
+                );
+            }
+        }
     }
 
     public function test_table_menu_is_sessionless_branch_scoped_and_does_not_mutate_sessions(): void
@@ -358,6 +397,7 @@ final class QrDineInFoundationTest extends TestCase
         PosTable $table,
         ?QrSession $session,
         string $source,
+        string $status = Order::STATUS_OPEN,
     ): Order {
         return Order::query()->create([
             'uuid' => (string) Str::uuid(),
@@ -370,7 +410,7 @@ final class QrDineInFoundationTest extends TestCase
             'customer_id' => null,
             'table_id' => $table->id,
             'order_type' => 'dine_in',
-            'status' => Order::STATUS_OPEN,
+            'status' => $status,
             'source' => $source,
             'plate_number' => null,
             'subtotal' => '4.750',

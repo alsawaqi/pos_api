@@ -73,7 +73,7 @@ final class ClaimQrSettlementAction
             throw new QrChargeException('order_not_found', 404, 'The order was not found.');
         }
 
-        $result = DB::transaction(function () use ($device, $orderId, $orderUuid, $gps): array {
+        $result = DB::transaction(function () use ($device, $orderId, $orderUuid, $gps): array|QrChargeException {
             $now = now();
             $order = Order::query()
                 ->whereKey((int) $orderId)
@@ -146,22 +146,41 @@ final class ClaimQrSettlementAction
             }
 
             $this->assertSessionAdmission($session, $order, $now);
-            $this->enforceClaimGeofence($device, $gps);
 
-            // Pending staff-confirmation rows are not accepted money. Freeze
-            // only the already accepted tab and make every pending row terminal.
-            if ($session !== null) {
-                QrOrderRound::query()
-                    ->where('qr_session_id', $session->getKey())
-                    ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
-                    ->update([
-                        'status' => QrOrderRound::STATUS_REJECTED,
-                        'resolved_at' => $now,
-                        'resolved_by_device_id' => $device->getKey(),
-                        'updated_at' => $now,
-                    ]);
+            // Pending staff-confirmation rows are not accepted money. Make
+            // them terminal inside this transaction before deciding whether
+            // any accepted amount exists to reserve.
+            $acceptedRounds = QrOrderRound::query()
+                ->where('order_id', $order->getKey())
+                ->where('status', QrOrderRound::STATUS_ACCEPTED)
+                ->count();
+            $pendingRounds = QrOrderRound::query()
+                ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION);
+            if ($session === null) {
+                $pendingRounds->where('order_id', $order->getKey());
+            } else {
+                $pendingRounds->where('qr_session_id', $session->getKey());
             }
 
+            $pendingRounds->update([
+                'status' => QrOrderRound::STATUS_REJECTED,
+                'resolved_at' => $now,
+                'resolved_by_device_id' => $device->getKey(),
+                'confirm_payload' => null,
+                'updated_at' => $now,
+            ]);
+            if ($acceptedRounds === 0
+                && ! $this->isAcceptedRoundlessSafeFallbackOrphan($session, $order)) {
+                // Return instead of throwing so the terminal-safe pending
+                // cleanup commits before the controller emits the refusal.
+                return new QrChargeException(
+                    'qr_order_not_settleable',
+                    409,
+                    'Confirm at least one QR round before taking payment.',
+                );
+            }
+
+            $this->enforceClaimGeofence($device, $gps);
             $claimSeconds = max(1, (int) config('qr.settlement_claim_seconds', 300));
             $order->update([
                 'status' => Order::STATUS_AWAITING_PAYMENT,
@@ -184,6 +203,10 @@ final class ClaimQrSettlementAction
 
             return $this->present($order->refresh(), false);
         }, 5);
+
+        if ($result instanceof QrChargeException) {
+            throw $result;
+        }
 
         Log::info('qr-settlement claim', [
             'order_uuid' => $result['order_uuid'],
@@ -315,6 +338,18 @@ final class ClaimQrSettlementAction
         }
 
         return true;
+    }
+
+    private function isAcceptedRoundlessSafeFallbackOrphan(
+        ?QrSession $session,
+        Order $order,
+    ): bool {
+        // Hard-deleting the opening station cascades the session and its round
+        // evidence after S1 has already preserved the payable order. Admit
+        // only the pre-existing fail-closed fallback shape with frozen money.
+        return $session === null
+            && $this->isSafeFallbackHeldOrder($order)
+            && Money::toBaisas($order->grand_total) > 0;
     }
 
     private function isSafeFallbackHeldOrder(Order $order): bool

@@ -120,6 +120,25 @@ final class ListDineInQrTableBoardAction
                     ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
                     ->orderBy('round_no')
                     ->get();
+            $acceptedRoundCount = $session === null
+                ? 0
+                : QrOrderRound::query()
+                    ->where('qr_session_id', $session->id)
+                    ->where('status', QrOrderRound::STATUS_ACCEPTED)
+                    ->count();
+            $recentAcceptedRounds = $session === null
+                ? collect()
+                : QrOrderRound::query()
+                    ->where('qr_session_id', $session->id)
+                    ->where('status', QrOrderRound::STATUS_ACCEPTED)
+                    ->orderByDesc('resolved_at')
+                    ->orderByDesc('id')
+                    ->limit(20)
+                    ->get();
+            $boardRounds = $pendingRounds
+                ->concat($recentAcceptedRounds)
+                ->sortBy(static fn (QrOrderRound $round): int => (int) $round->round_no)
+                ->values();
             $orphaned = $order !== null && (
                 $session === null
                 || $session->status === QrSession::STATUS_EXPIRED
@@ -142,6 +161,16 @@ final class ListDineInQrTableBoardAction
                     'receipt_number' => $order->receipt_number,
                     'accepted_total_baisas' => Money::toBaisas($order->grand_total),
                 ],
+                'accepted_round_count' => $acceptedRoundCount,
+                'rounds' => $boardRounds->map(
+                    static fn (QrOrderRound $round): array => [
+                        'id' => (int) $round->id,
+                        'round_no' => (int) $round->round_no,
+                        'status' => (string) $round->status,
+                        'total_baisas' => (int) $round->total_baisas,
+                        'submitted_at' => $round->submitted_at?->toIso8601String(),
+                    ],
+                )->all(),
                 'pending_rounds' => $pendingRounds->map(
                     static fn (QrOrderRound $round): array => [
                         'id' => (int) $round->id,

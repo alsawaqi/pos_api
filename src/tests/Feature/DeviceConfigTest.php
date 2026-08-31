@@ -6,7 +6,6 @@ namespace Tests\Feature;
 
 use App\Models\Device;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -993,6 +992,60 @@ class DeviceConfigTest extends TestCase
         DB::table('pos_ingredients')->where('id', 1)->update(['min_stock_threshold' => 4.000]);
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
         $this->assertFalse(collect($data['products'])->firstWhere('id', 1)['low_stock']);
+    }
+
+    public function test_dine_in_round_mode_hint_is_always_emitted_and_tolerantly_normalized(): void
+    {
+        $this->pairedDevice();
+
+        $read = function (?string $since = null): string {
+            $url = '/api/v1/device/config';
+            if ($since !== null) {
+                $url .= '/delta?since='.urlencode($since);
+            }
+
+            return (string) $this->withToken('mdev_cfg')
+                ->getJson($url)
+                ->assertOk()
+                ->json('data.settings.dine_in_round_mode');
+        };
+
+        $this->assertSame('kitchen_direct', $read(), 'missing setting must fail open to direct mode');
+
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100,
+            'key' => 'dine_in_round_mode',
+            'value' => json_encode('staff_confirm', JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertSame('staff_confirm', $read());
+        $this->assertSame(
+            'staff_confirm',
+            $read(now()->subMinute()->toIso8601String()),
+            'the settings hint must be present in delta bundles too',
+        );
+
+        DB::table('pos_company_settings')
+            ->where(['company_id' => 100, 'key' => 'dine_in_round_mode'])
+            ->update(['value' => json_encode('kitchen_direct', JSON_THROW_ON_ERROR)]);
+        $this->assertSame('kitchen_direct', $read());
+
+        foreach ([
+            '{not-json',
+            json_encode(['staff_confirm'], JSON_THROW_ON_ERROR),
+            json_encode('unknown-mode', JSON_THROW_ON_ERROR),
+            json_encode(null, JSON_THROW_ON_ERROR),
+        ] as $garbage) {
+            DB::table('pos_company_settings')
+                ->where(['company_id' => 100, 'key' => 'dine_in_round_mode'])
+                ->update(['value' => $garbage]);
+            $this->assertSame(
+                'kitchen_direct',
+                $read(),
+                'malformed or unsupported merchant policy must preserve the shipped mode',
+            );
+        }
     }
 
     public function test_audience_measurement_meta_defaults_off_and_follows_company_consent(): void

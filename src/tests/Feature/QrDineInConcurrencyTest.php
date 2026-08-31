@@ -34,6 +34,8 @@ final class QrDineInConcurrencyTest extends TestCase
 
     private const CLAIM_SETTLEMENT_URL = '/api/v1/device/qr/claim-settlement';
 
+    private const CONFIRM_ROUND_URL = '/api/v1/device/qr/confirm-round';
+
     private const OPEN_TABLE_URL = '/api/v1/device/qr/open-table';
 
     private const OPEN_WORKER_COUNT = 10;
@@ -354,6 +356,87 @@ final class QrDineInConcurrencyTest extends TestCase
             $this->assertSame($acceptedTotal, (int) round((float) $order->grand_total * 1000));
             $this->assertSame(Order::STATUS_AWAITING_PAYMENT, $order->status);
             $this->assertSame(QrSession::STATUS_ORDERED, $session->status);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles(
+                $databasePath,
+                $originalDefault,
+                $originalSqlite,
+            );
+        }
+    }
+
+    public function test_two_independent_confirms_allocate_unique_sqlite_acceptance_sequences(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-accepted-seq-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $firstStation = $this->paymentStation('mdev_qr_seq_station_one');
+            $secondStation = $this->paymentStation('mdev_qr_seq_station_two');
+            $firstTill = $this->attendedTill('mdev_qr_seq_till_one');
+            $secondTill = $this->attendedTill('mdev_qr_seq_till_two');
+            [$firstSession, $firstOrder] = $this->runningDineInOrder(
+                $firstStation,
+                $this->activeTable('Concurrency SEQ-1'),
+            );
+            [$secondSession, $secondOrder] = $this->runningDineInOrder(
+                $secondStation,
+                $this->activeTable('Concurrency SEQ-2'),
+            );
+            $firstRound = $this->pendingConfirmationRound($firstSession, $firstOrder);
+            $secondRound = $this->pendingConfirmationRound($secondSession, $secondOrder);
+            $requests = [
+                [
+                    'url' => self::CONFIRM_ROUND_URL,
+                    'token' => (string) $firstTill->device_token,
+                    'payload' => ['round_id' => (int) $firstRound->id],
+                    'observe_table_id' => null,
+                ],
+                [
+                    'url' => self::CONFIRM_ROUND_URL,
+                    'token' => (string) $secondTill->device_token,
+                    'payload' => ['round_id' => (int) $secondRound->id],
+                    'observe_table_id' => null,
+                ],
+            ];
+
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertCount(2, $results);
+            foreach ($results as $worker => $result) {
+                $this->assertNull(
+                    $result['error'],
+                    sprintf('Confirm worker %d failed: %s', $worker, (string) $result['error']),
+                );
+                $this->assertSame(
+                    200,
+                    $result['status'],
+                    sprintf('Confirm worker %d did not resolve terminally.', $worker),
+                );
+                $this->assertSame(
+                    QrOrderRound::STATUS_ACCEPTED,
+                    data_get($this->decodeBody($result['body']), 'data.round.status'),
+                );
+            }
+
+            DB::purge('sqlite');
+            $rounds = QrOrderRound::query()
+                ->whereIn('id', [$firstRound->id, $secondRound->id])
+                ->orderBy('accepted_seq')
+                ->get();
+            $this->assertCount(2, $rounds);
+            $this->assertSame(
+                [1, 2],
+                $rounds->pluck('accepted_seq')->map(static fn ($value): int => (int) $value)->all(),
+            );
+            $this->assertSame(
+                [QrOrderRound::STATUS_ACCEPTED, QrOrderRound::STATUS_ACCEPTED],
+                $rounds->pluck('status')->all(),
+            );
+            $this->assertSame(2, $rounds->pluck('accepted_seq')->unique()->count());
         } finally {
             $this->restoreDatabaseConfigAndDeleteFiles(
                 $databasePath,
@@ -895,6 +978,56 @@ final class QrDineInConcurrencyTest extends TestCase
         ]);
 
         return [$session, $order];
+    }
+
+    private function pendingConfirmationRound(
+        QrSession $session,
+        Order $order,
+    ): QrOrderRound {
+        return QrOrderRound::query()->create([
+            'qr_session_id' => $session->id,
+            'order_id' => $order->id,
+            'round_no' => 2,
+            'status' => QrOrderRound::STATUS_PENDING_CONFIRMATION,
+            'client_request_id' => (string) Str::uuid(),
+            'priced_lines' => [[
+                'product_id' => null,
+                'name' => 'Concurrent frozen coffee',
+                'name_ar' => null,
+                'qty' => 1,
+                'notes' => null,
+                'unit_price_baisas' => 4750,
+                'line_discount_baisas' => 0,
+                'line_total_baisas' => 4750,
+                'addons' => [],
+            ]],
+            'confirm_payload' => [
+                'version' => 1,
+                'items' => [[
+                    'attributes' => [
+                        'product_id' => null,
+                        'product_name_snapshot' => 'Concurrent frozen coffee',
+                        'qty' => '1.000',
+                        'unit_price_snapshot' => '4.750',
+                        'line_discount' => '0.000',
+                        'line_total' => '4.750',
+                        'recipe_snapshot_json' => null,
+                        'component_snapshot_json' => null,
+                        'status' => 'open',
+                        'notes' => null,
+                    ],
+                    'addons' => [],
+                ]],
+                'discounts' => [],
+            ],
+            'accepted_seq' => null,
+            'subtotal_baisas' => 4750,
+            'tax_baisas' => 0,
+            'total_baisas' => 4750,
+            'submitted_at' => now(),
+            'resolved_at' => null,
+            'resolved_by_device_id' => null,
+        ]);
     }
 
     private function seedRoundProduct(): void

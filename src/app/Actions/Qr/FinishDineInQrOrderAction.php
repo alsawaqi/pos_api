@@ -58,6 +58,7 @@ final class FinishDineInQrOrderAction
                     'status' => QrOrderRound::STATUS_REJECTED,
                     'resolved_at' => $now,
                     'resolved_by_device_id' => null,
+                    'confirm_payload' => null,
                     'updated_at' => $now,
                 ]);
             if ($order === null || $acceptedRounds === 0) {

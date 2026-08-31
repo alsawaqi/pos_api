@@ -36,6 +36,7 @@ services:
       QUEUE_CONNECTION: sync
       BROADCAST_CONNECTION: log
       MAIL_MAILER: array
+      POS_API_CLIENT_IP_SECRET: ${TRUE_CLIENT_IP_BFF_SECRET:?TRUE_CLIENT_IP_BFF_SECRET is required}
     command:
       - sh
       - -lc
@@ -125,6 +126,17 @@ services:
     command: ["trap : TERM INT; sleep infinity & wait"]
     networks:
       - direct_to_npm
+
+  bff_client:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c"]
+    command: ["trap : TERM INT; sleep infinity & wait"]
+    environment:
+      TRUE_CLIENT_IP_BFF_SECRET: ${TRUE_CLIENT_IP_BFF_SECRET:?TRUE_CLIENT_IP_BFF_SECRET is required}
+    depends_on:
+      - pos_nginx
+    networks:
+      - npm_to_app
 
 networks:
   app_net:

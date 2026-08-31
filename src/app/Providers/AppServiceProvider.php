@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Models\Device;
 use App\Models\QrSession;
 use App\Models\Table;
+use App\Support\Qr\ForwardedCustomerIp;
 use App\Support\QrApiResponse;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -69,6 +70,7 @@ class AppServiceProvider extends ServiceProvider
 
             return $response;
         };
+        $forwardedCustomerIp = app(ForwardedCustomerIp::class);
 
         // A station polls while a customer is waiting to tap. Twenty requests
         // per minute covers a three-second poll; 60 leaves reconnect headroom
@@ -77,13 +79,13 @@ class AppServiceProvider extends ServiceProvider
             ->by('qr-station-read:device:'.(string) $request->user()?->getAuthIdentifier())
             ->response($qrRateLimited));
 
-        RateLimiter::for('qr-bind', function (Request $request) use ($qrRateLimited): array {
+        RateLimiter::for('qr-bind', function (Request $request) use ($forwardedCustomerIp, $qrRateLimited): array {
             $submittedToken = $request->input('token');
             $token = is_string($submittedToken) ? $submittedToken : '';
 
             return [
                 Limit::perMinute(10)
-                    ->by('qr-bind:ip:'.self::rateLimitIpKey($request->ip()))
+                    ->by('qr-bind:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                     ->response($qrRateLimited),
                 Limit::perMinute(10)
                     ->by('qr-bind:token:'.hash('sha256', $token))
@@ -99,7 +101,7 @@ class AppServiceProvider extends ServiceProvider
                 ->by('qr-read:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
                 ->response($qrRateLimited),
             Limit::perMinute(3000)
-                ->by('qr-read:ip:'.self::rateLimitIpKey($request->ip()))
+                ->by('qr-read:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                 ->response($qrRateLimited),
         ]);
 
@@ -108,13 +110,13 @@ class AppServiceProvider extends ServiceProvider
                 ->by('qr-quote:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
                 ->response($qrRateLimited),
             Limit::perMinute(600)
-                ->by('qr-quote:ip:'.self::rateLimitIpKey($request->ip()))
+                ->by('qr-quote:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                 ->response($qrRateLimited),
         ]);
 
         RateLimiter::for('qr-checkout', fn (Request $request) => [
             Limit::perMinute(10)
-                ->by('qr-checkout:ip:'.self::rateLimitIpKey($request->ip()))
+                ->by('qr-checkout:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                 ->response($qrRateLimited),
             Limit::perMinute(10)
                 ->by('qr-checkout:session:'.hash('sha256', (string) $request->header('X-QR-Session')))
@@ -124,10 +126,10 @@ class AppServiceProvider extends ServiceProvider
         // Printed table menus are sessionless. This is only an anonymous read
         // backstop; table/branch catalogue caching remains the scaling layer.
         RateLimiter::for('qr-table-read', fn (Request $request) => Limit::perMinute(3000)
-            ->by('qr-table-read:ip:'.self::rateLimitIpKey($request->ip()))
+            ->by('qr-table-read:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
             ->response($qrRateLimited));
 
-        RateLimiter::for('qr-table-bind', function (Request $request) use ($qrRateLimited): array {
+        RateLimiter::for('qr-table-bind', function (Request $request) use ($forwardedCustomerIp, $qrRateLimited): array {
             $submitted = $request->input('table_token');
             $tableToken = is_string($submitted) ? $submitted : '';
             $sessionId = null;
@@ -155,7 +157,7 @@ class AppServiceProvider extends ServiceProvider
                     ->by('qr-table-bind:'.$credentialKey)
                     ->response($qrRateLimited),
                 Limit::perMinute(600)
-                    ->by('qr-table-bind:ip:'.self::rateLimitIpKey($request->ip()))
+                    ->by('qr-table-bind:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                     ->response($qrRateLimited),
             ];
         });
@@ -171,7 +173,7 @@ class AppServiceProvider extends ServiceProvider
                 ))
                 ->response($qrRateLimited),
             Limit::perMinute(400)
-                ->by('qr-dine-in-round:ip:'.self::rateLimitIpKey($request->ip()))
+                ->by('qr-dine-in-round:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                 ->response($qrRateLimited),
         ]);
 
@@ -183,7 +185,7 @@ class AppServiceProvider extends ServiceProvider
                 ))
                 ->response($qrRateLimited),
             Limit::perMinute(200)
-                ->by('qr-dine-in-finish:ip:'.self::rateLimitIpKey($request->ip()))
+                ->by('qr-dine-in-finish:ip:'.self::rateLimitIpKey($forwardedCustomerIp->resolve($request)))
                 ->response($qrRateLimited),
         ]);
 

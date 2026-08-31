@@ -15,10 +15,12 @@ TRUE_CLIENT_IP_CLIENT_V6_NETWORK="$COMPOSE_PROJECT_NAME-client-v6"
 TRUE_CLIENT_IP_CF_V4_NETWORK="$COMPOSE_PROJECT_NAME-cf-v4"
 TRUE_CLIENT_IP_CF_V6_NETWORK="$COMPOSE_PROJECT_NAME-cf-v6"
 TRUE_CLIENT_IP_DIRECT_NETWORK="$COMPOSE_PROJECT_NAME-direct"
+TRUE_CLIENT_IP_BFF_SECRET='true-client-ip-harness-only'
 export COMPOSE_PROJECT_NAME TRUE_CLIENT_IP_APP_NETWORK
 export TRUE_CLIENT_IP_NPM_APP_NETWORK TRUE_CLIENT_IP_CLIENT_V4_NETWORK
 export TRUE_CLIENT_IP_CLIENT_V6_NETWORK TRUE_CLIENT_IP_CF_V4_NETWORK
 export TRUE_CLIENT_IP_CF_V6_NETWORK TRUE_CLIENT_IP_DIRECT_NETWORK
+export TRUE_CLIENT_IP_BFF_SECRET
 
 CREATED_NETWORKS=()
 
@@ -193,6 +195,68 @@ done
         || fail "IPv6 limiter batch returned ${#IPV6_BATCH_STATUSES[@]} statuses instead of 10: $output"
 }
 
+request_bff_limiter_batch() {
+    local base_url="$1"
+    local mode="$2"
+    local address_prefix="$3"
+    local expected_status_count=11
+    local output
+
+    [[ "$mode" == "correct" || "$mode" == "absent" || "$mode" == "wrong" ]] \
+        || fail "unsupported BFF auth mode: $mode"
+    if [[ "$mode" == "correct" ]]; then
+        expected_status_count=12
+    fi
+
+    if ! output="$(compose exec -T bff_client sh -c '
+set -eu
+base_url="$1"
+mode="$2"
+address_prefix="$3"
+
+send_request() {
+    forwarded_ip="$1"
+    session_id="$2"
+    set -- curl --noproxy "*" --silent --show-error --max-time 10 \
+        --output /dev/null --write-out "%{http_code}\n" \
+        -H "X-Pos-Web-Client-IP: $forwarded_ip" \
+        -H "X-QR-Session: $session_id"
+
+    case "$mode" in
+        correct)
+            set -- "$@" -H "X-Pos-Web-Client-Auth: $TRUE_CLIENT_IP_BFF_SECRET"
+            ;;
+        wrong)
+            set -- "$@" -H "X-Pos-Web-Client-Auth: intentionally-wrong-harness-secret"
+            ;;
+    esac
+
+    "$@" "$base_url/_ops/true-client-ip/bff-limited"
+}
+
+request_number=1
+while [ "$request_number" -le 11 ]; do
+    if [ "$mode" = "correct" ]; then
+        forwarded_ip="$address_prefix.10"
+    else
+        forwarded_ip="$address_prefix.$request_number"
+    fi
+    send_request "$forwarded_ip" "bff-$mode-$request_number"
+    request_number=$((request_number + 1))
+done
+
+if [ "$mode" = "correct" ]; then
+    send_request "$address_prefix.11" 'bff-correct-independent'
+fi
+' sh "$base_url" "$mode" "$address_prefix")"; then
+        fail "BFF $mode-secret limiter request batch failed"
+    fi
+
+    mapfile -t BFF_BATCH_STATUSES <<<"$output"
+    [[ "${#BFF_BATCH_STATUSES[@]}" == "$expected_status_count" ]] \
+        || fail "BFF $mode-secret limiter batch returned ${#BFF_BATCH_STATUSES[@]} statuses instead of $expected_status_count: $output"
+}
+
 trap cleanup EXIT
 
 command -v docker >/dev/null || fail 'docker is required'
@@ -233,6 +297,7 @@ compose up --detach --build
 V4_CHAIN_URL='http://fake_cloudflare_v4'
 V6_CHAIN_URL='http://fake_cloudflare_v6'
 DIRECT_CHAIN_URL='http://fake_npm'
+BFF_CHAIN_URL='http://pos_nginx'
 
 for attempt in $(seq 1 30); do
     if request client_v4 "$V4_CHAIN_URL/_ops/true-client-ip" 2>/dev/null \
@@ -296,6 +361,38 @@ assert_eq 429 "$LAST_STATUS" 'direct caller request 11 status'
 request client_v4 "$V4_CHAIN_URL/_ops/true-client-ip/limited?kiosk_id=direct-independent"
 assert_eq 200 "$LAST_STATUS" 'Cloudflare customer remains independent of direct caller'
 assert_eq "$CLIENT_V4_IP" "$(json_value request_ip)" 'independent Cloudflare customer attribution'
+
+printf '%s\n' '--- authenticated BFF customer-IP limiter buckets ---'
+clear_limiter
+request_bff_limiter_batch "$BFF_CHAIN_URL" correct '198.51.100'
+for request_number in $(seq 1 10); do
+    assert_eq 200 "${BFF_BATCH_STATUSES[$((request_number - 1))]}" \
+        "authenticated BFF customer request $request_number status"
+done
+assert_eq 429 "${BFF_BATCH_STATUSES[10]}" \
+    'authenticated BFF customer request 11 status'
+assert_eq 200 "${BFF_BATCH_STATUSES[11]}" \
+    'second authenticated BFF customer remains independent'
+
+printf '%s\n' '--- absent BFF auth preserves socket-peer limiter bucket ---'
+clear_limiter
+request_bff_limiter_batch "$BFF_CHAIN_URL" absent '203.0.113'
+for request_number in $(seq 1 10); do
+    assert_eq 200 "${BFF_BATCH_STATUSES[$((request_number - 1))]}" \
+        "absent-auth rotating customer request $request_number status"
+done
+assert_eq 429 "${BFF_BATCH_STATUSES[10]}" \
+    'absent-auth rotating customer request 11 shares BFF bucket'
+
+printf '%s\n' '--- wrong BFF auth preserves socket-peer limiter bucket ---'
+clear_limiter
+request_bff_limiter_batch "$BFF_CHAIN_URL" wrong '192.0.2'
+for request_number in $(seq 1 10); do
+    assert_eq 200 "${BFF_BATCH_STATUSES[$((request_number - 1))]}" \
+        "wrong-auth rotating customer request $request_number status"
+done
+assert_eq 429 "${BFF_BATCH_STATUSES[10]}" \
+    'wrong-auth rotating customer request 11 shares BFF bucket'
 
 printf '%s\n' '--- malformed and missing-header fallbacks ---'
 request client_v4 "$V4_CHAIN_URL/_ops/true-client-ip" -H 'X-Harness-CF-Mode: absent'

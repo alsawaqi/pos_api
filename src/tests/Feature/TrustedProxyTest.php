@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Support\Qr\ForwardedCustomerIp;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Testing\TestResponse;
@@ -25,6 +26,14 @@ final class TrustedProxyTest extends TestCase
         Route::post('/_ops/qr-checkout-budget', static fn (Request $request) => response()->json([
             'ip' => $request->ip(),
         ]))->middleware('throttle:qr-checkout');
+
+        Route::get(
+            '/_ops/resolved-customer-ip',
+            static fn (Request $request, ForwardedCustomerIp $resolver) => response()->json([
+                'request_ip' => $request->ip(),
+                'resolved_ip' => $resolver->resolve($request),
+            ]),
+        );
     }
 
     public function test_nginx_established_remote_address_and_https_are_used(): void
@@ -71,6 +80,25 @@ final class TrustedProxyTest extends TestCase
             ->getJson('/_ops/trusted-proxy-context')
             ->assertOk()
             ->assertJsonPath('ip', '192.0.2.60');
+
+        $this->assertSame([], Request::getTrustedProxies());
+    }
+
+    public function test_authenticated_bff_ip_is_narrowly_resolved_without_mutating_laravel_ip(): void
+    {
+        config(['qr.bff_client_ip_secret' => 'w2-feature-secret']);
+
+        $this->withServerVariables([
+            'REMOTE_ADDR' => '198.51.100.61',
+        ])->withHeaders([
+            ForwardedCustomerIp::AUTH_HEADER => 'w2-feature-secret',
+            ForwardedCustomerIp::IP_HEADER => '203.0.113.61',
+        ])->getJson('/_ops/resolved-customer-ip')
+            ->assertOk()
+            ->assertExactJson([
+                'request_ip' => '198.51.100.61',
+                'resolved_ip' => '203.0.113.61',
+            ]);
 
         $this->assertSame([], Request::getTrustedProxies());
     }

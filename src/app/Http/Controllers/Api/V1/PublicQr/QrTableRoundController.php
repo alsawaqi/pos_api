@@ -12,12 +12,16 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Support\Money;
+use App\Support\Qr\ForwardedCustomerIp;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
 
 final class QrTableRoundController
 {
-    public function __construct(private readonly SubmitDineInQrRoundAction $rounds) {}
+    public function __construct(
+        private readonly SubmitDineInQrRoundAction $rounds,
+        private readonly ForwardedCustomerIp $customerIp,
+    ) {}
 
     public function __invoke(SubmitDineInQrRoundRequest $request): JsonResponse
     {
@@ -28,7 +32,7 @@ final class QrTableRoundController
             $result = $this->rounds->handle(
                 (int) $session->id,
                 $request->validated(),
-                (string) ($request->ip() ?? ''),
+                $this->customerIp->resolve($request),
             );
         } catch (QrCatalogueException $exception) {
             return QrApiResponse::failure($exception->codeName, $exception->getMessage(), 422);

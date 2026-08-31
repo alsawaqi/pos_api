@@ -79,7 +79,19 @@ jobs:
           cp .env.example .env
           composer install --prefer-dist --no-interaction --no-progress
       - name: Verify the real true-client-IP request chain
-        run: bash tests/Integration/TrueClientIp/run.sh
+        run: |
+          set -o pipefail
+          harness_log="$RUNNER_TEMP/true-client-ip.log"
+          bash tests/Integration/TrueClientIp/run.sh 2>&1 | tee "$harness_log"
+          pass_count="$(grep -c '^PASS:' "$harness_log" || true)"
+          fail_count="$(grep -c '^FAIL:' "$harness_log" || true)"
+          if [[ "$pass_count" != "114" || "$fail_count" != "0" ]]; then
+            printf 'TrueClientIp evidence mismatch: expected 114 PASS / 0 FAIL, observed %s PASS / %s FAIL\n' \
+              "$pass_count" "$fail_count" >&2
+            exit 1
+          fi
+          grep -Fxq 'All real multi-hop true-client-IP checks passed.' "$harness_log"
+          printf 'TrueClientIp evidence: %s PASS / %s FAIL\n' "$pass_count" "$fail_count"
 
   # ---- CD: auto-deploy to the production VPS ----
   # Push to main only (never PRs), and only after the device-contract tests

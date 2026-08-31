@@ -22,6 +22,10 @@ return [
         500,
     ),
 
+    // Shared only with the POS web BFF. When blank or mismatched, forwarded
+    // customer-IP headers are ignored and the socket peer remains authoritative.
+    'bff_client_ip_secret' => (string) env('POS_API_CLIENT_IP_SECRET', ''),
+
     // How long a station owns the frozen sale amount after a successful claim.
     'charge_claim_seconds' => (int) env('QR_CHARGE_CLAIM_SECONDS', 180),
 

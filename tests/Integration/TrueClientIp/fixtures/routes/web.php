@@ -27,3 +27,8 @@ Route::get('/_ops/true-client-ip', $probe);
 // kiosk_id in the runner keeps its independent kiosk bucket out of the result.
 Route::get('/_ops/true-client-ip/limited', $probe)
     ->middleware('throttle:device-pair');
+
+// Exercise the real QR checkout limiter while the runner varies its independent
+// session bucket, leaving only the forwarded customer-IP axis under test.
+Route::get('/_ops/true-client-ip/bff-limited', $probe)
+    ->middleware('throttle:qr-checkout');

@@ -10,6 +10,7 @@ use App\Actions\Qr\QrCheckoutException;
 use App\Actions\Qr\QrPricePresenter;
 use App\Http\Requests\Api\V1\PublicQr\CheckoutQrRequest;
 use App\Models\QrSession;
+use App\Support\Qr\ForwardedCustomerIp;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
 
@@ -19,6 +20,7 @@ final class QrCheckoutController
     public function __construct(
         private readonly CreateQrOrderAction $orders,
         private readonly QrPricePresenter $presenter,
+        private readonly ForwardedCustomerIp $customerIp,
     ) {}
 
     public function __invoke(CheckoutQrRequest $request): JsonResponse
@@ -30,7 +32,7 @@ final class QrCheckoutController
             $order = $this->orders->handle(
                 (int) $session->id,
                 $request->validated(),
-                (string) ($request->ip() ?? ''),
+                $this->customerIp->resolve($request),
             );
         } catch (QrCatalogueException $exception) {
             return QrApiResponse::failure($exception->codeName, $exception->getMessage(), 422);

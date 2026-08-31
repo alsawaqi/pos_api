@@ -17,6 +17,7 @@ use App\Models\OrderItemAddon;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table as PosTable;
+use App\Support\Qr\ForwardedCustomerIp;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Carbon;
@@ -46,6 +47,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
     private const CLAIM_SETTLEMENT_URL = '/api/v1/device/qr/claim-settlement';
 
     private const SYNC_URL = '/api/v1/device/sync/push';
+
+    private const BFF_SECRET = 'w2-dine-in-bff-secret';
 
     private int $deviceSequence = 0;
 
@@ -88,6 +91,29 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             'malformed JSON' => ['{not-json'],
             'unsupported scalar' => [json_encode('future-mode', JSON_THROW_ON_ERROR)],
         ];
+    }
+
+    public function test_round_guard_uses_authenticated_bff_customer_ip(): void
+    {
+        $this->setRoundMode(DineInRoundMode::KITCHEN_DIRECT);
+        config([
+            'qr.bff_client_ip_secret' => self::BFF_SECRET,
+            'qr.distinct_phone_ip_backstop_per_branch_per_hour' => 1,
+        ]);
+        Cache::flush();
+        $first = $this->openAndBindFlow('W2-IP-A');
+        $second = $this->openAndBindFlow('W2-IP-B');
+
+        $this->submitRoundFromIp(
+            $first,
+            $this->roundPayload('w2-ip-round-a', '90002001', null),
+            '203.0.113.81',
+        )->assertCreated();
+        $this->submitRoundFromIp(
+            $second,
+            $this->roundPayload('w2-ip-round-b', '90002002', null),
+            '203.0.113.82',
+        )->assertCreated();
     }
 
     /**
@@ -746,6 +772,17 @@ final class QrDineInStaffConfirmModeTest extends TestCase
     private function submitRound(array $flow, array $payload): TestResponse
     {
         return $this->withHeaders($this->qrHeaders($flow['session'], $flow['secret']))
+            ->postJson(self::TABLE_ROUND_URL, $payload);
+    }
+
+    /** @param array<string, mixed> $flow */
+    private function submitRoundFromIp(array $flow, array $payload, string $forwardedIp): TestResponse
+    {
+        return $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.80'])
+            ->withHeaders($this->qrHeaders($flow['session'], $flow['secret']) + [
+                ForwardedCustomerIp::AUTH_HEADER => self::BFF_SECRET,
+                ForwardedCustomerIp::IP_HEADER => $forwardedIp,
+            ])
             ->postJson(self::TABLE_ROUND_URL, $payload);
     }
 

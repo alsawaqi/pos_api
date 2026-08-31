@@ -7,9 +7,11 @@ namespace Tests\Feature;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
+use App\Support\Qr\ForwardedCustomerIp;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -24,6 +26,8 @@ final class QrCheckoutPathsTest extends TestCase
     private const ACTIVE_ORDERS_URL = '/api/v1/device/orders/active';
 
     private const PHONE = '90001234';
+
+    private const BFF_SECRET = 'w2-checkout-bff-secret';
 
     private function createStation(string $token = 'mdev_qr_checkout_station'): Device
     {
@@ -114,14 +118,23 @@ final class QrCheckoutPathsTest extends TestCase
         string $secret,
         string $choice,
         string $clientRequestId,
+        string $phone = self::PHONE,
+        ?string $forwardedIp = null,
     ): TestResponse {
-        return $this->withHeaders([
+        $headers = [
             'X-QR-Session' => $session->uuid,
             'X-QR-Client-Secret' => $secret,
-        ])->postJson(self::CHECKOUT_URL, [
+        ];
+        if ($forwardedIp !== null) {
+            $headers[ForwardedCustomerIp::AUTH_HEADER] = self::BFF_SECRET;
+            $headers[ForwardedCustomerIp::IP_HEADER] = $forwardedIp;
+            $this->withServerVariables(['REMOTE_ADDR' => '198.51.100.70']);
+        }
+
+        return $this->withHeaders($headers)->postJson(self::CHECKOUT_URL, [
             'client_request_id' => $clientRequestId,
             'checkout_choice' => $choice,
-            'phone' => self::PHONE,
+            'phone' => $phone,
             'plate_number' => '12345 A',
             'lines' => [[
                 'product_id' => 1,
@@ -130,6 +143,39 @@ final class QrCheckoutPathsTest extends TestCase
                 'notes' => null,
             ]],
         ]);
+    }
+
+    public function test_checkout_guard_uses_authenticated_bff_customer_ip(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        config([
+            'cache.default' => 'array',
+            'qr.bff_client_ip_secret' => self::BFF_SECRET,
+            'qr.distinct_phone_ip_backstop_per_branch_per_hour' => 1,
+        ]);
+        Cache::flush();
+        $this->seedCheckoutProduct();
+        $this->disableNumbering();
+        $station = $this->createStation();
+        $firstSecret = 'w2-checkout-first-session';
+        $secondSecret = 'w2-checkout-second-session';
+
+        $this->postCheckout(
+            $this->createQrSession($station, $firstSecret),
+            $firstSecret,
+            'machine',
+            'w2-checkout-first',
+            '90001001',
+            '203.0.113.71',
+        )->assertCreated();
+        $this->postCheckout(
+            $this->createQrSession($station, $secondSecret),
+            $secondSecret,
+            'machine',
+            'w2-checkout-second',
+            '90001002',
+            '203.0.113.72',
+        )->assertCreated();
     }
 
     /**

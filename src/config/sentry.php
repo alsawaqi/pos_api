@@ -1,5 +1,7 @@
 <?php
 
+use App\Support\Sentry\ScrubSensitiveRequestHeaders;
+
 /**
  * Sentry Laravel SDK configuration file.
  *
@@ -49,6 +51,11 @@ return [
 
     // @see: https://docs.sentry.io/platforms/php/guides/laravel/configuration/options/#send_default_pii
     'send_default_pii' => env('SENTRY_SEND_DEFAULT_PII', false),
+
+    // Config-cache-safe and unconditional, including if default PII capture is
+    // later enabled: these credentials and customer IPs must never leave here.
+    'before_send' => [ScrubSensitiveRequestHeaders::class, 'handle'],
+    'before_send_transaction' => [ScrubSensitiveRequestHeaders::class, 'handle'],
 
     // @see: https://docs.sentry.io/platforms/php/guides/laravel/configuration/options/#ignore_exceptions
     // 'ignore_exceptions' => [],

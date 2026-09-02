@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -171,6 +172,68 @@ class DeviceSyncDonationTest extends TestCase
         $payment = Payment::findOrFail($paymentId);
         $this->assertSame('0.200', $payment->roundup_amount);
         $this->assertSame((int) $donation->id, (int) $payment->charity_transaction_id);
+    }
+
+    public function test_donation_record_accepts_the_largest_legitimate_roundup(): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $this->device();
+        $this->seedBranch();
+        [, $paymentId] = $this->seedOrderAndCard();
+
+        $this->push('mdev_x', [$this->donationEvent(['amount_baisas' => 999])])
+            ->assertOk()
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_PROCESSED)
+            ->assertJsonPath('data.results.0.result.status', 'success');
+
+        $donation = RoundupDonation::query()->sole();
+        $payment = Payment::findOrFail($paymentId);
+
+        $this->assertSame('0.999', $donation->amount);
+        $this->assertSame('0.999', $payment->roundup_amount);
+        $this->assertSame((int) $donation->id, (int) $payment->charity_transaction_id);
+        $this->assertNotNull($donation->forwarded_at);
+        Http::assertSentCount(1);
+    }
+
+    #[DataProvider('outOfRangeDonationAmounts')]
+    public function test_out_of_range_donation_amount_fails_without_side_effects(int $amountBaisas): void
+    {
+        config(['services.charity.url' => 'http://charity.test']);
+        Http::fake(['*' => Http::response(['success' => true], 201)]);
+
+        $this->device();
+        $this->seedBranch();
+        [, $paymentId] = $this->seedOrderAndCard();
+
+        $this->push('mdev_x', [$this->donationEvent(['amount_baisas' => $amountBaisas])])
+            ->assertOk()
+            ->assertJsonPath('data.results.0.status', SyncEvent::STATUS_FAILED)
+            ->assertJsonPath(
+                'data.results.0.result.error',
+                'invalid donation.record payload: The amount baisas field must be between 1 and 999.',
+            )
+            ->assertJsonPath('data.summary.total', 1)
+            ->assertJsonPath('data.summary.accepted', 1)
+            ->assertJsonPath('data.summary.duplicates', 0)
+            ->assertJsonPath('errors', []);
+
+        $this->assertDatabaseCount('pos_roundup_donations', 0);
+        $payment = Payment::findOrFail($paymentId);
+        $this->assertNull($payment->roundup_amount);
+        $this->assertNull($payment->charity_transaction_id);
+        Http::assertNothingSent();
+    }
+
+    /** @return iterable<string, array{int}> */
+    public static function outOfRangeDonationAmounts(): iterable
+    {
+        yield 'one rial' => [1000];
+        yield 'units bug' => [100000];
+        yield 'zero' => [0];
+        yield 'negative' => [-1];
     }
 
     public function test_payment_index_attaches_each_roundup_to_its_exact_card_leg(): void

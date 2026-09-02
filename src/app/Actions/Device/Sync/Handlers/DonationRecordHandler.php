@@ -50,7 +50,7 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
 
         $validator = Validator::make($payload, [
             'order_uuid' => ['required', 'string'],
-            'amount_baisas' => ['required', 'integer', 'min:1'],
+            'amount_baisas' => ['required', 'integer', 'between:1,999'],
             'receipt' => ['sometimes', 'nullable', 'array'],
             'payment_uuid' => ['sometimes', 'nullable', 'string'],
             // The tender's position in the order.pay payments array — the

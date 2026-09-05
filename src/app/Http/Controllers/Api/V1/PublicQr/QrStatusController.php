@@ -55,7 +55,9 @@ class QrStatusController
         }
 
         $rounds = QrOrderRound::query()
-            ->where('qr_session_id', $session->id)
+            ->when($order !== null,
+                static fn ($query) => $query->where('order_id', $order->id),
+                static fn ($query) => $query->where('qr_session_id', $session->id))
             ->orderBy('round_no')
             ->get();
         $roundAllowed = $session->status === QrSession::STATUS_ACTIVE
@@ -84,6 +86,7 @@ class QrStatusController
                 'id' => (int) $round->id,
                 'round_no' => (int) $round->round_no,
                 'status' => (string) $round->status,
+                'entered_by' => $round->qr_session_id === null ? 'staff' : 'customer',
                 'priced_lines' => $round->priced_lines,
                 'subtotal_baisas' => (int) $round->subtotal_baisas,
                 'tax_baisas' => (int) $round->tax_baisas,

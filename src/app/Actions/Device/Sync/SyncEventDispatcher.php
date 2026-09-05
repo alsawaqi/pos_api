@@ -17,6 +17,11 @@ use App\Actions\Device\Sync\Handlers\ProductWasteHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
 use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
 use App\Actions\Device\Sync\Handlers\StockCountHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionCloseHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionJoinHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionMoveHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionOpenHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionRoundHandler;
 use App\Actions\Device\Sync\Handlers\TransferOrderHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
 use App\Events\DeviceSyncBroadcast;
@@ -55,6 +60,11 @@ class SyncEventDispatcher
         private readonly StockCountHandler $stockCount,
         private readonly ProductWasteHandler $productWaste,
         private readonly SliderDisplayHandler $sliderDisplay,
+        private readonly TableSessionOpenHandler $tableOpen,
+        private readonly TableSessionRoundHandler $tableRound,
+        private readonly TableSessionMoveHandler $tableMove,
+        private readonly TableSessionJoinHandler $tableJoin,
+        private readonly TableSessionCloseHandler $tableClose,
     ) {}
 
     /**
@@ -79,6 +89,11 @@ class SyncEventDispatcher
             'stock.count' => $this->stockCount,
             'product.waste' => $this->productWaste,
             'slider.display' => $this->sliderDisplay,
+            'table.session.open' => $this->tableOpen,
+            'table.session.round' => $this->tableRound,
+            'table.session.move' => $this->tableMove,
+            'table.session.join' => $this->tableJoin,
+            'table.session.close' => $this->tableClose,
         ];
     }
 

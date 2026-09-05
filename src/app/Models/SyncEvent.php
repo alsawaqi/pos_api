@@ -89,6 +89,13 @@ class SyncEvent extends Model
         // Phase 3 — advertising slider play-time telemetry from the customer
         // screen: one event per slide shown (→ pos_marketing_impressions).
         'slider.display',
+        // QR-003 T4: append-only seating operations share the durable outbox.
+        // All conflict verdicts settle as processed with result.outcome.
+        'table.session.open',
+        'table.session.round',
+        'table.session.move',
+        'table.session.join',
+        'table.session.close',
         // Reserved no-op: ingested + ACKed but has NO domain handler, so it
         // settles as 'received'. Lets the ingestion pipe be exercised in
         // isolation and stays a stable placeholder as handlers are added

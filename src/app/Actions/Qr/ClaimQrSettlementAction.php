@@ -163,7 +163,10 @@ final class ClaimQrSettlementAction
             if ($session === null) {
                 $pendingRounds->where('order_id', $order->getKey());
             } else {
-                $pendingRounds->where('qr_session_id', $session->getKey());
+                $pendingRounds->where(function ($query) use ($order, $session): void {
+                    $query->where('order_id', $order->getKey())
+                        ->orWhere('qr_session_id', $session->getKey());
+                });
             }
 
             $pendingRounds->update([

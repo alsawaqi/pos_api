@@ -146,6 +146,83 @@ final class QrDineInConcurrencyTest extends TestCase
         }
     }
 
+    public function test_two_replaying_staff_opens_create_one_live_seating_and_one_generation_bound_alias(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-table-replay-open-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $first = $this->attendedTill('mdev_table_replay_first');
+            $second = $this->attendedTill('mdev_table_replay_second');
+            $table = $this->activeTable('Concurrent offline seating');
+            $requests = [];
+            foreach ([$first, $second] as $index => $device) {
+                $requests[] = [
+                    'url' => '/api/v1/device/sync/push',
+                    'token' => (string) $device->device_token,
+                    'payload' => ['events' => [[
+                        'client_event_id' => (string) Str::uuid(),
+                        'event_type' => 'table.session.open',
+                        'client_timestamp' => now()->subMinutes(20 - $index)->toIso8601String(),
+                        'payload' => [
+                            'seating_key' => (string) Str::uuid(), 'table_id' => (int) $table->id,
+                            'queued_offline' => true,
+                            'opened_at' => now()->subMinutes(20 - $index)->toIso8601String(),
+                        ],
+                    ]]],
+                    'observe_table_id' => (int) $table->id,
+                ];
+            }
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertCount(2, $results);
+            $acks = [];
+            foreach ($results as $result) {
+                $this->assertNull($result['error'], (string) $result['error']);
+                $this->assertSame(200, $result['status'], $result['body']);
+                $body = $this->decodeBody($result['body']);
+                $this->assertSame('processed', data_get($body, 'data.results.0.status'));
+                $ack = data_get($body, 'data.results.0.result');
+                $this->assertIsArray($ack);
+                $this->assertIsInt($ack['event_id']);
+                $acks[] = $ack;
+            }
+            $outcomes = array_column($acks, 'outcome');
+            sort($outcomes);
+            $this->assertSame(['merged', 'opened'], $outcomes);
+            DB::purge('sqlite');
+            $live = DB::table('pos_table_sessions')->where('table_id', $table->id)
+                ->whereIn('status', ['open', 'billing', 'closing'])->sole();
+            $alias = DB::table('pos_table_sessions')->where('table_id', $table->id)
+                ->where('status', 'merged')->sole();
+            $this->assertSame((int) $live->id, (int) $alias->merged_into_id);
+            $this->assertSame('merged', $alias->close_reason);
+            $this->assertNull($alias->order_id);
+            $this->assertNull($alias->temp_reference);
+            $this->assertNotSame($live->client_request_id, $alias->client_request_id);
+            $this->assertDatabaseCount('pos_table_sessions', 2);
+            $this->assertDatabaseCount('pos_qr_sessions', 0);
+            $this->assertDatabaseCount('pos_orders', 0);
+            $this->assertDatabaseCount('pos_order_sequences', 0);
+            $this->assertSame(2, (int) DB::table('pos_temp_reference_sequences')->sole()->next_number);
+            $this->assertSame(2, DB::table('pos_sync_events')->where('ack_status', 'processed')->count());
+            $this->assertSame(['opened', 'merged', 'needs_review'], DB::table('pos_table_session_events')
+                ->orderBy('id')->pluck('event_type')->all());
+            foreach ($acks as $ack) {
+                if ($ack['outcome'] === 'merged') {
+                    $this->assertSame($live->uuid, $ack['winner_table_session_uuid']);
+                    $this->assertSame($alias->uuid, $ack['table_session_uuid']);
+                }
+            }
+            fwrite(STDOUT, "\nT4_CONCURRENT_OFFLINE_OPENS=".json_encode($acks, JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
+
     public function test_backfill_shaped_ensure_and_first_round_race_create_one_seating_and_one_reference(): void
     {
         $this->assertConcurrencySupport();

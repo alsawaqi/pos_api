@@ -48,6 +48,12 @@ final class TableSession extends Model
 
     public const CLOSE_EXPIRED = 'expired';
 
+    public const CLOSE_STAFF_CLOSE = 'staff_close';
+
+    public const CLOSE_MERGED = 'merged';
+
+    public const CLOSE_ATTACHED = 'attached';
+
     /** @return array<string, string> */
     protected function casts(): array
     {

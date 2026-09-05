@@ -16,10 +16,13 @@ use App\Support\Pricing\Totals;
 use DateTimeImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 /** Prices one dine-in round once, freezes it, and appends only its new rows. */
 final class SubmitDineInQrRoundAction
 {
+    private const SNAPSHOT_CHANGED = 'QR seating bill changed while acquiring its locks';
+
     public function __construct(
         private readonly LoadQrPricingInputAction $pricing,
         private readonly ResolveQrCustomerAction $customers,
@@ -45,14 +48,38 @@ final class SubmitDineInQrRoundAction
      */
     public function handle(int $sessionId, array $payload, string $ip): array
     {
-        // When a tab already exists, every writer locks order -> session.
-        // First-round creation has no order yet and is safely serialized by
-        // the session lock alone.
-        $knownOrderId = Order::query()
-            ->where('qr_session_id', $sessionId)
-            ->latest('id')
-            ->value('id');
+        for ($attempt = 0; ; $attempt++) {
+            $knownOrderId = Order::query()->where('qr_session_id', $sessionId)->latest('id')->value('id');
+            if ($knownOrderId === null) {
+                $session = QrSession::query()->find($sessionId);
+                $seating = $session?->table_session_id === null
+                    ? null
+                    : TableSession::query()->whereKey((int) $session->table_session_id)
+                        ->where('company_id', (int) $session->company_id)
+                        ->where('branch_id', (int) $session->branch_id)->first();
+                if ($seating?->merged_into_id !== null) {
+                    $seating = TableSession::query()->whereKey((int) $seating->merged_into_id)
+                        ->where('company_id', (int) $session->company_id)
+                        ->where('branch_id', (int) $session->branch_id)->first();
+                }
+                $knownOrderId = $seating?->order_id;
+            }
 
+            try {
+                return $this->submit($sessionId, $payload, $ip, $knownOrderId === null ? null : (int) $knownOrderId);
+            } catch (RuntimeException $exception) {
+                if ($exception->getMessage() !== self::SNAPSHOT_CHANGED || $attempt >= 4) {
+                    throw $exception;
+                }
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $payload
+     * @return array{round: QrOrderRound, order: Order, replayed: bool}
+     */
+    private function submit(int $sessionId, array $payload, string $ip, ?int $knownOrderId): array
+    {
         return DB::transaction(function () use (
             $sessionId,
             $payload,
@@ -63,7 +90,6 @@ final class SubmitDineInQrRoundAction
                 ? null
                 : Order::query()
                     ->whereKey((int) $knownOrderId)
-                    ->where('qr_session_id', $sessionId)
                     ->lockForUpdate()
                     ->first();
             $session = QrSession::query()->whereKey($sessionId)->lockForUpdate()->first();
@@ -74,11 +100,13 @@ final class SubmitDineInQrRoundAction
                     'A live dine-in QR session is required.',
                 );
             }
-            $order ??= Order::query()
+            $credentialOrderId = Order::query()
                 ->where('qr_session_id', $session->id)
                 ->latest('id')
-                ->lockForUpdate()
-                ->first();
+                ->value('id');
+            if ($credentialOrderId !== null && (int) $credentialOrderId !== (int) $order?->id) {
+                throw new RuntimeException(self::SNAPSHOT_CHANGED);
+            }
 
             $clientRequestId = (string) $payload['client_request_id'];
             $existing = QrOrderRound::query()
@@ -121,6 +149,19 @@ final class SubmitDineInQrRoundAction
             }
 
             $seating = $this->seatings->handle($session, $order, $device);
+            if ($seating->order_id !== null && (int) $seating->order_id !== (int) $order?->id) {
+                // A staff writer may create the shared bill while the QR
+                // snapshot waits. Retry order-first; never lock it after seating.
+                throw new RuntimeException(self::SNAPSHOT_CHANGED);
+            }
+            // T4 joins can precede the customer's first round. Lock members
+            // after the primary and before the defensive reference allocation.
+            $joinedSeatings = TableSession::query()
+                ->where('company_id', (int) $session->company_id)
+                ->where('branch_id', (int) $session->branch_id)
+                ->where('merged_into_id', (int) $seating->id)
+                ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                ->orderBy('id')->lockForUpdate()->get();
 
             $roundNo = ((int) QrOrderRound::query()
                 ->where('qr_session_id', $session->id)
@@ -149,7 +190,8 @@ final class SubmitDineInQrRoundAction
                 );
             }
 
-            if ($order !== null && $order->status !== Order::STATUS_OPEN) {
+            if ($order !== null && ($order->status !== Order::STATUS_OPEN
+                || ($order->qr_session_id !== null && (int) $order->qr_session_id !== (int) $session->id))) {
                 throw new QrDineInException(
                     'qr_round_order_not_open',
                     409,
@@ -204,6 +246,20 @@ final class SubmitDineInQrRoundAction
                     $phone,
                     $plate,
                 );
+            }
+
+            if ($order !== null && $order->qr_session_id === null && $customer !== null) {
+                $order->update([
+                    'qr_session_id' => $session->id,
+                    'source' => Order::SOURCE_QR_WEB,
+                    'device_id' => $session->device_id ?? $order->device_id,
+                    'customer_id' => $customer->customerId,
+                    'plate_number' => $customer->plateNumber,
+                ]);
+                $this->journal->handle($seating, 'attached', [
+                    'session_uuid' => (string) $session->uuid,
+                    'adopted_order_uuid' => (string) $order->uuid,
+                ], null, $now);
             }
 
             $staffConfirm = $this->roundMode->forBranch((int) $session->company_id, (int) $session->branch_id)
@@ -295,6 +351,14 @@ final class SubmitDineInQrRoundAction
             if (! $staffConfirm) {
                 $this->append->handle($order, $session, $loaded, $price, $now);
                 $this->refreshTotals->handle($order);
+            }
+            foreach ($joinedSeatings as $joined) {
+                if ($joined->order_id === null) {
+                    $joined->update(['order_id' => $order->id]);
+                    DB::table('pos_order_tables')->insertOrIgnore([
+                        'order_id' => $order->id, 'table_id' => $joined->table_id,
+                    ]);
+                }
             }
             $session->update(['last_seen_at' => $now]);
 

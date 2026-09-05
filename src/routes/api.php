@@ -35,6 +35,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableSessionController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
@@ -187,6 +188,15 @@ Route::prefix('v1')->group(function (): void {
             ->name('device.qr.release-charge');
         Route::post('device/qr/fallback-to-counter', DeviceQrFallbackToCounterController::class)
             ->name('device.qr.fallback-to-counter');
+
+        Route::post('device/tables/open', DeviceTableSessionController::class)
+            ->defaults('table_operation', 'open')
+            ->middleware('throttle:qr-table-device-write')->name('device.tables.open');
+        foreach (['round', 'move', 'join', 'close'] as $tableOperation) {
+            Route::post('device/tables/{uuid}/'.$tableOperation, DeviceTableSessionController::class)
+                ->defaults('table_operation', $tableOperation)
+                ->middleware('throttle:qr-table-device-write')->name('device.tables.'.$tableOperation);
+        }
 
         // Config bundle (§11.4): full snapshot + incremental delta.
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');

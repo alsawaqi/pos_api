@@ -4,10 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Device\Sync\SyncEventDispatcher;
+use App\Actions\Qr\QrCatalogueException;
 use App\Models\Device;
+use App\Models\Product;
+use App\Models\QrOrderRound;
 use App\Models\SyncEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
+use Tests\Support\TableSessionFixtures;
 use Tests\TestCase;
 
 /**
@@ -22,6 +28,7 @@ use Tests\TestCase;
 class DeviceSyncPushTest extends TestCase
 {
     use RefreshDatabase;
+    use TableSessionFixtures;
 
     private function assignedDevice(string $token): Device
     {
@@ -208,6 +215,66 @@ class DeviceSyncPushTest extends TestCase
         $byId = collect($res->json('data.results'))->keyBy('client_event_id');
         $this->assertTrue($byId[$b['client_event_id']]['duplicate']);
         $this->assertFalse($byId[$c['client_event_id']]['duplicate']);
+    }
+
+    public function test_table_events_extend_the_exact_existing_sync_taxonomy_and_all_have_handlers(): void
+    {
+        $this->assertSame([
+            'order.create', 'order.hold', 'order.transfer', 'order.pay', 'order.deliver', 'order.void',
+            'donation.record', 'expense.log', 'restock.request', 'stock.count', 'product.waste',
+            'shift.open', 'shift.close', 'slider.display',
+            'table.session.open', 'table.session.round', 'table.session.move', 'table.session.join', 'table.session.close',
+            'sync.noop',
+        ], SyncEvent::EVENT_TYPES);
+        $dispatcher = app(SyncEventDispatcher::class);
+        foreach (['open', 'round', 'move', 'join', 'close'] as $operation) {
+            $this->assertTrue($dispatcher->handles('table.session.'.$operation));
+        }
+    }
+
+    public function test_a_catalogue_exception_during_table_round_pricing_is_a_processed_hold_not_a_failed_ack(): void
+    {
+        $device = $this->seatingDevice();
+        $table = $this->seatingTable();
+        $product = $this->seatingProduct();
+        $loads = 0;
+        // Classification sees an available product. Pricing's second hydration
+        // sees it inactive and throws the unchanged loader's real exception.
+        Event::listen('eloquent.retrieved: '.Product::class, function (Product $row) use ($product, &$loads): void {
+            if ((int) $row->id === (int) $product->id && ++$loads === 2) {
+                $row->status = 'inactive';
+            }
+        });
+        try {
+            $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+                'events' => [$this->event('table.session.round', ['payload' => [
+                    'seating_key' => (string) Str::uuid(), 'table_id' => (int) $table->id,
+                    'queued_offline' => true, 'client_request_id' => 'catalogue-race-held',
+                    'submitted_at' => now()->subMinutes(10)->toIso8601String(),
+                    'lines' => [['product_id' => (int) $product->id, 'qty' => 2, 'addon_ids' => [], 'notes' => 'Keep the request']],
+                ]])],
+            ])->assertOk();
+        } finally {
+            Event::forget('eloquent.retrieved: '.Product::class);
+        }
+        $this->assertGreaterThanOrEqual(2, $loads);
+        $response->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.result.outcome', 'held')
+            ->assertJsonPath('data.results.0.result.review_reasons', ['catalogue'])
+            ->assertJsonPath('data.results.0.result.held_lines.0.reason', QrCatalogueException::PRODUCT_UNAVAILABLE)
+            ->assertJsonPath('data.results.0.result.total_baisas', 0);
+        $round = QrOrderRound::query()->sole();
+        $this->assertNull($round->confirm_payload);
+        $this->assertNull($round->accepted_seq);
+        $this->assertSame('pending_confirmation', $round->status);
+        $this->assertSame('Keep the request', $round->priced_lines[0]['notes']);
+        $this->assertSame(2, $round->priced_lines[0]['qty']);
+        $this->assertSame('0.000', $round->order()->sole()->grand_total);
+        $this->assertDatabaseCount('pos_order_items', 0);
+        $this->assertDatabaseHas('pos_table_session_events', [
+            'id' => $response->json('data.results.0.result.event_id'), 'event_type' => 'round_pending',
+        ]);
+        fwrite(STDOUT, "\nT4_CATALOGUE_PRICING_RACE_JSON=".$response->getContent()."\n");
     }
 
     public function test_a_repeated_id_within_one_batch_settles_once(): void

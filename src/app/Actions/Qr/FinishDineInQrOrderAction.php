@@ -54,12 +54,15 @@ final class FinishDineInQrOrderAction
                 ->lockForUpdate()
                 ->first();
             $acceptedRounds = QrOrderRound::query()
-                ->where('qr_session_id', $session->id)
+                ->where('order_id', $order?->id ?? 0)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)
                 ->count();
             $now = now();
             QrOrderRound::query()
-                ->where('qr_session_id', $session->id)
+                ->where(function ($query) use ($order, $session): void {
+                    $query->where('order_id', $order?->id ?? 0)
+                        ->orWhere('qr_session_id', $session->id);
+                })
                 ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
                 ->update([
                     'status' => QrOrderRound::STATUS_REJECTED,

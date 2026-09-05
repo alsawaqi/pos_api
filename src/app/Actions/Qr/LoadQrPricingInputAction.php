@@ -165,6 +165,88 @@ final class LoadQrPricingInputAction
     }
 
     /**
+     * Classify staff requests against the same catalogue gates as handle(),
+     * without treating catalogue drift as a failed outbox event.
+     *
+     * @param  list<array<string, mixed>>  $lines
+     * @return array{priceable: list<array<string, mixed>>, held: list<array{line_index: int, product_id: int, addon_id: ?int, reason: string}>}
+     */
+    public function classify(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null): array
+    {
+        $now ??= DateTimeImmutable::createFromInterface(now());
+        $normalised = [];
+        $held = [];
+        foreach (array_values($lines) as $index => $line) {
+            try {
+                $normalised[$index] = $this->normaliseLines([$line])[0];
+            } catch (QrCatalogueException $exception) {
+                $held[$index] = [
+                    'line_index' => $index, 'product_id' => (int) ($line['product_id'] ?? 0),
+                    'addon_id' => null, 'reason' => $exception->codeName,
+                ];
+            }
+        }
+        $productIds = array_values(array_unique(array_column($normalised, 'product_id')));
+        $products = $this->products->forBranch($companyId, $branchId)
+            ->whereIn('pos_products.id', $productIds)->get()->keyBy('id');
+        $branchProducts = BranchProduct::query()->where('branch_id', $branchId)
+            ->whereIn('product_id', $productIds)->get()->keyBy('product_id');
+        $groupsByProduct = $this->applicableGroups($companyId, $products);
+        $addonIds = collect($normalised)->pluck('addon_ids')->flatten()->unique()->values()->all();
+        $addons = AddOn::query()->where('company_id', $companyId)->where('status', 'active')
+            ->whereIn('id', $addonIds)->get()->keyBy('id');
+        $availableAddons = $this->addonAvailability->handle($companyId, $branchId, $addons->values(), $now);
+        $priceable = [];
+        foreach ($normalised as $index => $line) {
+            $product = $products->get($line['product_id']);
+            $availability = $product === null
+                ? null : QrProductAvailability::evaluate($product, $branchProducts->get($product->id), $now);
+            $reason = $product === null ? 'product_missing' : $availability->reason;
+            $unavailableAddon = null;
+            if ($reason === null) {
+                $groups = $groupsByProduct->get($product->id, collect());
+                $groupSet = array_fill_keys($groups->pluck('id')->all(), true);
+                $selectedByGroup = [];
+                foreach ($line['addon_ids'] as $addonId) {
+                    $addon = $addons->get($addonId);
+                    if ($addon === null || ! isset($groupSet[(int) $addon->add_on_group_id])
+                        || ! $availableAddons->get($addonId, ['available' => false])['available']) {
+                        $reason = QrCatalogueException::ADDON_UNAVAILABLE;
+                        $unavailableAddon = $addonId;
+                        break;
+                    }
+                    $groupId = (int) $addon->add_on_group_id;
+                    $selectedByGroup[$groupId] = ($selectedByGroup[$groupId] ?? 0) + 1;
+                }
+                if ($reason === null) {
+                    foreach ($groups as $group) {
+                        $selected = $selectedByGroup[(int) $group->id] ?? 0;
+                        $minimum = $group->min_selections !== null ? (int) $group->min_selections : 0;
+                        $maximum = $group->max_selections !== null
+                            ? (int) $group->max_selections
+                            : ((string) $group->selection_mode === 'single' ? 1 : null);
+                        if ($selected < $minimum || ($maximum !== null && $selected > $maximum)) {
+                            $reason = QrCatalogueException::ADDON_SELECTION_INVALID;
+                            break;
+                        }
+                    }
+                }
+            }
+            if ($reason !== null) {
+                $held[$index] = [
+                    'line_index' => $index, 'product_id' => $line['product_id'],
+                    'addon_id' => $unavailableAddon, 'reason' => $reason,
+                ];
+            } else {
+                $priceable[] = $line;
+            }
+        }
+        ksort($held);
+
+        return ['priceable' => $priceable, 'held' => array_values($held)];
+    }
+
+    /**
      * @param  list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}>  $lines
      * @return list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string}>
      */

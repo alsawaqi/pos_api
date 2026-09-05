@@ -32,6 +32,9 @@ use App\Http\Controllers\Api\V1\Device\DeviceQrRotateController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrTableRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
@@ -163,6 +166,15 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/qr/reopen-payment', DeviceQrReopenPaymentController::class)
             ->middleware('throttle:qr-table-device-write')
             ->name('device.qr.reopen-payment');
+        Route::get('device/tables/board', DeviceTableBoardController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.tables.board');
+        Route::get('device/tables/feed', DeviceTableFeedController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.tables.feed');
+        Route::get('device/tables/search', DeviceTableSearchController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.tables.search');
         Route::get('device/qr/awaiting-orders', DeviceQrAwaitingOrdersController::class)
             ->middleware('throttle:qr-station-read')
             ->name('device.qr.awaiting-orders');

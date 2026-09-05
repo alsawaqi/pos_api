@@ -159,6 +159,7 @@ final class ListDineInQrTableBoardAction
                     'uuid' => (string) $order->uuid,
                     'status' => (string) $order->status,
                     'receipt_number' => $order->receipt_number,
+                    'temp_reference' => $order->temp_reference,
                     'accepted_total_baisas' => Money::toBaisas($order->grand_total),
                 ],
                 'accepted_round_count' => $acceptedRoundCount,

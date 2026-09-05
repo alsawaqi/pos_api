@@ -11,6 +11,7 @@ use App\Support\Qr\ForwardedCustomerIp;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -229,6 +230,14 @@ final class QrCheckoutPathsTest extends TestCase
         $this->assertNull($order->staff_id);
         $this->assertNull($order->receipt_number);
         $this->assertNull($order->client_event_id);
+        $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', (string) $order->temp_reference);
+        $this->assertSame($order->temp_reference, $response->json('data.order.temp_reference'));
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => now()->toDateString(),
+            'next_number' => 2,
+        ]);
         $this->assertDatabaseCount('pos_order_sequences', 0);
     }
 
@@ -238,7 +247,8 @@ final class QrCheckoutPathsTest extends TestCase
         $this->seedCheckoutProduct();
         $this->enableNumbering();
         $station = $this->createStation();
-        $receipts = [];
+        $this->travelTo(Carbon::parse('2026-09-05 12:00:00'));
+        $references = [];
 
         for ($number = 1; $number <= 20; $number++) {
             $choice = $number % 2 === 1 ? 'machine' : 'counter';
@@ -247,7 +257,7 @@ final class QrCheckoutPathsTest extends TestCase
                 : Order::STATUS_HELD;
             $secret = 'interleaved-secret-'.$number;
             $session = $this->createQrSession($station, $secret);
-            $expectedReceipt = sprintf('QR-%04d', $number);
+            $expectedReference = 'T-'.now()->format('md').'-'.str_pad((string) $number, 3, '0', STR_PAD_LEFT);
 
             $response = $this->postCheckout(
                 $session,
@@ -256,26 +266,33 @@ final class QrCheckoutPathsTest extends TestCase
                 'interleaved-request-'.$number,
             )->assertCreated()
                 ->assertJsonPath('data.order.status', $status)
-                ->assertJsonPath('data.order.receipt_number', $expectedReceipt);
+                ->assertJsonPath('data.order.receipt_number', null)
+                ->assertJsonPath('data.order.temp_reference', $expectedReference);
 
             $order = Order::query()
                 ->where('uuid', $response->json('data.order.uuid'))
                 ->sole();
-            $this->assertSame($expectedReceipt, $order->receipt_number);
-            $receipts[] = $order->receipt_number;
+            $this->assertNull($order->receipt_number);
+            $this->assertSame($expectedReference, $order->temp_reference);
+            $counter = DB::table('pos_temp_reference_sequences')->sole();
+            $this->assertSame(now()->toDateString(), $counter->seq_date);
+            $this->assertSame(str_replace('-', '', substr($counter->seq_date, 5)), substr($order->temp_reference, 2, 4));
+            $references[] = $order->temp_reference;
         }
 
-        $expectedReceipts = array_map(
-            static fn (int $number): string => sprintf('QR-%04d', $number),
+        $expectedReferences = array_map(
+            static fn (int $number): string => 'T-'.now()->format('md').'-'.str_pad((string) $number, 3, '0', STR_PAD_LEFT),
             range(1, 20),
         );
-        $this->assertSame($expectedReceipts, $receipts);
-        $this->assertCount(20, array_unique($receipts));
+        $this->assertSame($expectedReferences, $references);
+        $this->assertCount(20, array_unique($references));
+        $this->assertDatabaseCount('pos_order_sequences', 0);
         $this->assertSame(10, Order::query()->where('status', Order::STATUS_AWAITING_PAYMENT)->count());
         $this->assertSame(10, Order::query()->where('status', Order::STATUS_HELD)->count());
-        $this->assertDatabaseHas('pos_order_sequences', [
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
             'company_id' => 100,
             'branch_id' => 10,
+            'seq_date' => now()->toDateString(),
             'next_number' => 21,
         ]);
     }
@@ -291,17 +308,20 @@ final class QrCheckoutPathsTest extends TestCase
         $response = $this->postCheckout($session, $secret, 'counter', 'counter-numbered-1')
             ->assertCreated()
             ->assertJsonPath('data.order.status', Order::STATUS_HELD)
-            ->assertJsonPath('data.order.receipt_number', 'QR-0001');
+            ->assertJsonPath('data.order.receipt_number', null);
 
         $order = Order::query()->sole();
         $this->assertSame(Order::STATUS_HELD, $order->status);
-        $this->assertSame('QR-0001', $order->receipt_number);
-        $this->assertSame($order->receipt_number, $response->json('data.order.receipt_number'));
-        $this->assertDatabaseHas('pos_order_sequences', [
+        $this->assertNull($order->receipt_number);
+        $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', (string) $order->temp_reference);
+        $this->assertSame($order->temp_reference, $response->json('data.order.temp_reference'));
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
             'company_id' => 100,
             'branch_id' => 10,
+            'seq_date' => now()->toDateString(),
             'next_number' => 2,
         ]);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
     }
 
     public function test_counter_checkout_still_writes_when_numbering_is_disabled(): void
@@ -320,6 +340,14 @@ final class QrCheckoutPathsTest extends TestCase
         $order = Order::query()->sole();
         $this->assertSame(Order::STATUS_HELD, $order->status);
         $this->assertNull($order->receipt_number);
+        $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', (string) $order->temp_reference);
+        $this->assertSame($order->temp_reference, $response->json('data.order.temp_reference'));
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'seq_date' => now()->toDateString(),
+            'next_number' => 2,
+        ]);
         $this->assertDatabaseCount('pos_order_sequences', 0);
     }
 
@@ -361,7 +389,8 @@ final class QrCheckoutPathsTest extends TestCase
         $this->assertSame($heldOrder->uuid, $orders[0]['uuid']);
         $this->assertSame(Order::STATUS_HELD, $orders[0]['status']);
         $this->assertSame(Order::SOURCE_QR_WEB, $orders[0]['source']);
-        $this->assertSame('QR-0001', $orders[0]['receipt_number']);
+        $this->assertNull($orders[0]['receipt_number']);
+        $this->assertSame($heldOrder->temp_reference, $orders[0]['temp_reference']);
         $this->assertSame((int) $heldOrder->customer_id, $orders[0]['customer_id']);
         $this->assertSame('12345 A', $orders[0]['plate_number']);
         $this->assertNotContains(
@@ -416,13 +445,15 @@ final class QrCheckoutPathsTest extends TestCase
 
         $this->assertSame($first->getContent(), $replay->getContent());
         $this->assertSame($first->json('data.order.uuid'), $replay->json('data.order.uuid'));
-        $this->assertSame('QR-0001', $replay->json('data.order.receipt_number'));
+        $this->assertNull($replay->json('data.order.receipt_number'));
+        $this->assertSame($first->json('data.order.temp_reference'), $replay->json('data.order.temp_reference'));
         $this->assertDatabaseCount('pos_orders', 1);
         $this->assertDatabaseCount('pos_order_items', 1);
-        $this->assertDatabaseHas('pos_order_sequences', [
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
             'company_id' => 100,
             'branch_id' => 10,
-            'seq_date' => null,
+            'seq_date' => now()->toDateString(),
             'next_number' => 2,
         ]);
     }

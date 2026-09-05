@@ -24,6 +24,7 @@ class QrStatusControllerTest extends TestCase
         'uuid',
         'status',
         'receipt_number',
+        'temp_reference',
         'subtotal_baisas',
         'discount_total_baisas',
         'tax_total_baisas',

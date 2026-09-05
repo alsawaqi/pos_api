@@ -31,6 +31,7 @@ final class PresentDeviceQrRoundAction
             ],
             'table_label' => is_string($tableLabel) ? $tableLabel : null,
             'receipt_number' => $order->receipt_number,
+            'temp_reference' => $order->temp_reference,
             'order_uuid' => (string) $order->uuid,
             'order' => [
                 'subtotal_baisas' => Money::toBaisas($order->subtotal),

@@ -162,6 +162,7 @@ class DeviceOrdersController
             'plate_number' => $order->plate_number,
             // P-F8 — the printed receipt number; null for unnumbered orders.
             'receipt_number' => $order->receipt_number,
+            'temp_reference' => $order->temp_reference,
             // P-G7 — provider linkage for delivery orders (null otherwise).
             'delivery' => $order->delivery_provider_id !== null ? [
                 'provider_id' => (int) $order->delivery_provider_id,

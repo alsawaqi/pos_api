@@ -1586,6 +1586,7 @@ final class QrDineInLifetimeInvariantTest extends TestCase
             'session_uuid',
             'order_uuid',
             'receipt_number',
+            'temp_reference',
             'status',
             'amount_baisas',
             'item_count',

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\AllocateOrderNumberAction;
 use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\AfterSyncEventCommitHandler;
 use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
@@ -49,6 +50,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
         private readonly DonationRecordHandler $donationRecord,
         private readonly QrChargeRecoveryGuard $qrChargeRecovery,
         private readonly CloseDineInQrSessionAction $closeDineInSession,
+        private readonly AllocateOrderNumberAction $orderNumbers,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -275,6 +277,13 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             if ($claimIsLive) {
                 $orderUpdate['charge_outcome'] = Order::CHARGE_OUTCOME_APPROVED;
             }
+            if ($order->source === Order::SOURCE_QR_WEB
+                && trim((string) $order->receipt_number) === '') {
+                $allocation = $this->orderNumbers->handle($device);
+                if ($allocation !== null) {
+                    $orderUpdate['receipt_number'] = $allocation['formatted'];
+                }
+            }
             $order->update($orderUpdate);
             $dineInSessionClosed = $this->closeDineInSession->handle($order, $capturedAt);
             if ($order->qr_session_id !== null && ! $dineInSessionClosed) {
@@ -392,6 +401,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 'loyalty_redeem_transaction_id' => $redeemTxn?->id,
                 'loyalty_redeem_adjustment_id' => $redeemAdjustment?->id,
                 'loyalty_redeem_warning' => $redeemWarning,
+                'receipt_number' => $order->receipt_number,
+                'temp_reference' => $order->temp_reference,
             ];
 
             if ($roundupResult !== null) {

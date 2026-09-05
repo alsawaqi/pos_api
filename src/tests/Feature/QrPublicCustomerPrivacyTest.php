@@ -634,7 +634,7 @@ final class QrPublicCustomerPrivacyTest extends TestCase
     private function normaliseOrderIdentifiers(TestResponse $response): string
     {
         $content = $response->getContent();
-        foreach (['data.order.uuid', 'data.order.receipt_number'] as $path) {
+        foreach (['data.order.uuid', 'data.order.receipt_number', 'data.order.temp_reference'] as $path) {
             $identifier = $response->json($path);
             if (is_string($identifier)) {
                 $content = str_replace($identifier, '<order-identifier>', $content);

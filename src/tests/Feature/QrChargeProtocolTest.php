@@ -109,6 +109,7 @@ final class QrChargeProtocolTest extends TestCase
             'order_type' => 'quick',
             'status' => Order::STATUS_AWAITING_PAYMENT,
             'source' => $session !== null ? Order::SOURCE_QR_WEB : 'main_pos',
+            'temp_reference' => 'T-'.now()->format('md').'-001',
             'subtotal' => '4.750',
             'discount_total' => '0.000',
             'comp_total' => '0.000',
@@ -1397,13 +1398,15 @@ final class QrChargeProtocolTest extends TestCase
         $first = $this->postAs($station, self::FALLBACK_URL, [
             'order_uuid' => $order->uuid,
         ])->assertOk();
-        $receipt = $first->json('data.receipt_number');
-        $this->assertSame('QR-0001', $receipt);
+        $reference = $first->json('data.temp_reference');
+        $this->assertNull($first->json('data.receipt_number'));
+        $this->assertSame($order->temp_reference, $reference);
         $this->assertSame(Order::STATUS_HELD, $first->json('data.status'));
 
         $held = $order->fresh();
         $this->assertSame(Order::STATUS_HELD, $held->status);
-        $this->assertSame($receipt, $held->receipt_number);
+        $this->assertNull($held->receipt_number);
+        $this->assertSame($reference, $held->temp_reference);
         $this->assertSame((int) $session->id, (int) $held->qr_session_id);
         $this->assertNull($held->charge_device_id);
         $this->assertNull($held->charge_amount_baisas);
@@ -1415,12 +1418,9 @@ final class QrChargeProtocolTest extends TestCase
         $second = $this->postAs($station, self::FALLBACK_URL, [
             'order_uuid' => $order->uuid,
         ])->assertOk();
-        $this->assertSame($receipt, $second->json('data.receipt_number'));
-        $this->assertDatabaseHas('pos_order_sequences', [
-            'company_id' => 100,
-            'branch_id' => 10,
-            'next_number' => 2,
-        ]);
+        $this->assertNull($second->json('data.receipt_number'));
+        $this->assertSame($reference, $second->json('data.temp_reference'));
+        $this->assertDatabaseCount('pos_order_sequences', 0);
 
         $till = $this->device('fallback-cash-till', 'fixed_pos');
         $payment = $this->push($till, [
@@ -1432,7 +1432,13 @@ final class QrChargeProtocolTest extends TestCase
         ]);
         $this->assertSyncStatus($payment, 'processed');
         $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
-        $this->assertSame($receipt, $order->fresh()->receipt_number);
+        $this->assertSame('QR-0001', $order->fresh()->receipt_number);
+        $this->assertSame($reference, $order->fresh()->temp_reference);
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'next_number' => 2,
+        ]);
     }
 
     public function test_fallback_refuses_a_live_claim_without_mutating_it(): void
@@ -1467,7 +1473,8 @@ final class QrChargeProtocolTest extends TestCase
             'order_uuid' => $order->uuid,
         ])->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD)
-            ->assertJsonPath('data.receipt_number', 'QR-0001');
+            ->assertJsonPath('data.receipt_number', null)
+            ->assertJsonPath('data.temp_reference', $order->temp_reference);
     }
 
     public function test_sweeper_lapses_past_deadline_plus_grace_and_order_is_not_reclaimable(): void

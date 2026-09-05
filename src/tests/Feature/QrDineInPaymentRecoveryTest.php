@@ -849,6 +849,9 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             ->assertJsonPath('data.round.status', QrOrderRound::STATUS_ACCEPTED)
             ->assertJsonPath('data.order.grand_total_baisas', 4750);
         $order = Order::query()->where('uuid', $created->json('data.order.uuid'))->sole();
+        $this->assertNull($order->receipt_number);
+        $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', (string) $order->temp_reference);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
         $roundId = (int) $created->json('data.round.id');
 
         $this->finish($session, $secret, 'station')
@@ -904,7 +907,8 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $this->postAs($till, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
             ->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD)
-            ->assertJsonPath('data.receipt_number', $order->receipt_number);
+            ->assertJsonPath('data.receipt_number', null)
+            ->assertJsonPath('data.temp_reference', $order->temp_reference);
         $this->assertSame($ambiguousBefore, $this->chargeSnapshot($order->fresh()));
         $this->claimSettlement($till, $order)
             ->assertConflict()
@@ -919,12 +923,17 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $this->claimSettlement($unattendedStation, $order)
             ->assertConflict()
             ->assertJsonPath('errors.0.code', 'device_not_attended');
+        $this->assertNull($order->fresh()->receipt_number);
         $this->claimSettlement($till, $order)
             ->assertOk()
+            ->assertJsonPath('data.receipt_number', null)
+            ->assertJsonPath('data.temp_reference', $order->temp_reference)
             ->assertJsonPath('data.charge_amount_baisas', 4750)
             ->assertJsonPath('data.already_claimed_by_this_device', false);
         $this->claimSettlement($till, $order)
             ->assertOk()
+            ->assertJsonPath('data.receipt_number', null)
+            ->assertJsonPath('data.temp_reference', $order->temp_reference)
             ->assertJsonPath('data.already_claimed_by_this_device', true);
         $this->assertNull($order->fresh()->qr_session_id);
 
@@ -932,6 +941,13 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             $this->payEvent($order, $this->cashTender()),
         ]));
         $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
+        $this->assertSame('QR2-00001', $order->fresh()->receipt_number);
+        $this->assertSame($order->temp_reference, $order->fresh()->temp_reference);
+        $this->assertDatabaseHas('pos_order_sequences', [
+            'company_id' => 100,
+            'branch_id' => 10,
+            'next_number' => 2,
+        ]);
         $this->postAs($till, self::CLEAR_URL, ['table_id' => $table->id])
             ->assertOk()
             ->assertJsonPath('data.status', 'cleared');

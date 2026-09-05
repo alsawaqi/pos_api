@@ -228,9 +228,9 @@ final class ClaimQrSettlementAction
     private function lockSettlementSession(Order $order, Device $device): ?QrSession
     {
         if ($order->qr_session_id === null) {
-            // Hard-deleting the opening device NULLs this FK. Only S1's
-            // already-fallbacked held shape, or a claim already written on
-            // that shape, can proceed without the credential row.
+            // Hard-deleting the opening device NULLs this FK. Only the held
+            // fallback shape with a temp or legacy receipt reference, or a
+            // claim already written on it, can proceed without credentials.
             if ($this->isFallbackHeldShape($order)
                 || ($order->status === Order::STATUS_AWAITING_PAYMENT
                     && $order->charge_claimed_at !== null)) {
@@ -358,11 +358,16 @@ final class ClaimQrSettlementAction
             && $this->hasNoChargeProvenance($order);
     }
 
+    private function hasCounterReference(Order $order): bool
+    {
+        return trim((string) $order->temp_reference) !== ''
+            || trim((string) $order->receipt_number) !== '';
+    }
+
     private function isFallbackHeldShape(Order $order): bool
     {
         return $order->status === Order::STATUS_HELD
-            && is_string($order->receipt_number)
-            && trim($order->receipt_number) !== '';
+            && $this->hasCounterReference($order);
     }
 
     /** @param array{lat: float, lng: float}|null $gps */
@@ -396,6 +401,8 @@ final class ClaimQrSettlementAction
         return [
             'order_uuid' => (string) $order->uuid,
             'status' => (string) $order->status,
+            'receipt_number' => $order->receipt_number,
+            'temp_reference' => $order->temp_reference,
             'charge_amount_baisas' => (int) $order->charge_amount_baisas,
             'charge_claimed_at' => $order->charge_claimed_at?->toIso8601String(),
             'charge_deadline_at' => $order->charge_deadline_at?->toIso8601String(),

@@ -116,6 +116,7 @@ final class FinishDineInQrOrderAction
             'order_uuid' => (string) $order->uuid,
             'status' => (string) $order->status,
             'receipt_number' => $order->receipt_number,
+            'temp_reference' => $order->temp_reference,
             'grand_total_baisas' => Money::toBaisas($order->grand_total),
         ];
     }

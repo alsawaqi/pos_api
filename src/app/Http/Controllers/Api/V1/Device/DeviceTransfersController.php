@@ -11,6 +11,7 @@ use App\Models\OrderItemAddon;
 use App\Support\Money;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -124,7 +125,7 @@ class DeviceTransfersController
      * device — the freed-table bookkeeping then went wrong at close.
      *
      * @param  list<int>  $orderIds
-     * @return array<int, list<int>>  order_id → joined table ids
+     * @return array<int, list<int>> order_id → joined table ids
      */
     private function joinedTablesByOrder(array $orderIds): array
     {
@@ -154,7 +155,7 @@ class DeviceTransfersController
      * PLUS the transfer metadata the receiving UI needs — so the target can
      * rebuild the exact cart and show who sent it.
      *
-     * @param  \Illuminate\Support\Collection<int, string|null>  $names
+     * @param  Collection<int, string|null>  $names
      * @param  list<int>  $joinedTableIds
      * @return array<string, mixed>
      */
@@ -174,6 +175,7 @@ class DeviceTransfersController
             'staff_id' => $order->staff_id !== null ? (int) $order->staff_id : null,
             'plate_number' => $order->plate_number,
             'receipt_number' => $order->receipt_number,
+            'temp_reference' => $order->temp_reference,
             'transferred_from_device_id' => $fromId,
             'transferred_from_name' => $fromId !== null ? ($names[$fromId] ?? ('Device #'.$fromId)) : null,
             'transferred_at' => $order->transferred_at?->toIso8601String(),

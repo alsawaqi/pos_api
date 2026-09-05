@@ -486,7 +486,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             'tax_total_baisas' => 0,
             'grand_total_baisas' => 4500,
         ], $presented['order']);
-        $this->assertSame('QR2-00001', $presented['receipt_number']);
+        $this->assertNull($presented['receipt_number']);
+        $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', $presented['temp_reference']);
         $presentedJson = json_encode($presented, JSON_THROW_ON_ERROR);
         foreach (['confirm_payload', 'recipe_snapshot_json', 'component_snapshot_json'] as $key) {
             $this->assertStringNotContainsString($key, $presentedJson);
@@ -735,6 +736,7 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             'uuid',
             'status',
             'receipt_number',
+            'temp_reference',
             'subtotal_baisas',
             'discount_total_baisas',
             'tax_total_baisas',
@@ -753,7 +755,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         ], array_diff_key($body['data']['round'], ['id' => true]));
         $this->assertSame([
             'status' => Order::STATUS_OPEN,
-            'receipt_number' => 'QR2-00001',
+            'receipt_number' => null,
+            'temp_reference' => 'T-'.now()->format('md').'-001',
             'subtotal_baisas' => 5750,
             'discount_total_baisas' => 1250,
             'tax_total_baisas' => 0,

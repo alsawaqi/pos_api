@@ -174,37 +174,34 @@ final class QrChargeProvenanceInvariantTest extends TestCase
         $till = $this->device('reference-till', 10, 'fixed_pos');
 
         $safeOrder = $this->checkout($station)['order'];
+        $this->assertNull($safeOrder->receipt_number);
+        $safeTemp = $safeOrder->temp_reference;
+        $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', (string) $safeTemp);
+        $safeOrder->update(['receipt_number' => 'INV-LEGACY-1']);
         $safeReference = $safeOrder->receipt_number;
-        $this->assertSame('INV-0001', $safeReference);
-        $this->assertDatabaseHas('pos_order_sequences', [
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
             'company_id' => 100,
             'branch_id' => 10,
-            'seq_date' => null,
+            'seq_date' => now()->toDateString(),
             'next_number' => 2,
         ]);
-        $this->assertDatabaseCount('pos_order_sequences', 1);
 
         $this->fallback($station, $safeOrder)
             ->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD)
-            ->assertJsonPath('data.receipt_number', $safeReference);
+            ->assertJsonPath('data.receipt_number', $safeReference)
+            ->assertJsonPath('data.temp_reference', $safeTemp);
         $this->assertSame($safeReference, $safeOrder->fresh()->receipt_number);
-        $this->assertDatabaseHas('pos_order_sequences', [
-            'company_id' => 100,
-            'branch_id' => 10,
-            'seq_date' => null,
-            'next_number' => 2,
-        ]);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
 
         $lapsedOrder = $this->checkout($station)['order'];
+        $this->assertNull($lapsedOrder->receipt_number);
+        $lapsedTemp = $lapsedOrder->temp_reference;
+        $this->assertNotSame($safeTemp, $lapsedTemp);
+        $lapsedOrder->update(['receipt_number' => 'INV-LEGACY-2']);
         $lapsedReference = $lapsedOrder->receipt_number;
-        $this->assertSame('INV-0002', $lapsedReference);
-        $this->assertDatabaseHas('pos_order_sequences', [
-            'company_id' => 100,
-            'branch_id' => 10,
-            'seq_date' => null,
-            'next_number' => 3,
-        ]);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
 
         $this->claim($station, $lapsedOrder)->assertOk();
         $deadline = $lapsedOrder->fresh()->charge_deadline_at;
@@ -220,16 +217,12 @@ final class QrChargeProvenanceInvariantTest extends TestCase
         $this->fallback($till, $lapsed)
             ->assertOk()
             ->assertJsonPath('data.status', Order::STATUS_HELD)
-            ->assertJsonPath('data.receipt_number', $lapsedReference);
+            ->assertJsonPath('data.receipt_number', $lapsedReference)
+            ->assertJsonPath('data.temp_reference', $lapsedTemp);
         $recovered = $lapsedOrder->fresh();
         $this->assertSame($lapsedReference, $recovered->receipt_number);
         $this->assertSame($provenance, $this->chargeProvenance($recovered));
-        $this->assertDatabaseHas('pos_order_sequences', [
-            'company_id' => 100,
-            'branch_id' => 10,
-            'seq_date' => null,
-            'next_number' => 3,
-        ]);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
         $this->assertNoRoundupMoney();
     }
 
@@ -307,9 +300,10 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                 ->assertOk()
                 ->assertJsonPath('data.order_uuid', $order->uuid)
                 ->assertJsonPath('data.status', Order::STATUS_HELD);
-            $receipt = $fallback->json('data.receipt_number');
-            $this->assertIsString($receipt);
-            $this->assertNotSame('', trim($receipt));
+            $this->assertNull($fallback->json('data.receipt_number'));
+            $reference = $fallback->json('data.temp_reference');
+            $this->assertSame($order->temp_reference, $reference);
+            $this->assertMatchesRegularExpression('/^T-\d{4}-\d{3,}$/', (string) $reference);
             $held = $order->fresh();
             $this->assertSame($before, $this->chargeProvenance($held), $context);
 
@@ -339,7 +333,8 @@ final class QrChargeProvenanceInvariantTest extends TestCase
             $heldAttributes = $held->getAttributes();
             $this->fallback($till, $order)
                 ->assertOk()
-                ->assertJsonPath('data.receipt_number', $receipt)
+                ->assertJsonPath('data.receipt_number', null)
+                ->assertJsonPath('data.temp_reference', $reference)
                 ->assertJsonPath('data.status', Order::STATUS_HELD);
             $this->assertSame($heldAttributes, $order->fresh()->getAttributes());
 

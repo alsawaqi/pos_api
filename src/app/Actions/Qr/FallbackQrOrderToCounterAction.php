@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
-use App\Actions\Device\AllocateOrderNumberAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -15,12 +14,11 @@ use Illuminate\Support\Facades\DB;
 final class FallbackQrOrderToCounterAction
 {
     public function __construct(
-        private readonly AllocateOrderNumberAction $allocateOrderNumber,
         private readonly QrChargeRecoveryGuard $recoveryGuard,
     ) {}
 
     /**
-     * @return array{order_uuid: string, receipt_number: string|null, status: string}
+     * @return array{order_uuid: string, receipt_number: string|null, temp_reference: string|null, status: string}
      */
     public function handle(Device $device, string $orderUuid): array
     {
@@ -49,14 +47,14 @@ final class FallbackQrOrderToCounterAction
                     $this->lockBoundOrderedSession($order, $device);
                 }
                 if ($isAttendedRecovery
-                    || (is_string($order->receipt_number) && trim($order->receipt_number) !== '')) {
+                    || $this->hasCounterReference($order)) {
                     return $this->present($order);
                 }
 
                 throw new QrChargeException(
                     'order_already_held',
                     409,
-                    'The order is already held without an allocated receipt number.',
+                    'The order is already held without a reference.',
                 );
             }
             if ($order->status !== Order::STATUS_AWAITING_PAYMENT) {
@@ -99,25 +97,7 @@ final class FallbackQrOrderToCounterAction
                 }
             }
 
-            $receiptNumber = is_string($order->receipt_number)
-                && trim($order->receipt_number) !== ''
-                    ? (string) $order->receipt_number
-                    : null;
-            $allocation = $receiptNumber === null
-                ? $this->allocateOrderNumber->handle($device)
-                : null;
-            if ($receiptNumber === null && $allocation === null && ! $isAttendedRecovery) {
-                throw new QrChargeException(
-                    'numbering_disabled',
-                    409,
-                    'Order numbering is not enabled for this company.',
-                );
-            }
-
-            $updates = [
-                'receipt_number' => $receiptNumber ?? $allocation['formatted'] ?? null,
-                'status' => Order::STATUS_HELD,
-            ];
+            $updates = ['status' => Order::STATUS_HELD];
 
             // An attended recovery deliberately retains every charge fact.
             // The cashier needs the possibly-charged provenance to survive
@@ -146,6 +126,12 @@ final class FallbackQrOrderToCounterAction
 
             return $this->present($order->refresh());
         });
+    }
+
+    private function hasCounterReference(Order $order): bool
+    {
+        return trim((string) $order->temp_reference) !== ''
+            || trim((string) $order->receipt_number) !== '';
     }
 
     private function isWithoutLiveClaim(Order $order, CarbonInterface $at): bool
@@ -312,7 +298,7 @@ final class FallbackQrOrderToCounterAction
     }
 
     /**
-     * @return array{order_uuid: string, receipt_number: string|null, status: string}
+     * @return array{order_uuid: string, receipt_number: string|null, temp_reference: string|null, status: string}
      */
     private function present(Order $order): array
     {
@@ -322,6 +308,7 @@ final class FallbackQrOrderToCounterAction
                 && trim($order->receipt_number) !== ''
                     ? (string) $order->receipt_number
                     : null,
+            'temp_reference' => $order->temp_reference,
             'status' => (string) $order->status,
         ];
     }

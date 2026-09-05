@@ -67,6 +67,7 @@ class QrSessionGroundworkTest extends TestCase
     {
         $this->assertCount(17, Schema::getColumnListing('pos_qr_sessions'));
         foreach ([
+            'temp_reference',
             'qr_session_id',
             'charge_device_id',
             'charge_amount_baisas',
@@ -93,6 +94,12 @@ class QrSessionGroundworkTest extends TestCase
         $this->assertTrue($orderIndexes->has('pos_orders_qr_session_request_unique'));
         $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_request_unique']->unique);
         $this->assertTrue($paymentIndexes->has('pos_payments_softpos_ref_idx'));
+        $this->assertTrue($orderIndexes->has('pos_orders_branch_temp_reference_idx'));
+        $this->assertSame(0, (int) $orderIndexes['pos_orders_branch_temp_reference_idx']->unique);
+        $this->assertTrue(Schema::hasTable('pos_temp_reference_sequences'));
+        $tempIndexes = collect(DB::select("PRAGMA index_list('pos_temp_reference_sequences')"))->keyBy('name');
+        $this->assertTrue($tempIndexes->has('pos_temp_reference_sequences_scope_unique'));
+        $this->assertSame(1, (int) $tempIndexes['pos_temp_reference_sequences_scope_unique']->unique);
     }
 
     public function test_client_request_id_is_unique_only_within_its_qr_session(): void

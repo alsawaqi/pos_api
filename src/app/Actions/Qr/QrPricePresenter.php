@@ -52,6 +52,7 @@ final class QrPricePresenter
                 'uuid' => $order->uuid,
                 'status' => $order->status,
                 'receipt_number' => $order->receipt_number,
+                'temp_reference' => $order->temp_reference,
                 'subtotal_baisas' => Money::toBaisas($order->subtotal),
                 'discount_total_baisas' => Money::toBaisas($order->discount_total),
                 'tax_total_baisas' => Money::toBaisas($order->tax_total),

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
-use App\Actions\Device\AllocateOrderNumberAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderDiscount;
@@ -28,7 +27,7 @@ final class CreateQrOrderAction
         private readonly LoadQrPricingInputAction $pricing,
         private readonly ResolveQrCustomerAction $customers,
         private readonly DistinctQrPhoneGuard $phoneGuard,
-        private readonly AllocateOrderNumberAction $numbers,
+        private readonly AllocateQrTempReferenceAction $tempReferences,
         private readonly OrderLineSnapshotter $snapshots,
     ) {}
 
@@ -114,8 +113,6 @@ final class CreateQrOrderAction
             $status = $choice === 'machine'
                 ? Order::STATUS_AWAITING_PAYMENT
                 : Order::STATUS_HELD;
-            $allocation = $this->numbers->handle($device);
-            $receiptNumber = $allocation['formatted'] ?? null;
 
             $order = Order::query()->create([
                 'uuid' => (string) Str::uuid(),
@@ -139,7 +136,11 @@ final class CreateQrOrderAction
                 'opened_at' => $now,
                 'closed_at' => null,
                 'client_event_id' => null,
-                'receipt_number' => $receiptNumber,
+                'receipt_number' => null,
+                'temp_reference' => $this->tempReferences->handle(
+                    (int) $session->company_id,
+                    (int) $session->branch_id,
+                ),
             ]);
 
             $itemIds = [];

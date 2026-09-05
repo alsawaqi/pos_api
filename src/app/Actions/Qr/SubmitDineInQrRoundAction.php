@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
-use App\Actions\Device\AllocateOrderNumberAction;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
@@ -23,7 +22,7 @@ final class SubmitDineInQrRoundAction
         private readonly LoadQrPricingInputAction $pricing,
         private readonly ResolveQrCustomerAction $customers,
         private readonly DistinctQrPhoneGuard $phoneGuard,
-        private readonly AllocateOrderNumberAction $numbers,
+        private readonly AllocateQrTempReferenceAction $tempReferences,
         private readonly FreezeQrRoundLinesAction $freeze,
         private readonly AppendQrPricedLinesAction $append,
         private readonly DineInRoundMode $roundMode,
@@ -227,7 +226,6 @@ final class SubmitDineInQrRoundAction
             ]);
 
             if ($order === null) {
-                $allocation = $this->numbers->handle($device);
                 $order = Order::query()->create([
                     'uuid' => (string) Str::uuid(),
                     'company_id' => $session->company_id,
@@ -250,7 +248,11 @@ final class SubmitDineInQrRoundAction
                     'opened_at' => $now,
                     'closed_at' => null,
                     'client_event_id' => null,
-                    'receipt_number' => $allocation['formatted'] ?? null,
+                    'receipt_number' => null,
+                    'temp_reference' => $this->tempReferences->handle(
+                        (int) $session->company_id,
+                        (int) $session->branch_id,
+                    ),
                 ]);
                 $round->update(['order_id' => $order->id]);
             } elseif ($identityDiffers && $customer !== null) {

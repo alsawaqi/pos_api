@@ -115,6 +115,7 @@ final class ListAcceptedDineInQrRoundsAction
                 'pos_qr_order_rounds.resolved_at',
                 'pos_orders.uuid as feed_order_uuid',
                 'pos_orders.receipt_number as feed_receipt_number',
+                'pos_orders.temp_reference as feed_temp_reference',
                 'pos_qr_sessions.uuid as feed_session_uuid',
                 'pos_tables.label as feed_table_label',
             ])
@@ -148,6 +149,9 @@ final class ListAcceptedDineInQrRoundsAction
                 : null,
             'receipt_number' => is_string($round->feed_receipt_number)
                 ? $round->feed_receipt_number
+                : null,
+            'temp_reference' => is_string($round->feed_temp_reference)
+                ? $round->feed_temp_reference
                 : null,
             'order_uuid' => (string) $round->feed_order_uuid,
             'session_uuid' => (string) $round->feed_session_uuid,

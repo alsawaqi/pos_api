@@ -611,6 +611,7 @@ return new class extends Migration
             // counter, e.g. "KLD-0042"); NULL when numbering is off or the
             // order was queued offline without a server allocation.
             $table->string('receipt_number', 24)->nullable();
+            $table->string('temp_reference', 32)->nullable();
             // P-G7 — delivery-provider lifecycle (mirrors pos_admin's
             // 2026_07_20_010000 migration): provider linkage + the
             // Proceed-popup fields + the punch/confirm money snapshot.
@@ -628,6 +629,7 @@ return new class extends Migration
             $table->unsignedBigInteger('delivery_confirmed_by_user_id')->nullable();
             $table->timestamps();
             $table->index(['company_id', 'receipt_number'], 'pos_orders_company_receipt_idx');
+            $table->index(['branch_id', 'temp_reference'], 'pos_orders_branch_temp_reference_idx');
             $table->index(['company_id', 'delivery_provider_id'], 'pos_orders_company_provider_idx');
             $table->index(['status', 'charge_deadline_at'], 'pos_orders_status_charge_deadline_idx');
             $table->unique(['qr_session_id', 'client_request_id'], 'pos_orders_qr_session_request_unique');
@@ -1186,6 +1188,18 @@ return new class extends Migration
             "(company_id, COALESCE(branch_id, 0), COALESCE(seq_date, '1970-01-01'))"
         );
 
+        // QR-003 T1 — branch/day temporary-reference counters. Like the
+        // existing order sequences mirror, these scope ids deliberately omit FKs.
+        Schema::create('pos_temp_reference_sequences', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->date('seq_date');
+            $table->unsignedInteger('next_number')->default(1);
+            $table->timestamps();
+            $table->unique(['company_id', 'branch_id', 'seq_date'], 'pos_temp_reference_sequences_scope_unique');
+        });
+
         // P-G1 — kitchen production batches + their ingredient lines
         // (mirrors pos_admin's 2026_07_14_010000 migration). Written by
         // the device production endpoints; std (locked recipe x qty) and
@@ -1348,6 +1362,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_staff_messages');
         Schema::dropIfExists('pos_production_lines');
         Schema::dropIfExists('pos_productions');
+        Schema::dropIfExists('pos_temp_reference_sequences');
         Schema::dropIfExists('pos_order_sequences');
         Schema::dropIfExists('pos_branch_settings');
         Schema::dropIfExists('pos_company_settings');

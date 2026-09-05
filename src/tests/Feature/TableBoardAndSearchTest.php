@@ -214,6 +214,51 @@ final class TableBoardAndSearchTest extends TestCase
         $this->assertDatabaseCount('pos_temp_reference_sequences', 0);
     }
 
+    public function test_staff_accepted_feed_uses_seating_identity_and_scoped_ticket_metadata_without_review_rows(): void
+    {
+        $device = $this->seatingDevice();
+        $seating = $this->seatingRow($this->seatingTable('Staff feed'));
+        $order = $this->seatingOrder($seating);
+        $round = $this->seatingRound($seating, $order, ['accepted_seq' => 10]);
+        $this->seatingRound($seating, $order, ['accepted_seq' => 11, 'needs_review' => true]);
+        $foreign = $this->seatingDevice(branchId: 20);
+        DB::table('pos_kitchen_tickets')->insert([
+            'company_id' => 100, 'branch_id' => 20, 'ticket_key' => 'round:'.$round->id,
+            'round_id' => $round->id, 'order_id' => $order->id,
+            'claimed_by_device_id' => $foreign->id, 'claimed_at' => now(),
+            'printed_at' => now(), 'print_result' => 'printed',
+        ]);
+        $response = $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+            ->assertOk()->assertJsonCount(1, 'data.rounds')
+            ->assertJsonPath('data.rounds.0.id', (int) $round->id)
+            ->assertJsonPath('data.rounds.0.session_uuid', null)
+            ->assertJsonPath('data.rounds.0.table_session_uuid', $seating->uuid)
+            ->assertJsonPath('data.rounds.0.source', 'main_pos')
+            ->assertJsonPath('data.rounds.0.table_label', 'Staff feed')
+            ->assertJsonPath('data.rounds.0.claimed_by_device_id', null)
+            ->assertJsonPath('data.rounds.0.printed_at', null)
+            ->assertJsonPath('data.rounds.0.needs_review', false);
+        $this->assertSame($round->priced_lines, $response->json('data.rounds.0.priced_lines'));
+        $this->assertArrayNotHasKey('confirm_payload', $response->json('data.rounds.0'));
+        $round->update(['kitchen_printed_at' => now()->subMinute()]);
+        $this->getJson('/api/v1/device/qr/accepted-rounds')->assertOk()
+            ->assertJsonPath('data.rounds.0.printed_at', now()->subMinute()->toIso8601String());
+        DB::table('pos_kitchen_tickets')->insert([
+            'company_id' => 100, 'branch_id' => 10, 'ticket_key' => 'round:'.$round->id,
+            'round_id' => $round->id, 'order_id' => $order->id,
+            'claimed_by_device_id' => $device->id, 'claimed_at' => now(),
+            'printed_at' => now(), 'print_result' => 'printed',
+        ]);
+        $this->getJson('/api/v1/device/qr/accepted-rounds')->assertOk()
+            ->assertJsonPath('data.rounds.0.claimed_by_device_id', (int) $device->id)
+            ->assertJsonPath('data.rounds.0.printed_at', now()->toIso8601String());
+        $round->update(['table_session_id' => null]);
+        $this->getJson('/api/v1/device/qr/accepted-rounds')->assertOk()->assertJsonCount(0, 'data.rounds');
+        $otherSeating = $this->seatingRow($this->seatingTable('Foreign feed', 20));
+        $round->update(['table_session_id' => $otherSeating->id]);
+        $this->getJson('/api/v1/device/qr/accepted-rounds')->assertOk()->assertJsonCount(0, 'data.rounds');
+    }
+
     public function test_board_and_search_literal_json_contract(): void
     {
         $device = $this->seatingDevice();
@@ -225,7 +270,7 @@ final class TableBoardAndSearchTest extends TestCase
             'seating' => [
                 'uuid' => $seating->uuid, 'status' => 'open', 'origin' => 'staff_till', 'temp_reference' => 'T-0905-001',
                 'opened_at' => '2026-09-05T12:00:00+00:00', 'expires_at' => '2026-09-05T18:00:00+00:00',
-                'needs_review' => false, 'needs_review_count' => 0, 'joined_table_ids' => [],
+                'needs_review' => false, 'needs_review_count' => 0, 'joined_table_ids' => [], 'pending_rounds' => [],
             ],
             'bill' => [
                 'order_uuid' => $order->uuid, 'status' => 'open', 'grand_total_baisas' => 1000,

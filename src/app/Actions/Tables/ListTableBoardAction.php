@@ -138,6 +138,29 @@ final class ListTableBoardAction
                     'needs_review' => $needsReviewCount > 0,
                     'needs_review_count' => $needsReviewCount,
                     'joined_table_ids' => $family->where('id', '!=', $primary?->id)->pluck('table_id')->map(static fn ($id): int => (int) $id)->values()->all(),
+                    'pending_rounds' => $pending->map(static function (QrOrderRound $round): array {
+                        $held = [];
+                        foreach ($round->priced_lines ?? [] as $index => $line) {
+                            if (isset($line['held_reason'])) {
+                                $held[] = [
+                                    'line_index' => (int) ($line['line_index'] ?? $index),
+                                    'product_id' => (int) $line['product_id'],
+                                    'addon_id' => $line['addon_id'] ?? null,
+                                    'reason' => $line['held_reason'],
+                                ];
+                            }
+                        }
+
+                        return [
+                            'round_id' => (int) $round->id,
+                            'round_no' => (int) $round->round_no,
+                            'round_status' => $round->status,
+                            'total_baisas' => (int) $round->total_baisas,
+                            'priced_lines' => $round->priced_lines,
+                            'review_reasons' => array_merge($round->origin_table_session_id !== null ? ['merged'] : [], $held !== [] ? ['catalogue'] : []),
+                            'held_lines' => $held,
+                        ];
+                    })->values()->all(),
                 ],
                 'bill' => $order === null ? null : [
                     'order_uuid' => (string) $order->uuid,

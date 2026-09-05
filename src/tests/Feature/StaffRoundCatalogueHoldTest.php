@@ -288,6 +288,142 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         ]);
     }
 
+    public function test_partial_hold_review_appends_only_frozen_subset_and_records_dropped_request_lines(): void
+    {
+        [$device, $seating, $payload] = $this->roundFixture();
+        $unavailable = $this->seatingProduct();
+        $unavailable->update(['status' => 'inactive']);
+        $payload['lines'][] = [
+            'product_id' => (int) $unavailable->id, 'qty' => 3,
+            'addon_ids' => [], 'notes' => 'Keep this exact request for re-entry',
+        ];
+        $heldAck = $this->push($device, $payload, 'held');
+        $round = QrOrderRound::findOrFail($heldAck['round_id']);
+        $beforeLines = $round->priced_lines;
+        $bill = $seating->fresh()->order;
+        Product::findOrFail($payload['lines'][0]['product_id'])->update(['base_price' => '80.000', 'status' => 'inactive']);
+        $unavailable->update(['status' => 'active', 'base_price' => '40.000']);
+        $response = $this->withToken($device->device_token)
+            ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/confirm')
+            ->assertOk()->assertJsonPath('data.outcome', 'accepted')
+            ->assertJsonPath('data.round_status', 'accepted')
+            ->assertJsonPath('data.needs_review', true)
+            ->assertJsonPath('data.print_pending', true)
+            ->assertJsonPath('data.review_reasons', ['catalogue']);
+        $ack = $response->json('data');
+        $this->assertSame('1.000', $bill->fresh()->grand_total);
+        $this->assertSame(1, OrderItem::query()->where('order_id', $bill->id)->count());
+        $item = OrderItem::query()->where('order_id', $bill->id)->sole();
+        $this->assertSame($payload['lines'][0]['product_id'], (int) $item->product_id);
+        $this->assertSame('1.000', $item->unit_price_snapshot);
+        $this->assertSame($beforeLines[0], $round->fresh()->priced_lines[0]);
+        $dropped = $beforeLines[1] + ['held_disposition' => 'dropped_at_review'];
+        $this->assertSame($dropped, $round->fresh()->priced_lines[1]);
+        $this->assertSame([$dropped], $ack['dropped_lines']);
+        $this->assertSame($heldAck['held_lines'], $ack['held_lines']);
+        $this->assertNull($round->fresh()->confirm_payload);
+        $this->assertNotNull($round->fresh()->accepted_seq);
+        $this->assertNull($round->fresh()->kitchen_printed_at);
+        $resolved = TableSessionEvent::findOrFail($ack['event_id']);
+        $this->assertSame(1, $resolved->payload['dropped_line_count']);
+        $this->assertArrayNotHasKey('lines', $resolved->payload);
+        $this->assertStringNotContainsString($payload['lines'][1]['notes'], json_encode($resolved->payload, JSON_THROW_ON_ERROR));
+        $this->assertSame(3, TableSessionEvent::query()->count());
+        $replay = $this->withToken($device->device_token)
+            ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/confirm')
+            ->assertOk()->assertJsonPath('data.outcome', 'replayed')->assertJsonPath('data.event_id', null);
+        $this->assertSame([$dropped], $replay->json('data.dropped_lines'));
+        $this->assertSame(1, OrderItem::query()->where('order_id', $bill->id)->count());
+        fwrite(STDOUT, "\nT4_REVIEW_HELD_JSON=".json_encode(['before' => $heldAck, 'after' => $ack], JSON_THROW_ON_ERROR)."\n");
+    }
+
+    public function test_all_held_confirm_refuses_nothing_to_confirm_and_reject_retains_the_request(): void
+    {
+        [$device, $seating, $payload] = $this->roundFixture();
+        Product::findOrFail($payload['lines'][0]['product_id'])->update(['status' => 'inactive']);
+        $heldAck = $this->push($device, $payload, 'held');
+        $round = QrOrderRound::findOrFail($heldAck['round_id']);
+        $roundBefore = $round->getRawOriginal();
+        $billBefore = $seating->fresh()->order->getRawOriginal();
+        $this->withToken($device->device_token)
+            ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/confirm')
+            ->assertStatus(409)->assertJsonPath('errors.0.code', 'nothing_to_confirm');
+        $this->assertSame($roundBefore, $round->fresh()->getRawOriginal());
+        $this->assertSame($billBefore, $seating->fresh()->order->getRawOriginal());
+        $this->assertDatabaseCount('pos_table_session_events', 2);
+        $reject = $this->withToken($device->device_token)
+            ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/reject')
+            ->assertOk()->assertJsonPath('data.outcome', 'rejected')
+            ->assertJsonPath('data.print_pending', false)
+            ->assertJsonPath('data.held_lines', $heldAck['held_lines']);
+        $this->assertSame($roundBefore['priced_lines'], $round->fresh()->getRawOriginal('priced_lines'));
+        $this->assertSame($billBefore, $seating->fresh()->order->getRawOriginal());
+        $this->assertSame([], $reject->json('data.dropped_lines'));
+        $this->assertDatabaseCount('pos_order_items', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 3);
+        $this->assertNull($round->fresh()->accepted_seq);
+    }
+
+    public function test_held_round_board_and_automatic_feed_stay_safe_before_and_after_review_and_explicit_print(): void
+    {
+        [$device, $seating, $payload] = $this->roundFixture();
+        $unavailable = $this->seatingProduct();
+        $unavailable->update(['status' => 'inactive']);
+        $payload['lines'][] = ['product_id' => (int) $unavailable->id, 'qty' => 1, 'addon_ids' => [], 'notes' => 'dropped item'];
+        $held = $this->push($device, $payload, 'held');
+        $board = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk();
+        $beforeBoard = $board->json('data.tables.0');
+        $this->assertSame(1, $beforeBoard['seating']['needs_review_count']);
+        $this->assertSame(1, $beforeBoard['bill']['pending_rounds']);
+        $this->assertSame($held['held_lines'], $beforeBoard['seating']['pending_rounds'][0]['held_lines']);
+        $this->assertSame(['catalogue'], $beforeBoard['seating']['pending_rounds'][0]['review_reasons']);
+        $this->assertStringNotContainsString('confirm_payload', $board->getContent());
+        $beforeFeed = $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+            ->assertOk()->assertJsonPath('data.rounds', [])->json('data');
+        $this->withToken($device->device_token)->postJson('/api/v1/device/kitchen/claim-print', ['ticket_key' => 'round:'.$held['round_id']])
+            ->assertStatus(409)->assertJsonPath('errors.0.code', 'kitchen_round_not_printable');
+        $review = $this->withToken($device->device_token)
+            ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$held['round_id'].'/confirm')
+            ->assertOk()->assertJsonPath('data.print_pending', true)->json('data');
+        $afterBoard = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables.0');
+        $this->assertSame(0, $afterBoard['seating']['needs_review_count']);
+        $this->assertSame([], $afterBoard['seating']['pending_rounds']);
+        $this->assertSame(0, $afterBoard['bill']['pending_rounds']);
+        $this->assertSame(1000, $afterBoard['bill']['grand_total_baisas']);
+        $afterFeed = $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+            ->assertOk()->assertJsonPath('data.rounds', [])->json('data');
+        $claim = $this->withToken($device->device_token)->postJson('/api/v1/device/kitchen/claim-print', [
+            'ticket_key' => 'round:'.$held['round_id'],
+        ])->assertCreated()->json('data');
+        $this->assertCount(1, $claim['priced_lines']);
+        $this->assertSame($payload['lines'][0]['product_id'], $claim['priced_lines'][0]['product_id']);
+        $this->assertArrayNotHasKey('held_reason', $claim['priced_lines'][0]);
+        $this->assertSame($review['dropped_lines'][0]['product_id'], (int) $unavailable->id);
+        $this->assertTrue((bool) QrOrderRound::findOrFail($held['round_id'])->needs_review);
+        $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+            ->assertOk()->assertJsonPath('data.rounds', []);
+        fwrite(STDOUT, "\nT4_HELD_BOARD_FEED_CLAIM_JSON=".json_encode([
+            'board_before' => $beforeBoard, 'feed_before' => $beforeFeed,
+            'review' => $review, 'board_after' => $afterBoard, 'feed_after' => $afterFeed, 'claim' => $claim,
+        ], JSON_THROW_ON_ERROR)."\n");
+    }
+
+    public function test_held_subset_with_existing_print_evidence_does_not_become_print_pending_after_confirm(): void
+    {
+        [$device, $seating, $payload] = $this->roundFixture();
+        $unavailable = $this->seatingProduct();
+        $unavailable->update(['status' => 'inactive']);
+        $payload['lines'][] = ['product_id' => (int) $unavailable->id, 'qty' => 1, 'addon_ids' => [], 'notes' => null];
+        $payload['printed_at'] = now()->subMinutes(2)->toIso8601String();
+        $heldAck = $this->push($device, $payload, 'held');
+        $this->withToken($device->device_token)
+            ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$heldAck['round_id'].'/confirm')
+            ->assertOk()->assertJsonPath('data.outcome', 'accepted')
+            ->assertJsonPath('data.print_pending', false)
+            ->assertJsonPath('data.kitchen_printed_at', $payload['printed_at']);
+        $this->assertTrue((bool) QrOrderRound::findOrFail($heldAck['round_id'])->needs_review);
+    }
+
     public function test_classifier_does_not_throw_for_structural_catalogue_exceptions(): void
     {
         $this->seatingBranch();

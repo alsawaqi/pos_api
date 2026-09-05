@@ -243,6 +243,38 @@ final class QrDineInStaffDeviceSurfaceTest extends TestCase
             ->assertJsonPath('errors.0.code', 'validation_failed');
     }
 
+    public function test_t4_feed_adds_six_keys_after_session_uuid_and_preserves_every_legacy_value(): void
+    {
+        $station = $this->device('payment_station');
+        $till = $this->device('fixed_pos');
+        $table = $this->table(10, 'Legacy feed');
+        $session = $this->qrSession($station, $table);
+        $order = $this->order($station, $session, $table);
+        $round = $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED, now());
+        $expected = [
+            'id' => (int) $round->id, 'round_no' => (int) $round->round_no,
+            'priced_lines' => $round->priced_lines,
+            'subtotal_baisas' => (int) $round->subtotal_baisas,
+            'tax_baisas' => (int) $round->tax_baisas,
+            'total_baisas' => (int) $round->total_baisas,
+            'submitted_at' => $round->submitted_at->toIso8601String(),
+            'resolved_at' => $round->resolved_at->toIso8601String(),
+            'table_label' => 'Legacy feed', 'receipt_number' => $order->receipt_number,
+            'temp_reference' => $order->temp_reference, 'order_uuid' => $order->uuid,
+            'session_uuid' => $session->uuid,
+        ];
+        $response = $this->getAs($till, self::FEED_URL)->assertOk()->assertJsonCount(1, 'data.rounds');
+        $actual = $response->json('data.rounds.0');
+        $this->assertSame($expected, array_slice($actual, 0, count($expected), true));
+        $this->assertSame($expected + [
+            'table_session_uuid' => null, 'ticket_key' => 'round:'.$round->id,
+            'claimed_by_device_id' => null, 'printed_at' => null,
+            'needs_review' => false, 'source' => 'qr_web',
+        ], $actual);
+        $this->assertArrayNotHasKey('confirm_payload', $actual);
+        fwrite(STDOUT, "\nT4_ACCEPTED_FEED_JSON=".$response->getContent()."\n");
+    }
+
     public function test_feed_cursor_survives_wall_clock_regression_between_confirms(): void
     {
         $station = $this->device('payment_station');

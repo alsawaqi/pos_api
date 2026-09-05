@@ -223,6 +223,71 @@ final class QrDineInConcurrencyTest extends TestCase
         }
     }
 
+    public function test_ten_concurrent_kitchen_claimers_produce_one_claim_and_nine_classified_conflicts(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-table-print-claim-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $station = $this->paymentStation('mdev_print_claim_station');
+            $table = $this->activeTable('Concurrent print claim');
+            [$session, $order] = $this->runningDineInOrder($station, $table);
+            DB::transaction(fn () => app(EnsureTableSessionForQrSessionAction::class)->handle($session, $order, $station));
+            $round = QrOrderRound::query()->where('order_id', $order->id)->sole();
+            $requests = [];
+            $deviceIds = [];
+            for ($index = 0; $index < 10; $index++) {
+                $device = $this->attendedTill('mdev_print_claim_'.$index);
+                $deviceIds[] = (int) $device->id;
+                $requests[] = [
+                    'url' => '/api/v1/device/kitchen/claim-print',
+                    'token' => (string) $device->device_token,
+                    'payload' => ['ticket_key' => 'round:'.$round->id],
+                    'observe_table_id' => null,
+                ];
+            }
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertCount(10, $results);
+            $winner = null;
+            $conflicts = 0;
+            foreach ($results as $index => $result) {
+                $this->assertNull($result['error'], (string) $result['error']);
+                $body = $this->decodeBody($result['body']);
+                if ($result['status'] === 201) {
+                    $this->assertNull($winner, 'Only one device may acquire a fresh print claim.');
+                    $winner = $index;
+                    $this->assertFalse(data_get($body, 'data.replayed'));
+                    $this->assertSame($deviceIds[$index], data_get($body, 'data.claimed_by_device_id'));
+                    $this->assertNull(data_get($body, 'data.printed_at'));
+
+                    continue;
+                }
+                $this->assertSame(409, $result['status'], $result['body']);
+                $this->assertSame('kitchen_ticket_claimed', data_get($body, 'errors.0.code'));
+                $conflicts++;
+            }
+            $this->assertNotNull($winner);
+            $this->assertSame(9, $conflicts);
+            DB::purge('sqlite');
+            $ticket = DB::table('pos_kitchen_tickets')->sole();
+            $this->assertSame($deviceIds[$winner], (int) $ticket->claimed_by_device_id);
+            $this->assertSame('round:'.$round->id, $ticket->ticket_key);
+            $this->assertNull($ticket->print_result);
+            $this->assertNull($ticket->printed_at);
+            $this->assertNull($round->fresh()->kitchen_printed_at);
+            $this->assertSame(1, DB::table('pos_table_session_events')->where('event_type', 'print_claimed')->count());
+            fwrite(STDOUT, "\nT4_CONCURRENT_PRINT_CLAIMS=".json_encode([
+                'created' => 1, 'conflicts' => $conflicts, 'holder' => $deviceIds[$winner],
+                'ticket_key' => $ticket->ticket_key,
+            ], JSON_THROW_ON_ERROR)."\n");
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
+
     public function test_backfill_shaped_ensure_and_first_round_race_create_one_seating_and_one_reference(): void
     {
         $this->assertConcurrencySupport();

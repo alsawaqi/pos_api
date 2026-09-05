@@ -8,7 +8,9 @@ use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /** Cursor-paginated accepted-round feed for durable kitchen auto-printing. */
@@ -73,6 +75,11 @@ final class ListAcceptedDineInQrRoundsAction
             ->orderBy('pos_qr_order_rounds.accepted_seq')
             ->limit($limit)
             ->get();
+        $tickets = DB::table('pos_kitchen_tickets')
+            ->where('company_id', (int) $device->company_id)
+            ->where('branch_id', (int) $device->branch_id)
+            ->whereIn('round_id', $rounds->modelKeys())
+            ->get()->keyBy('ticket_key');
 
         // Even a branch with no accepted rounds needs a durable high-water
         // mark. Without this scoped sequence-zero cursor, a till first enabled
@@ -91,7 +98,7 @@ final class ListAcceptedDineInQrRoundsAction
             : null;
 
         return [
-            'rounds' => $rounds->map(fn (QrOrderRound $round): array => $this->present($round))->all(),
+            'rounds' => $rounds->map(fn (QrOrderRound $round): array => $this->present($round, $tickets->get('round:'.$round->id)))->all(),
             'next_cursor' => $nextCursor,
             'latest_cursor' => $latestCursor,
             'skipped_expired_count' => $skippedExpiredCount,
@@ -113,28 +120,58 @@ final class ListAcceptedDineInQrRoundsAction
                 'pos_qr_order_rounds.total_baisas',
                 'pos_qr_order_rounds.submitted_at',
                 'pos_qr_order_rounds.resolved_at',
+                'pos_qr_order_rounds.needs_review',
+                'pos_qr_order_rounds.kitchen_printed_at',
+                'pos_orders.id as feed_order_id',
+                'pos_orders.source as feed_source',
                 'pos_orders.uuid as feed_order_uuid',
                 'pos_orders.receipt_number as feed_receipt_number',
                 'pos_orders.temp_reference as feed_temp_reference',
                 'pos_qr_sessions.uuid as feed_session_uuid',
+                'pos_table_sessions.uuid as feed_table_session_uuid',
                 'pos_tables.label as feed_table_label',
             ])
             ->join('pos_orders', 'pos_orders.id', '=', 'pos_qr_order_rounds.order_id')
-            ->join('pos_qr_sessions', 'pos_qr_sessions.id', '=', 'pos_qr_order_rounds.qr_session_id')
-            ->leftJoin('pos_tables', 'pos_tables.id', '=', 'pos_qr_sessions.table_id')
+            ->leftJoin('pos_qr_sessions', 'pos_qr_sessions.id', '=', 'pos_qr_order_rounds.qr_session_id')
+            ->leftJoin('pos_table_sessions', 'pos_table_sessions.id', '=', 'pos_qr_order_rounds.table_session_id')
+            ->leftJoin('pos_tables', 'pos_tables.id', '=', DB::raw('COALESCE(pos_qr_sessions.table_id, pos_table_sessions.table_id)'))
             ->where('pos_qr_order_rounds.status', QrOrderRound::STATUS_ACCEPTED)
+            ->where('pos_qr_order_rounds.needs_review', false)
             ->whereNotNull('pos_qr_order_rounds.accepted_seq')
             ->where('pos_orders.company_id', (int) $device->company_id)
             ->where('pos_orders.branch_id', (int) $device->branch_id)
-            ->where('pos_orders.source', Order::SOURCE_QR_WEB)
+            ->whereIn('pos_orders.source', [Order::SOURCE_QR_WEB, 'main_pos', 'handheld'])
             ->where('pos_orders.order_type', 'dine_in')
-            ->where('pos_qr_sessions.company_id', (int) $device->company_id)
-            ->where('pos_qr_sessions.branch_id', (int) $device->branch_id);
+            ->where(function (Builder $query): void {
+                $query->whereNotNull('pos_qr_order_rounds.qr_session_id')
+                    ->orWhereNotNull('pos_qr_order_rounds.table_session_id');
+            })
+            ->where(function (Builder $query) use ($device): void {
+                $query->whereNull('pos_qr_order_rounds.qr_session_id')
+                    ->orWhere(function (Builder $credential) use ($device): void {
+                        $credential->where('pos_qr_sessions.company_id', (int) $device->company_id)
+                            ->where('pos_qr_sessions.branch_id', (int) $device->branch_id);
+                    });
+            })
+            ->where(function (Builder $query) use ($device): void {
+                $query->whereNull('pos_qr_order_rounds.table_session_id')
+                    ->orWhere(function (Builder $seating) use ($device): void {
+                        $seating->where('pos_table_sessions.company_id', (int) $device->company_id)
+                            ->where('pos_table_sessions.branch_id', (int) $device->branch_id);
+                    });
+            });
     }
 
     /** @return array<string, mixed> */
-    private function present(QrOrderRound $round): array
+    private function present(QrOrderRound $round, ?object $ticket): array
     {
+        if ($ticket !== null && ((int) $ticket->round_id !== (int) $round->id
+            || (int) $ticket->order_id !== (int) $round->feed_order_id)) {
+            $ticket = null;
+        }
+        $printedValue = $ticket?->printed_at ?? $round->kitchen_printed_at;
+        $printedAt = $printedValue === null ? null : Carbon::parse($printedValue);
+
         return [
             'id' => (int) $round->id,
             'round_no' => (int) $round->round_no,
@@ -154,7 +191,13 @@ final class ListAcceptedDineInQrRoundsAction
                 ? $round->feed_temp_reference
                 : null,
             'order_uuid' => (string) $round->feed_order_uuid,
-            'session_uuid' => (string) $round->feed_session_uuid,
+            'session_uuid' => is_string($round->feed_session_uuid) ? $round->feed_session_uuid : null,
+            'table_session_uuid' => is_string($round->feed_table_session_uuid) ? $round->feed_table_session_uuid : null,
+            'ticket_key' => 'round:'.$round->id,
+            'claimed_by_device_id' => $ticket?->claimed_by_device_id === null ? null : (int) $ticket->claimed_by_device_id,
+            'printed_at' => $printedAt?->toIso8601String(),
+            'needs_review' => (bool) $round->needs_review,
+            'source' => (string) $round->feed_source,
         ];
     }
 

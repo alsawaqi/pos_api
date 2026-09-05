@@ -8,6 +8,7 @@ use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\QrOrderRound;
+use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
@@ -294,6 +295,148 @@ final class TableSessionAliasTest extends TestCase
         $this->assertSame($before, $foreign->fresh()->getRawOriginal());
         $this->assertDatabaseCount('pos_table_session_events', 0);
         $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    #[DataProvider('unusableOwners')]
+    public function test_attended_owner_takeover_changes_only_operational_holder_and_journals_previous_identity(string $condition): void
+    {
+        $caller = $this->seatingDevice('handheld');
+        $holder = $this->seatingDevice('payment_station');
+        $seating = $this->seatingRow($this->seatingTable(), ['opened_by_device_id' => $holder->id]);
+        $session = QrSession::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+            'device_id' => $holder->id, 'table_id' => $seating->table_id, 'table_session_id' => $seating->id,
+            'token' => Str::random(64), 'token_expires_at' => now()->addHour(),
+            'status' => 'active', 'expires_at' => now()->addHours(6),
+        ]);
+        $order = $this->seatingOrder($seating, [
+            'source' => 'qr_web', 'qr_session_id' => $session->id, 'status' => 'held',
+            'charge_device_id' => $holder->id, 'charge_amount_baisas' => 1000,
+            'charge_roundup_amount_baisas' => 10, 'charge_claimed_at' => now()->subMinute(),
+            'charge_deadline_at' => now()->subSecond(), 'charge_outcome' => 'uncertain',
+        ]);
+        match ($condition) {
+            'null' => $seating->update(['opened_by_device_id' => null]),
+            'deleted' => $holder->forceDelete(),
+            'trashed' => $holder->delete(),
+            'inactive' => $holder->forceFill(['status' => 'inactive'])->save(),
+            'unassigned' => $holder->forceFill(['branch_id' => null])->save(),
+            'other_branch' => $holder->forceFill(['branch_id' => $this->seatingBranch(20)->id])->save(),
+            'other_company' => $holder->forceFill(['company_id' => 200])->save(),
+            'wrong_type' => $holder->forceFill(['device_type' => 'customer_display'])->save(),
+        };
+        $seatingBefore = $seating->fresh()->getRawOriginal();
+        $orderBefore = $order->fresh()->getRawOriginal();
+        $sessionsBefore = QrSession::query()->get()->toArray();
+        $this->travel(1)->minutes();
+
+        app('auth')->forgetGuards();
+        $response = $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner', [
+            'opened_by_device_id' => $holder->id, 'company_id' => 999, 'branch_id' => 999,
+        ])->assertOk()->assertJsonPath('data.outcome', 'claimed')
+            ->assertJsonPath('data.table_session_uuid', $seating->uuid)
+            ->assertJsonPath('data.opened_by_device_id', (int) $caller->id)
+            ->assertJsonPath('data.previous_opened_by_device_id', $seatingBefore['opened_by_device_id']);
+        $this->assertIsInt($response->json('data.event_id'));
+        $expected = $seatingBefore;
+        $expected['opened_by_device_id'] = (int) $caller->id;
+        $expected['updated_at'] = now()->format('Y-m-d H:i:s');
+        $this->assertSame($expected, $seating->fresh()->getRawOriginal());
+        $this->assertSame($orderBefore, $order->fresh()->getRawOriginal());
+        $this->assertSame($sessionsBefore, QrSession::query()->get()->toArray());
+        $event = TableSessionEvent::query()->sole();
+        $this->assertSame('attached', $event->event_type);
+        $this->assertSame($seatingBefore['opened_by_device_id'], $event->payload['previous_opened_by_device_id']);
+        $this->assertSame((int) $caller->id, $event->payload['opened_by_device_id']);
+        $this->assertTrue($event->payload['owner_claim']);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+        $this->assertDatabaseCount('pos_temp_reference_sequences', 0);
+        if ($condition === 'inactive') {
+            fwrite(STDOUT, "\nT4_OWNER_CLAIM_JSON=".$response->getContent()."\n");
+        }
+    }
+
+    public static function unusableOwners(): array
+    {
+        return array_map(static fn (string $condition): array => [$condition], [
+            'null', 'deleted', 'trashed', 'inactive', 'unassigned', 'other_branch', 'other_company', 'wrong_type',
+        ]);
+    }
+
+    #[DataProvider('usableOwnerTypes')]
+    public function test_usable_other_owner_is_preserved_and_self_claim_is_an_eventless_replay(string $type): void
+    {
+        $caller = $this->seatingDevice('handheld');
+        $holder = $this->seatingDevice($type);
+        $seating = $this->seatingRow($this->seatingTable(), ['opened_by_device_id' => $holder->id])->refresh();
+        $before = $seating->getRawOriginal();
+        $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner')
+            ->assertOk()->assertJsonPath('data.outcome', 'owner_usable')->assertJsonPath('data.event_id', null);
+        $this->assertSame($before, $seating->fresh()->getRawOriginal());
+        if ($type !== 'payment_station') {
+            app('auth')->forgetGuards();
+            $this->withToken($holder->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner')
+                ->assertOk()->assertJsonPath('data.outcome', 'replayed')->assertJsonPath('data.event_id', null);
+            $this->assertSame($before, $seating->fresh()->getRawOriginal());
+        }
+        $this->assertDatabaseCount('pos_table_session_events', 0);
+    }
+
+    public static function usableOwnerTypes(): array
+    {
+        return [['fixed_pos'], ['handheld'], ['payment_station']];
+    }
+
+    public function test_owner_takeover_through_joined_member_changes_primary_only_and_old_aliases_never_follow_new_party(): void
+    {
+        $caller = $this->seatingDevice();
+        $primary = $this->seatingRow($this->seatingTable('Primary'));
+        $joined = $this->seatingRow($this->seatingTable('Joined'), ['merged_into_id' => $primary->id])->refresh();
+        $alias = $this->seatingRow($primary->table, [
+            'status' => 'merged', 'merged_into_id' => $primary->id, 'close_reason' => 'attached',
+        ])->refresh();
+        $joinedBefore = $joined->getRawOriginal();
+        $aliasBefore = $alias->getRawOriginal();
+        $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$joined->uuid.'/claim-owner')
+            ->assertOk()->assertJsonPath('data.outcome', 'claimed')
+            ->assertJsonPath('data.table_session_uuid', $primary->uuid)
+            ->assertJsonPath('data.requested_table_session_uuid', $joined->uuid);
+        $this->assertSame((int) $caller->id, (int) $primary->fresh()->opened_by_device_id);
+        $this->assertSame($joinedBefore, $joined->fresh()->getRawOriginal());
+        app('auth')->forgetGuards();
+        $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$alias->uuid.'/claim-owner')
+            ->assertOk()->assertJsonPath('data.outcome', 'stale_generation')->assertJsonPath('data.event_id', null);
+        $this->assertSame($aliasBefore, $alias->fresh()->getRawOriginal());
+        $primary->update(['status' => 'closed', 'closed_at' => now(), 'close_reason' => 'paid']);
+        $next = $this->seatingRow($primary->table)->refresh();
+        $nextBefore = $next->getRawOriginal();
+        foreach ([$alias, $primary, $joined] as $stale) {
+            app('auth')->forgetGuards();
+            $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$stale->uuid.'/claim-owner')
+                ->assertOk()->assertJsonPath('data.outcome', 'stale_generation')->assertJsonPath('data.event_id', null);
+        }
+        $this->assertSame($nextBefore, $next->fresh()->getRawOriginal());
+        $this->assertSame($aliasBefore, $alias->fresh()->getRawOriginal());
+        $this->assertSame($joinedBefore, $joined->fresh()->getRawOriginal());
+        $this->assertDatabaseCount('pos_table_session_events', 1);
+    }
+
+    public function test_owner_claim_refuses_foreign_or_numeric_identity_and_unattended_caller(): void
+    {
+        $caller = $this->seatingDevice();
+        $local = $this->seatingRow($this->seatingTable())->refresh();
+        $foreign = $this->seatingRow($this->seatingTable('Foreign', 20))->refresh();
+        $before = $this->snapshot();
+        foreach ([$foreign->uuid, (string) $local->id, (string) Str::uuid()] as $uuid) {
+            app('auth')->forgetGuards();
+            $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$uuid.'/claim-owner')
+                ->assertNotFound()->assertJsonPath('errors.0.code', 'table_session_not_found');
+        }
+        $station = $this->seatingDevice('payment_station');
+        app('auth')->forgetGuards();
+        $this->withToken($station->device_token)->postJson('/api/v1/device/tables/'.$local->uuid.'/claim-owner')
+            ->assertStatus(409)->assertJsonPath('errors.0.code', 'device_not_attended');
+        $this->assertSame($before, $this->snapshot());
     }
 
     private function payload(Table $table, bool $offline = false): array

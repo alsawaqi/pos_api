@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceConfigController;
 use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceDispositionController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenController;
+use App\Http\Controllers\Api\V1\Device\DeviceKitchenPrintController;
 use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
@@ -32,7 +33,9 @@ use App\Http\Controllers\Api\V1\Device\DeviceQrRotateController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrTableRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
+use App\Http\Controllers\Api\V1\Device\DeviceStaffRoundReviewController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableClaimOwnerController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSessionController;
@@ -197,6 +200,16 @@ Route::prefix('v1')->group(function (): void {
                 ->defaults('table_operation', $tableOperation)
                 ->middleware('throttle:qr-table-device-write')->name('device.tables.'.$tableOperation);
         }
+        Route::post('device/tables/{uuid}/claim-owner', DeviceTableClaimOwnerController::class)
+            ->middleware('throttle:qr-table-device-write')->name('device.tables.claim-owner');
+        Route::post('device/tables/{uuid}/rounds/{roundId}/confirm', [DeviceStaffRoundReviewController::class, 'confirm'])
+            ->whereNumber('roundId')->middleware('throttle:qr-table-device-write')->name('device.tables.rounds.confirm');
+        Route::post('device/tables/{uuid}/rounds/{roundId}/reject', [DeviceStaffRoundReviewController::class, 'reject'])
+            ->whereNumber('roundId')->middleware('throttle:qr-table-device-write')->name('device.tables.rounds.reject');
+        Route::post('device/kitchen/claim-print', [DeviceKitchenPrintController::class, 'claim'])
+            ->name('device.kitchen.claim-print');
+        Route::post('device/kitchen/print-result', [DeviceKitchenPrintController::class, 'result'])
+            ->name('device.kitchen.print-result');
 
         // Config bundle (§11.4): full snapshot + incremental delta.
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');

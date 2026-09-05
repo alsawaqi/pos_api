@@ -280,8 +280,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             if ($claimIsLive) {
                 $orderUpdate['charge_outcome'] = Order::CHARGE_OUTCOME_APPROVED;
             }
-            if ($order->source === Order::SOURCE_QR_WEB
-                && trim((string) $order->receipt_number) === '') {
+            if (trim((string) $order->receipt_number) === ''
+                && ($order->source === Order::SOURCE_QR_WEB || $order->table_session_id !== null)) {
                 $allocation = $this->orderNumbers->handle($device);
                 if ($allocation !== null) {
                     $orderUpdate['receipt_number'] = $allocation['formatted'];

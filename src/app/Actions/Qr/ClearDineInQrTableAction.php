@@ -11,9 +11,10 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
-/** Frees a table only after every QR dine-in order is safely terminal. */
+/** Frees a physical table only after every covering dine-in bill is terminal. */
 final class ClearDineInQrTableAction
 {
     public function __construct(
@@ -65,19 +66,23 @@ final class ClearDineInQrTableAction
                 throw new QrDineInException('qr_table_not_found', 404, 'The table was not found.');
             }
 
-            $unpaid = Order::query()
-                ->where('table_id', $tableId)
+            $orders = Order::query()
                 ->where('company_id', (int) $device->company_id)
                 ->where('branch_id', (int) $device->branch_id)
-                ->where('source', Order::SOURCE_QR_WEB)
                 ->where('order_type', 'dine_in')
-                ->whereIn('status', [
-                    Order::STATUS_OPEN,
-                    Order::STATUS_HELD,
-                    Order::STATUS_AWAITING_PAYMENT,
-                ])
+                ->where(function (Builder $covering) use ($tableId): void {
+                    $covering->where('table_id', $tableId)->orWhereIn('id', DB::table('pos_order_tables')
+                        ->select('order_id')->where('table_id', $tableId));
+                })
+                ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
+            $unpaid = $orders->whereIn('status', [
+                Order::STATUS_OPEN,
+                Order::STATUS_HELD,
+                Order::STATUS_AWAITING_PAYMENT,
+                Order::STATUS_KITCHEN,
+            ]);
             foreach ($unpaid as $order) {
                 if ($order->status === Order::STATUS_AWAITING_PAYMENT) {
                     if (Order::query()->whereKey($order->id)->withLiveClaim(now())->exists()) {
@@ -118,9 +123,11 @@ final class ClearDineInQrTableAction
                 ->pluck('id')
                 ->map(static fn ($id): int => (int) $id)
                 ->all();
-            if ($sessionIds !== []) {
+            if ($sessionIds !== [] || $orders->isNotEmpty()) {
                 QrOrderRound::query()
-                    ->whereIn('qr_session_id', $sessionIds)
+                    ->where(function (Builder $pending) use ($sessionIds, $orders): void {
+                        $pending->whereIn('qr_session_id', $sessionIds)->orWhereIn('order_id', $orders->modelKeys());
+                    })
                     ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
                     ->update([
                         'status' => QrOrderRound::STATUS_REJECTED,
@@ -129,6 +136,8 @@ final class ClearDineInQrTableAction
                         'confirm_payload' => null,
                         'updated_at' => $now,
                     ]);
+            }
+            if ($sessionIds !== []) {
                 QrSession::query()->whereIn('id', $sessionIds)->update([
                     'status' => QrSession::STATUS_CLOSED,
                     'closed_at' => $now,

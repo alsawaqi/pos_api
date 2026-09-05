@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Actions\Qr\BindQrTableSessionAction;
 use App\Actions\Qr\ClaimQrChargeAction;
 use App\Actions\Qr\ClaimQrSettlementAction;
+use App\Actions\Qr\ClearDineInQrTableAction;
 use App\Actions\Qr\ConfirmDineInQrRoundAction;
 use App\Actions\Qr\FinishDineInQrOrderAction;
 use App\Actions\Qr\OpenDineInTableAction;
@@ -18,6 +19,7 @@ use App\Actions\Tables\AppendStaffRoundAction;
 use App\Actions\Tables\OpenStaffTableSessionAction;
 use App\Http\Controllers\Api\V1\PublicQr\QrStatusController;
 use App\Models\Customer;
+use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\QrOrderRound;
@@ -34,6 +36,8 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\TableSessionFixtures;
 use Tests\TestCase;
 
@@ -297,6 +301,7 @@ final class QrSharedBillIdentityTest extends TestCase
 
     public function test_case_15_expired_credential_leaves_staff_identity_and_station_cannot_claim_it(): void
     {
+        $this->enableReceiptNumbering();
         $flow = $this->flow();
         $flow['session']->update(['status' => QrSession::STATUS_EXPIRED, 'expires_at' => now()->subMinute()]);
         $this->staffRound($flow);
@@ -321,6 +326,19 @@ final class QrSharedBillIdentityTest extends TestCase
                 'station_refusal' => $exception->codeName,
             ], JSON_THROW_ON_ERROR)."\n");
         }
+        // Awaiting-payment above is only the station-admission probe. The
+        // staff bill's real state is open; do not bypass Pay's live-claim
+        // requirement for an awaiting-payment bill.
+        $bill->update(['status' => Order::STATUS_OPEN]);
+        $paid = $this->payByUuid($flow['till'], $bill, (string) Str::uuid())
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.result.receipt_number', 'T4-00001');
+        $this->assertSame(Order::STATUS_PAID, $bill->fresh()->status);
+        $this->assertSame('main_pos', $bill->fresh()->source);
+        $this->assertNull($bill->fresh()->qr_session_id);
+        $this->assertNull($bill->fresh()->customer_id);
+        $this->assertSame(QrSession::STATUS_EXPIRED, $flow['session']->fresh()->status);
+        fwrite(STDOUT, "\nT4_SHARED_BILL_CASE_15_PAID_JSON=".$paid->getContent()."\n");
     }
 
     public function test_qr_only_status_preserves_every_existing_round_value_with_one_additive_key(): void
@@ -371,6 +389,159 @@ final class QrSharedBillIdentityTest extends TestCase
         $this->assertDatabaseHas('pos_loyalty_accounts', ['customer_id' => $result['order']->customer_id, 'stamp_count' => 1]);
         $this->assertSame(1, Order::query()->count());
         fwrite(STDOUT, "\nT4_SHARED_BILL_LOYALTY_PAY_JSON=".$response->getContent()."\n");
+    }
+
+    public function test_clear_adopted_terminal_bill_rejects_staff_and_credential_pending_without_touching_other_bills(): void
+    {
+        $flow = $this->flow();
+        $this->staffRound($flow);
+        $this->staffConfirmMode();
+        $result = $this->customerRound($flow);
+        $staffPending = $this->seatingRound($flow['seating'], $result['order'], [
+            'status' => QrOrderRound::STATUS_PENDING_CONFIRMATION, 'needs_review' => true,
+            'confirm_payload' => ['private' => 'staff'], 'resolved_at' => null,
+        ]);
+        $credentialPending = $this->seatingRound($flow['seating'], null, [
+            'qr_session_id' => $flow['session']->id, 'round_no' => 2,
+            'status' => QrOrderRound::STATUS_PENDING_CONFIRMATION,
+            'confirm_payload' => ['private' => 'credential'], 'resolved_at' => null,
+        ]);
+        $otherSeating = $this->seatingRow($this->seatingTable('Other bill'));
+        $otherBill = $this->seatingOrder($otherSeating);
+        $otherPending = $this->seatingRound($otherSeating, $otherBill, [
+            'status' => QrOrderRound::STATUS_PENDING_CONFIRMATION,
+            'confirm_payload' => ['private' => 'other bill'], 'resolved_at' => null,
+        ]);
+        $otherBefore = $otherPending->fresh()->getRawOriginal();
+        $result['order']->update(['status' => Order::STATUS_PAID, 'closed_at' => now()]);
+        $cleared = app(ClearDineInQrTableAction::class)->handle($flow['till'], (int) $flow['table']->id);
+        $this->assertSame(['table_id' => (int) $flow['table']->id, 'status' => 'cleared'], $cleared);
+        foreach ([$result['round'], $staffPending, $credentialPending] as $pending) {
+            $this->assertSame(QrOrderRound::STATUS_REJECTED, $pending->fresh()->status);
+            $this->assertNull($pending->fresh()->confirm_payload);
+            $this->assertNotNull($pending->fresh()->resolved_at);
+            $this->assertSame((int) $flow['till']->id, (int) $pending->fresh()->resolved_by_device_id);
+        }
+        $this->assertSame(QrSession::STATUS_CLOSED, $flow['session']->fresh()->status);
+        $this->assertSame(TableSession::STATUS_CLOSED, $flow['seating']->fresh()->status);
+        $this->assertSame($otherBefore, $otherPending->fresh()->getRawOriginal());
+        $this->assertSame(Order::STATUS_OPEN, $otherBill->fresh()->status);
+        $this->assertSame(TableSession::STATUS_OPEN, $otherSeating->fresh()->status);
+        $this->assertSame('1.000', $result['order']->fresh()->grand_total);
+    }
+
+    /** @return array<string, array{string, string}> */
+    public static function staffReceiptSources(): array
+    {
+        return ['till' => ['fixed_pos', 'main_pos'], 'handheld' => ['handheld', 'handheld']];
+    }
+
+    #[DataProvider('staffReceiptSources')]
+    public function test_staff_seating_bill_paid_by_uuid_gets_one_receipt_without_a_qr_credential(string $deviceType, string $source): void
+    {
+        $this->enableReceiptNumbering();
+        $flow = $this->staffOnlyFlow($deviceType);
+        $bill = $flow['order'];
+        $this->assertSame($source, $bill->source);
+        $this->assertNull($bill->qr_session_id);
+        $this->assertNull($bill->customer_id);
+        $this->assertNull($bill->receipt_number);
+        $this->assertSame(0, QrSession::query()->count());
+        $this->assertSame(0, DB::table('pos_order_sequences')->count());
+        $beforeReference = $bill->temp_reference;
+        $eventId = (string) Str::uuid();
+        $response = $this->payByUuid($flow['device'], $bill, $eventId)
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.result.receipt_number', 'T4-00001');
+        $this->assertSame(Order::STATUS_PAID, $bill->fresh()->status);
+        $this->assertSame('T4-00001', $bill->fresh()->receipt_number);
+        $this->assertSame($beforeReference, $bill->fresh()->temp_reference);
+        $this->assertSame($source, $bill->fresh()->source);
+        $this->assertNull($bill->fresh()->qr_session_id);
+        $this->assertSame(1, Order::query()->count());
+        $this->assertSame(0, QrSession::query()->count());
+        $this->assertSame(2, (int) DB::table('pos_order_sequences')->sole()->next_number);
+        $this->assertSame(TableSession::STATUS_CLOSED, $flow['seating']->fresh()->status);
+        $this->assertSame(TableSession::CLOSE_PAID, $flow['seating']->fresh()->close_reason);
+        $this->payByUuid($flow['device'], $bill, $eventId)
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.duplicate', true)
+            ->assertJsonPath('data.results.0.result.receipt_number', 'T4-00001');
+        $this->assertSame(2, (int) DB::table('pos_order_sequences')->sole()->next_number);
+        fwrite(STDOUT, "\nT4_STAFF_RECEIPT_".strtoupper($source).'_JSON='.$response->getContent()."\n");
+    }
+
+    public function test_existing_staff_receipt_is_preserved_and_unlinked_non_qr_sources_do_not_allocate(): void
+    {
+        $this->enableReceiptNumbering();
+        $flow = $this->staffOnlyFlow('fixed_pos');
+        $flow['order']->update(['receipt_number' => 'LEGACY-777']);
+        $this->payByUuid($flow['device'], $flow['order'], (string) Str::uuid())
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.result.receipt_number', 'LEGACY-777');
+        $this->assertSame('LEGACY-777', $flow['order']->fresh()->receipt_number);
+        $this->assertSame(0, DB::table('pos_order_sequences')->count());
+        foreach (['main_pos', 'handheld', 'customer_tablet'] as $source) {
+            $bill = Order::query()->create([
+                'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+                'device_id' => $flow['device']->id, 'source' => $source, 'order_type' => 'quick',
+                'status' => Order::STATUS_OPEN, 'subtotal' => '1.000', 'discount_total' => '0.000',
+                'comp_total' => '0.000', 'tax_total' => '0.000', 'grand_total' => '1.000', 'opened_at' => now(),
+            ]);
+            $this->payByUuid($flow['device'], $bill, (string) Str::uuid())
+                ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
+                ->assertJsonPath('data.results.0.result.receipt_number', null);
+            $this->assertSame(Order::STATUS_PAID, $bill->fresh()->status);
+            $this->assertSame($source, $bill->fresh()->source);
+            $this->assertNull($bill->fresh()->table_session_id);
+            $this->assertNull($bill->fresh()->receipt_number);
+            $this->assertSame(0, DB::table('pos_order_sequences')->count());
+        }
+    }
+
+    private function staffOnlyFlow(string $deviceType): array
+    {
+        $device = $this->seatingDevice($deviceType);
+        $table = $this->seatingTable();
+        $product = $this->seatingProduct();
+        $common = ['seating_key' => (string) Str::uuid(), 'table_id' => (int) $table->id, 'queued_offline' => false];
+        $opened = app(OpenStaffTableSessionAction::class)->handle($device, $common + [
+            'opened_at' => now()->toIso8601String(),
+        ], now(), now());
+        $seating = TableSession::query()->where('uuid', $opened['table_session_uuid'])->sole();
+        $round = app(AppendStaffRoundAction::class)->handle($device, $common + [
+            'client_request_id' => 'staff-receipt-round', 'submitted_at' => now()->toIso8601String(),
+            'lines' => [['product_id' => (int) $product->id, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
+        ], now(), now());
+        $order = Order::query()->where('uuid', $round['order_uuid'])->sole();
+
+        return compact('device', 'table', 'seating', 'order');
+    }
+
+    private function enableReceiptNumbering(): void
+    {
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100, 'key' => 'order_numbering',
+            'value' => json_encode([
+                'enabled' => true, 'prefix' => 'T4-', 'pad' => 5, 'scope' => 'branch', 'daily_reset' => false,
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+    }
+
+    private function payByUuid(Device $device, Order $order, string $eventId): TestResponse
+    {
+        $this->app['auth']->forgetGuards();
+
+        return $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+            'events' => [[
+                'client_event_id' => $eventId, 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(),
+                'payload' => [
+                    'order_uuid' => $order->uuid, 'paid_at' => now()->toIso8601String(),
+                    'payments' => [['method' => 'cash', 'amount_baisas' => 1000]],
+                ],
+            ]],
+        ]);
     }
 
     private function flow(): array

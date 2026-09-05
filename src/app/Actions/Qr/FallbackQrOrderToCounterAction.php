@@ -8,6 +8,7 @@ use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 
@@ -45,6 +46,10 @@ final class FallbackQrOrderToCounterAction
                 if ($isAttendedRecovery) {
                     $this->assertAttendedDevice($device);
                     $this->lockSessionForAttendedRecovery($order, $device);
+                } elseif ($this->hasNoChargeProvenance($order)
+                    && $this->hasCounterReference($order)
+                    && $this->stationOffContext($order, $device, $now)[0]) {
+                    return $this->present($order);
                 } else {
                     $this->lockBoundOrderedSession($order, $device);
                 }
@@ -59,7 +64,10 @@ final class FallbackQrOrderToCounterAction
                     'The order is already held without a reference.',
                 );
             }
-            if ($order->status !== Order::STATUS_AWAITING_PAYMENT) {
+            $wasOpen = $order->status === Order::STATUS_OPEN;
+            [$isStationOffRouting, $routingSession] = $wasOpen
+                ? $this->stationOffContext($order, $device, $now) : [false, null];
+            if ($order->status !== Order::STATUS_AWAITING_PAYMENT && ! ($wasOpen && $isStationOffRouting)) {
                 throw new QrChargeException(
                     'order_not_awaiting_payment',
                     409,
@@ -73,20 +81,26 @@ final class FallbackQrOrderToCounterAction
             if ($isAttendedRecovery) {
                 $this->assertAttendedDevice($device);
                 $this->lockSessionForAttendedRecovery($order, $device);
-            } elseif (! $this->isWithoutLiveClaim($order, $now)) {
+            } elseif (! ($wasOpen ? $this->hasAffirmativelySafeCharge($order) : $this->isWithoutLiveClaim($order, $now))) {
                 throw new QrChargeException(
                     'charge_already_claimed',
                     409,
                     'A live charge claim prevents fallback to the counter.',
                 );
             } else {
+                if (! $wasOpen) {
+                    [$isStationOffRouting, $routingSession] = $this->stationOffContext($order, $device, $now);
+                }
                 // r2's orphan flow can lazily move an ordered dine-in session
                 // to expired while its never-claimed awaiting-payment order
                 // remains unpaid. A payment station can no longer prove the
                 // ordered-session gate in that state, so only an attended
                 // same-branch device may recover the affirmatively-safe order.
                 // Ambiguous claims stay on the separate residue-preserving path.
-                if ($this->isDeletedSessionDineInSafeRecovery($order, $device)) {
+                if ($isStationOffRouting) {
+                    // D7 is attended routing only; no credential or charge
+                    // ownership is transferred to the cashier here.
+                } elseif ($this->isDeletedSessionDineInSafeRecovery($order, $device)) {
                     // Hard-deleting the opening station cascades its session
                     // and NULLs the surviving order FK. The table-scoped board
                     // remains the recovery root, but only an attended device
@@ -125,6 +139,25 @@ final class FallbackQrOrderToCounterAction
             }
 
             $order->update($updates);
+            if ($wasOpen) {
+                // HELD admission in settlement/reopen requires ORDERED for a
+                // surviving credential. Never revive an expired credential.
+                if ($routingSession?->status === QrSession::STATUS_ACTIVE) {
+                    $routingSession->update(['status' => QrSession::STATUS_ORDERED, 'last_seen_at' => $now]);
+                }
+                if ($order->table_session_id !== null) {
+                    $seating = TableSession::query()->whereKey((int) $order->table_session_id)
+                        ->where('company_id', (int) $order->company_id)->where('branch_id', (int) $order->branch_id)
+                        ->where('table_id', (int) $order->table_id)->lockForUpdate()->first();
+                    if ($seating === null) {
+                        throw new QrChargeException('order_not_bound_to_device_session', 409, 'The seating does not match this order.');
+                    }
+                    if ($seating->status === TableSession::STATUS_OPEN) {
+                        $seating->update(['status' => TableSession::STATUS_BILLING, 'billing_at' => $now]);
+                        $this->journal->handle($seating, 'billing', ['order_uuid' => (string) $order->uuid], (int) $device->id, $now);
+                    }
+                }
+            }
             $this->journal->forOrder($order, 'sent_to_counter', [], (int) $device->id);
 
             return $this->present($order->refresh());
@@ -135,6 +168,51 @@ final class FallbackQrOrderToCounterAction
     {
         return trim((string) $order->temp_reference) !== ''
             || trim((string) $order->receipt_number) !== '';
+    }
+
+    /** @return array{bool, ?QrSession} */
+    private function stationOffContext(Order $order, Device $device, CarbonInterface $at): array
+    {
+        if (! $this->isDineInOrder($order) || ! $this->recoveryGuard->isAttendedDevice($device)
+            || ! $device->isAssigned() || $device->trashed() || $device->status !== 'active'
+            || (int) $order->company_id !== (int) $device->company_id
+            || (int) $order->branch_id !== (int) $device->branch_id) {
+            return [false, null];
+        }
+        if ($order->qr_session_id === null) {
+            return [true, null];
+        }
+        $session = QrSession::query()->whereKey((int) $order->qr_session_id)
+            ->where('company_id', (int) $order->company_id)->where('branch_id', (int) $order->branch_id)
+            ->where('table_id', (int) $order->table_id)->lockForUpdate()->first();
+        if ($session === null) {
+            throw new QrChargeException('order_not_bound_to_device_session', 409, 'The credential does not match this order.');
+        }
+        $station = $session->device_id === null ? null : Device::query()->withTrashed()
+            ->whereKey((int) $session->device_id)->where('company_id', (int) $order->company_id)
+            ->where('branch_id', (int) $order->branch_id)->first();
+
+        return [$session->status === QrSession::STATUS_EXPIRED || $session->isExpiredAt($at)
+            || $station === null || $station->trashed() || $station->status !== 'active'
+            || ! $station->isAssigned() || ! $station->isPaymentStation(), $session];
+    }
+
+    private function hasAffirmativelySafeCharge(Order $order): bool
+    {
+        return ($order->charge_claimed_at === null && $order->charge_outcome === null)
+            || in_array($order->charge_outcome, [Order::CHARGE_OUTCOME_DECLINED, Order::CHARGE_OUTCOME_CANCELLED], true);
+    }
+
+    private function hasNoChargeProvenance(Order $order): bool
+    {
+        foreach (['charge_device_id', 'charge_amount_baisas', 'charge_roundup_amount_baisas',
+            'charge_claimed_at', 'charge_deadline_at', 'charge_outcome'] as $field) {
+            if ($order->getRawOriginal($field) !== null) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function isWithoutLiveClaim(Order $order, CarbonInterface $at): bool

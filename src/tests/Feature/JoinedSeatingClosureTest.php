@@ -9,6 +9,7 @@ use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
+use App\Models\QrOrderRound;
 use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
@@ -96,6 +97,61 @@ final class JoinedSeatingClosureTest extends TestCase
             $order, now()->addHour(), 'voided', null,
         )));
         $this->assertSame($eventsBefore, TableSessionEvent::query()->orderBy('id')->get()->toArray());
+    }
+
+    #[DataProvider('unpaidCoverage')]
+    public function test_clear_refuses_every_unpaid_source_on_primary_and_joined_tables(string $source, string $status, bool $viaJoined): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        [$device, $order, $primary, $joined] = $this->fixture();
+        $order->update(['source' => $source, 'status' => $status]);
+        $before = [Order::query()->get()->toArray(), TableSession::query()->orderBy('id')->get()->toArray()];
+        $target = $viaJoined ? $joined[0] : $primary;
+        $this->withToken($device->device_token)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $target->table_id])
+            ->assertStatus(409)->assertJsonPath('errors.0.code', $status === 'awaiting_payment' ? 'qr_table_payment_pending' : 'qr_table_unpaid_order');
+        $this->assertSame($before, [Order::query()->get()->toArray(), TableSession::query()->orderBy('id')->get()->toArray()]);
+        $this->assertDatabaseCount('pos_table_session_events', 0);
+    }
+
+    public static function unpaidCoverage(): array
+    {
+        $cases = [];
+        foreach (['main_pos', 'handheld', 'qr_web'] as $source) {
+            foreach (['open', 'held', 'awaiting_payment', 'kitchen'] as $status) {
+                foreach ([false, true] as $joined) {
+                    $cases[] = [$source, $status, $joined];
+                }
+            }
+        }
+
+        return $cases;
+    }
+
+    public function test_terminal_joined_clear_closes_only_physical_seating_and_rejects_bill_wide_pending_rounds(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+        [$device, $order, $primary, $joined, $alias] = $this->fixture();
+        $order->update(['status' => 'paid']);
+        $round = QrOrderRound::query()->create([
+            'qr_session_id' => null, 'table_session_id' => $primary->id, 'order_id' => $order->id,
+            'round_no' => 1, 'status' => 'pending_confirmation', 'client_request_id' => (string) Str::uuid(),
+            'priced_lines' => [['line_total_baisas' => 1000]], 'confirm_payload' => ['preserve' => true],
+            'subtotal_baisas' => 1000, 'tax_baisas' => 0, 'total_baisas' => 1000, 'submitted_at' => now(),
+        ]);
+        $before = [$primary->getRawOriginal(), $joined[1]->getRawOriginal(), $alias->getRawOriginal(), $order->fresh()->getRawOriginal()];
+        $this->withToken($device->device_token)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $joined[0]->table_id])
+            ->assertOk()->assertJsonPath('data.status', 'cleared');
+        $this->assertSame('closed', $joined[0]->fresh()->status);
+        $this->assertSame('cleared', $joined[0]->fresh()->close_reason);
+        $this->assertSame('rejected', $round->fresh()->status);
+        $this->assertNull($round->fresh()->confirm_payload);
+        $this->assertSame($before, [$primary->fresh()->getRawOriginal(), $joined[1]->fresh()->getRawOriginal(), $alias->fresh()->getRawOriginal(), $order->fresh()->getRawOriginal()]);
+        $this->assertSame([(int) $joined[0]->id], TableSessionEvent::query()->pluck('table_session_id')->map(fn ($id): int => (int) $id)->all());
+        $closedBefore = $joined[0]->fresh()->getRawOriginal();
+        $this->travel(1)->hours();
+        $this->withToken($device->device_token)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $joined[0]->table_id])->assertOk();
+        $this->assertSame($closedBefore, $joined[0]->fresh()->getRawOriginal());
+        $this->assertDatabaseCount('pos_table_session_events', 1);
     }
 
     /** @return array{Device, Order, TableSession, list<TableSession>, TableSession} */

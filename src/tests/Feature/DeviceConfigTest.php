@@ -1069,6 +1069,7 @@ class DeviceConfigTest extends TestCase
                 'kitchen_positions',
                 'order_numbering',
                 'dine_in_round_mode',
+                'table_sessions_mode',
             ], array_keys($json['data']['settings']));
             $this->assertArrayNotHasKey(
                 'dine_in_round_mode',
@@ -1124,6 +1125,49 @@ class DeviceConfigTest extends TestCase
             DB::table('pos_branch_settings')->where('branch_id', 10)->value('updated_at'),
         );
         $this->assertSame('kitchen_direct', $read($since), 'an old branch policy is emitted even when since is now');
+    }
+
+    public function test_table_sessions_mode_is_branch_only_and_present_in_full_and_delta(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $read = function (bool $delta = false): array {
+            $url = '/api/v1/device/config'.($delta ? '/delta?since='.urlencode(now()->toIso8601String()) : '');
+
+            return $this->withToken('mdev_cfg')->getJson($url)->assertOk()->json('data.settings');
+        };
+        $this->assertSame('off', $read()['table_sessions_mode']);
+        DB::table('pos_company_settings')->insert([
+            'company_id' => 100, 'key' => 'table_sessions_mode', 'value' => json_encode('live'),
+            'created_at' => $this->old, 'updated_at' => $this->old,
+        ]);
+        DB::table('pos_branch_settings')->insert([
+            'company_id' => 100, 'branch_id' => 11, 'key' => 'table_sessions_mode',
+            'value' => json_encode('live'), 'created_at' => $this->old, 'updated_at' => $this->old,
+        ]);
+        $this->assertSame('off', $read()['table_sessions_mode'], 'no company or sibling fallback');
+        $this->assertSame('off', $read(true)['table_sessions_mode']);
+        foreach (['off', 'shadow', 'live'] as $mode) {
+            DB::table('pos_branch_settings')->updateOrInsert(
+                ['company_id' => 100, 'branch_id' => 10, 'key' => 'table_sessions_mode'],
+                ['value' => json_encode($mode), 'created_at' => $this->old, 'updated_at' => $this->old],
+            );
+            $this->assertSame($mode, $read()['table_sessions_mode']);
+            $settings = $read(true);
+            $this->assertSame($mode, $settings['table_sessions_mode']);
+            if ($mode === 'shadow') {
+                fwrite(STDOUT, "\nT5_CONFIG_SETTINGS_JSON=".json_encode($settings, JSON_THROW_ON_ERROR)."\n");
+            }
+        }
+        foreach (['{broken', 'null', 'true', '7', '["shadow"]', '{"mode":"shadow"}', '"inherit"', '"SHADOW"'] as $raw) {
+            DB::table('pos_branch_settings')->where('branch_id', 10)->update(['value' => $raw]);
+            $this->assertSame('off', $read()['table_sessions_mode']);
+            $this->assertSame('off', $read(true)['table_sessions_mode']);
+        }
+        DB::table('pos_branch_settings')->where('branch_id', 10)->update([
+            'company_id' => 200, 'value' => json_encode('shadow'),
+        ]);
+        $this->assertSame('off', $read()['table_sessions_mode'], 'company mismatch fails closed');
     }
 
     public function test_audience_measurement_meta_defaults_off_and_follows_company_consent(): void

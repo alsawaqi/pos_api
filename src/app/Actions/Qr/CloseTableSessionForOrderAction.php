@@ -6,6 +6,7 @@ namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Order;
+use App\Models\QrOrderRound;
 use App\Models\TableSession;
 use Carbon\CarbonInterface;
 use RuntimeException;
@@ -43,6 +44,28 @@ final class CloseTableSessionForOrderAction
             ->orderBy('id')
             ->lockForUpdate()
             ->get();
+
+        if (in_array($reason, [TableSession::CLOSE_PAID, TableSession::CLOSE_VOIDED], true)) {
+            $pending = QrOrderRound::query()
+                ->where('order_id', (int) $lockedOrder->id)
+                ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            foreach ($pending as $round) {
+                $round->update([
+                    'status' => QrOrderRound::STATUS_REJECTED,
+                    'resolved_at' => $at,
+                    'resolved_by_device_id' => $deviceId,
+                    'confirm_payload' => null,
+                ]);
+                $this->journal->handle($seating, 'round_resolved', [
+                    'round_id' => (int) $round->id,
+                    'outcome' => 'rejected',
+                    'reason' => 'bill_'.$reason,
+                ], $deviceId, $at);
+            }
+        }
 
         $closed = [];
         foreach (collect([$seating])->concat($joined) as $row) {

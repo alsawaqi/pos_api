@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Device;
 
 use App\Actions\Qr\DineInRoundMode;
+use App\Actions\Tables\TableSessionsMode;
 use App\Models\AddOn;
 use App\Models\AddOnGroup;
 use App\Models\Branch;
@@ -54,7 +55,10 @@ use Illuminate\Support\Facades\DB;
  */
 class BuildDeviceConfigAction
 {
-    public function __construct(private readonly DineInRoundMode $dineInRoundMode) {}
+    public function __construct(
+        private readonly DineInRoundMode $dineInRoundMode,
+        private readonly TableSessionsMode $tableSessionsMode,
+    ) {}
 
     /**
      * @return array{data: array<string, mixed>, meta: array<string, mixed>}
@@ -397,6 +401,7 @@ class BuildDeviceConfigAction
                 // QR-003 T0 — effective value for this device's branch; the
                 // server reads it again on every round, never trusting this hint.
                 'dine_in_round_mode' => $this->dineInRoundMode->forBranch($companyId, $branchId),
+                'table_sessions_mode' => $this->tableSessionsMode->forBranch($companyId, $branchId),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),

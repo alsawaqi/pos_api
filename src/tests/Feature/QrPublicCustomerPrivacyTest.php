@@ -465,6 +465,11 @@ final class QrPublicCustomerPrivacyTest extends TestCase
             'branch_id',
             'device_id',
             'table_id',
+            'table_session_id',
+            'origin',
+            'scan_fingerprint_hash',
+            'scan_ip_hash',
+            'scan_geofence_verdict',
             'token',
             'token_expires_at',
             'status',
@@ -481,9 +486,11 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         sort($expected);
 
         $this->assertSame($expected, $actual);
+        // T2 permits this named hash column only, never a raw IP column.
         foreach (['phone', 'plate', 'name', 'customer_id', 'ip', 'user_agent'] as $piiFragment) {
             $this->assertFalse(collect($actual)->contains(
-                static fn (string $column): bool => str_contains($column, $piiFragment),
+                static fn (string $column): bool => ! ($piiFragment === 'ip' && $column === 'scan_ip_hash')
+                    && str_contains($column, $piiFragment),
             ));
         }
     }

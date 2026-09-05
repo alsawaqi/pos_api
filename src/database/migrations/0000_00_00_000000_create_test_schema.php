@@ -534,6 +534,7 @@ return new class extends Migration
             $table->unsignedBigInteger('company_id');
             $table->unsignedBigInteger('branch_id');
             $table->foreignId('device_id')
+                ->nullable()
                 ->constrained('pos_devices')
                 ->cascadeOnDelete();
             $table->foreignId('table_id')
@@ -552,11 +553,65 @@ return new class extends Migration
             $table->timestamps();
             $table->index(['device_id', 'status'], 'pos_qr_sessions_device_status_idx');
             $table->index(['status', 'expires_at'], 'pos_qr_sessions_status_expires_idx');
+
+            $table->foreignId('table_session_id')->nullable()->constrained('pos_table_sessions')->nullOnDelete();
+            $table->string('origin', 24)->nullable(); // station | table_card (T9)
+            $table->string('scan_fingerprint_hash', 64)->nullable();
+            $table->string('scan_ip_hash', 64)->nullable();
+            $table->string('scan_geofence_verdict', 16)->nullable();
+            $table->index(['table_session_id'], 'pos_qr_sessions_table_session_idx');
         });
 
         DB::statement(
             'CREATE UNIQUE INDEX pos_qr_sessions_table_live_unique ON pos_qr_sessions (table_id) '.
             "WHERE table_id IS NOT NULL AND status IN ('pending', 'active', 'ordered')"
+        );
+
+        // QR-003 T2 — seating schema owned by pos_admin (5a985d9), with no
+        // readers or writers until T3+. Company parents are absent in this
+        // mirror; all other seating foreign keys retain their delete actions.
+        Schema::create('pos_table_sessions', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->foreignId('branch_id')->constrained('pos_branches')->cascadeOnDelete();
+            $table->foreignId('table_id')->constrained('pos_tables')->cascadeOnDelete();
+            // open | billing | closing | closed | merged | expired (T3 enum)
+            $table->string('status', 16)->default('open');
+            // staff_till | staff_handheld | station | table_card
+            $table->string('origin', 24);
+            // T3: killing a payment station must leave the seating alive.
+            $table->foreignId('opened_by_device_id')->nullable()->constrained('pos_devices')->nullOnDelete();
+            $table->foreignId('closed_by_device_id')->nullable()->constrained('pos_devices')->nullOnDelete();
+            // The live bill is NULL until the first round / staff line lands.
+            $table->foreignId('order_id')->nullable()->constrained('pos_orders')->nullOnDelete();
+            // The winner this seating was folded into; NULL unless merged.
+            $table->foreignId('merged_into_id')->nullable()->constrained('pos_table_sessions')->nullOnDelete();
+            // T-MMDD-NNN from T1's pos_temp_reference_sequences, allocated in T3.
+            $table->string('temp_reference', 32)->nullable();
+            // T4 table.session.open replay key; NULL for server-originated opens.
+            $table->string('client_request_id', 64)->nullable();
+            $table->timestamp('opened_at');
+            $table->timestamp('expires_at'); // T3 sets opened_at + 6 hours.
+            $table->timestamp('billing_at')->nullable();
+            $table->timestamp('closed_at')->nullable();
+            // paid | staff_close | cleared | merged | expired (T3)
+            $table->string('close_reason', 24)->nullable();
+            $table->timestamps();
+
+            $table->index(['branch_id', 'status'], 'pos_table_sessions_branch_status_idx');
+            $table->index(['branch_id', 'temp_reference'], 'pos_table_sessions_branch_temp_reference_idx');
+            $table->index(['order_id'], 'pos_table_sessions_order_idx');
+            $table->index(['status', 'expires_at'], 'pos_table_sessions_status_expires_idx');
+        });
+
+        DB::statement(
+            'CREATE UNIQUE INDEX pos_table_sessions_table_live_unique ON pos_table_sessions (table_id) '.
+            "WHERE status IN ('open', 'billing', 'closing')"
+        );
+        DB::statement(
+            'CREATE UNIQUE INDEX pos_table_sessions_branch_request_unique ON pos_table_sessions (branch_id, client_request_id) '.
+            'WHERE client_request_id IS NOT NULL'
         );
 
         // ---- Phase 8.3 order-lifecycle slice (sync ingestion writes here) ----
@@ -633,6 +688,9 @@ return new class extends Migration
             $table->index(['company_id', 'delivery_provider_id'], 'pos_orders_company_provider_idx');
             $table->index(['status', 'charge_deadline_at'], 'pos_orders_status_charge_deadline_idx');
             $table->unique(['qr_session_id', 'client_request_id'], 'pos_orders_qr_session_request_unique');
+
+            $table->foreignId('table_session_id')->nullable()->constrained('pos_table_sessions')->nullOnDelete();
+            $table->index(['table_session_id'], 'pos_orders_table_session_idx');
         });
 
         DB::statement(
@@ -682,6 +740,69 @@ return new class extends Migration
                 ['order_id', 'status'],
                 'pos_qr_rounds_order_status_idx',
             );
+
+            $table->foreignId('table_session_id')->nullable()->constrained('pos_table_sessions')->nullOnDelete();
+            // Seating folded in FROM on a merge; NULL for a normal round.
+            $table->foreignId('origin_table_session_id')->nullable()->constrained('pos_table_sessions')->nullOnDelete();
+            $table->timestamp('kitchen_printed_at')->nullable();
+            $table->boolean('needs_review')->default(false);
+            // NULL seating ids leave existing rows unaffected. The shipped
+            // pos_qr_rounds_session_request_unique remains unchanged.
+            $table->unique(['table_session_id', 'client_request_id'], 'pos_qr_rounds_table_session_request_unique');
+        });
+
+        Schema::create('pos_table_session_events', function (Blueprint $table): void {
+            $table->id(); // The append-only feed cursor: devices poll ?after=<id>.
+            $table->unsignedBigInteger('company_id');
+            $table->foreignId('branch_id')->constrained('pos_branches')->cascadeOnDelete();
+            $table->foreignId('table_session_id')->constrained('pos_table_sessions')->cascadeOnDelete();
+            $table->foreignId('table_id')->constrained('pos_tables')->cascadeOnDelete();
+            // opened | round_appended | moved | joined | billing | closed | merged |
+            // expired | needs_review | customer_order_arrived | sent_to_counter (T4)
+            $table->string('event_type', 32);
+            $table->foreignId('device_id')->nullable()->constrained('pos_devices')->nullOnDelete();
+            $table->json('payload')->nullable();
+            $table->timestamp('created_at'); // No updated_at: append-only journal.
+            $table->index(['branch_id', 'id'], 'pos_table_session_events_branch_cursor_idx');
+            $table->index(['table_session_id', 'id'], 'pos_table_session_events_session_idx');
+        });
+
+        Schema::create('pos_qr_session_scans', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->foreignId('branch_id')->constrained('pos_branches')->cascadeOnDelete();
+            $table->foreignId('table_id')->nullable()->constrained('pos_tables')->nullOnDelete();
+            $table->foreignId('qr_session_id')->nullable()->constrained('pos_qr_sessions')->nullOnDelete();
+            $table->foreignId('table_session_id')->nullable()->constrained('pos_table_sessions')->nullOnDelete();
+            // owner | viewer | refused: first scanner owns, second is read-only.
+            $table->string('role', 16);
+            $table->string('device_fingerprint_hash', 64)->nullable(); // SHA-256 only.
+            $table->string('ip_hash', 64)->nullable(); // SHA-256 only.
+            $table->decimal('latitude', 10, 7)->nullable();
+            $table->decimal('longitude', 10, 7)->nullable();
+            // inside | outside | unknown | refused (T9)
+            $table->string('geofence_verdict', 16)->nullable();
+            $table->timestamp('scanned_at');
+            $table->timestamp('created_at');
+            $table->index(['branch_id', 'scanned_at'], 'pos_qr_session_scans_branch_scanned_idx');
+            $table->index(['table_id', 'scanned_at'], 'pos_qr_session_scans_table_scanned_idx');
+        });
+
+        Schema::create('pos_kitchen_tickets', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->foreignId('branch_id')->constrained('pos_branches')->cascadeOnDelete();
+            // e.g. round:<round id>; T4 defines the opaque key format.
+            $table->string('ticket_key', 96);
+            $table->foreignId('round_id')->nullable()->constrained('pos_qr_order_rounds')->nullOnDelete();
+            $table->foreignId('order_id')->nullable()->constrained('pos_orders')->nullOnDelete();
+            $table->foreignId('claimed_by_device_id')->nullable()->constrained('pos_devices')->nullOnDelete();
+            $table->timestamp('claimed_at');
+            $table->timestamp('printed_at')->nullable();
+            // printed | failed: the result, never the attempt (R7).
+            $table->string('print_result', 16)->nullable();
+            $table->timestamps();
+            $table->unique(['branch_id', 'ticket_key'], 'pos_kitchen_tickets_branch_key_unique');
         });
 
         Schema::create('pos_order_items', function (Blueprint $table): void {
@@ -700,6 +821,10 @@ return new class extends Migration
             $table->string('status', 32)->default('open');
             $table->text('notes')->nullable();
             $table->timestamps();
+
+            // prepared | not_prepared (T11); no wastage arithmetic in T2.
+            $table->string('cancel_disposition', 16)->nullable();
+            $table->timestamp('cancelled_at')->nullable();
         });
 
         Schema::create('pos_order_item_addons', function (Blueprint $table): void {
@@ -1392,8 +1517,12 @@ return new class extends Migration
         Schema::dropIfExists('pos_order_discounts');
         Schema::dropIfExists('pos_order_item_addons');
         Schema::dropIfExists('pos_order_items');
+        Schema::dropIfExists('pos_kitchen_tickets');
+        Schema::dropIfExists('pos_qr_session_scans');
+        Schema::dropIfExists('pos_table_session_events');
         Schema::dropIfExists('pos_qr_order_rounds');
         Schema::dropIfExists('pos_orders');
+        Schema::dropIfExists('pos_table_sessions');
         Schema::dropIfExists('pos_qr_sessions');
         Schema::dropIfExists('pos_customers');
         Schema::dropIfExists('pos_loyalty_rules');

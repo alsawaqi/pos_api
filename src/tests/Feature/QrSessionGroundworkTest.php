@@ -65,10 +65,11 @@ class QrSessionGroundworkTest extends TestCase
 
     public function test_sqlite_mirror_has_the_qr_columns_and_named_indexes(): void
     {
-        $this->assertCount(17, Schema::getColumnListing('pos_qr_sessions'));
+        $this->assertCount(22, Schema::getColumnListing('pos_qr_sessions'));
         foreach ([
             'temp_reference',
             'qr_session_id',
+            'table_session_id',
             'charge_device_id',
             'charge_amount_baisas',
             'charge_roundup_amount_baisas',
@@ -90,6 +91,10 @@ class QrSessionGroundworkTest extends TestCase
         $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_live_unique']->unique);
         $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_live_unique']->partial);
         $this->assertTrue($orderIndexes->has('pos_orders_qr_session_idx'));
+        $this->assertSame(0, (int) $orderIndexes['pos_orders_qr_session_idx']->unique);
+        $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_idx']->partial);
+        $this->assertTrue($orderIndexes->has('pos_orders_table_session_idx'));
+        $this->assertSame(0, (int) $orderIndexes['pos_orders_table_session_idx']->unique);
         $this->assertTrue($orderIndexes->has('pos_orders_status_charge_deadline_idx'));
         $this->assertTrue($orderIndexes->has('pos_orders_qr_session_request_unique'));
         $this->assertSame(1, (int) $orderIndexes['pos_orders_qr_session_request_unique']->unique);

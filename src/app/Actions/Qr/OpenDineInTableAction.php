@@ -101,6 +101,23 @@ final class OpenDineInTableAction
                     'updated_at' => $now,
                 ]);
 
+            // Owner-approved ordering exception: joined members must be
+            // refused before primary-only supersede can expire or inspect them.
+            $liveSeating = TableSession::query()
+                ->where('company_id', (int) $device->company_id)
+                ->where('branch_id', (int) $device->branch_id)
+                ->where('table_id', $table->getKey())
+                ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                ->lockForUpdate()
+                ->first();
+            if ($liveSeating?->merged_into_id !== null) {
+                throw new QrDineInException(
+                    'qr_table_joined',
+                    409,
+                    'This table belongs to another table\'s seating.',
+                );
+            }
+
             $this->supersede->handle($table, $device, $now);
 
             $hasLiveSession = QrSession::query()
@@ -120,9 +137,16 @@ final class OpenDineInTableAction
                 );
             }
 
-            // Unified occupancy: a table cannot open a QR tab while any
-            // unpaid order references it, either as the primary table or as
-            // an extra joined table. The board remains QR/session-rooted.
+            $seating = TableSession::query()
+                ->where('company_id', (int) $device->company_id)
+                ->where('branch_id', (int) $device->branch_id)
+                ->where('table_id', $table->getKey())
+                ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                ->lockForUpdate()
+                ->first();
+
+            // Only the seating's own open staff bill may gain its first QR
+            // credential. QR lineages, frozen bills and other unpaid bills refuse.
             $hasUnpaidOrder = Order::query()
                 ->where('company_id', (int) $device->company_id)
                 ->where('branch_id', (int) $device->branch_id)
@@ -140,6 +164,15 @@ final class OpenDineInTableAction
                                 ->select('order_id')
                                 ->where('table_id', $table->getKey()),
                         );
+                })
+                ->when($seating?->order_id !== null, static function (Builder $orders) use ($seating): void {
+                    $orders->where(static function (Builder $otherUnpaid) use ($seating): void {
+                        $otherUnpaid->where('id', '!=', (int) $seating->order_id)
+                            ->orWhere('status', '!=', Order::STATUS_OPEN)
+                            ->orWhereNotNull('qr_session_id')
+                            ->orWhereNotIn('source', ['main_pos', 'handheld'])
+                            ->orWhereNull('source');
+                    });
                 })
                 ->exists();
 
@@ -160,11 +193,23 @@ final class OpenDineInTableAction
                 'branch_id' => $device->branch_id,
                 'device_id' => $device->getKey(),
                 'table_id' => $table->getKey(),
+                'table_session_id' => $seating?->id,
                 'token' => bin2hex(random_bytes(32)),
                 'token_expires_at' => $horizon,
                 'status' => QrSession::STATUS_PENDING,
                 'expires_at' => $horizon,
             ]);
+
+            if ($seating !== null) {
+                $this->journal->handle($seating, 'attached', [
+                    'session_uuid' => (string) $session->uuid, 'station_attach' => true,
+                ], (int) $device->id, $now);
+
+                return [
+                    'session' => $session,
+                    'table_token' => $tableToken,
+                ];
+            }
 
             $seating = TableSession::query()->create([
                 'uuid' => (string) Str::uuid(),

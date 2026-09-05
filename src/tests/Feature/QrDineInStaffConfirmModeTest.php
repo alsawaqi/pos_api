@@ -189,6 +189,185 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $this->assertNull($discounts[1]->order_item_id);
     }
 
+    /** @return array<string, array{string|null}> */
+    public static function branchDirectModeFallbacks(): array
+    {
+        return [
+            'sibling override only' => [null],
+            'malformed branch JSON' => ['{not-json'],
+            'branch array' => [json_encode(['staff_confirm'], JSON_THROW_ON_ERROR)],
+            'unknown branch mode' => [json_encode('unknown-mode', JSON_THROW_ON_ERROR)],
+            'branch JSON null' => [json_encode(null, JSON_THROW_ON_ERROR)],
+        ];
+    }
+
+    #[DataProvider('branchDirectModeFallbacks')]
+    public function test_kitchen_direct_golden_holds_under_sibling_override_and_garbage_branch_row(
+        ?string $rawMode,
+    ): void {
+        $this->createSiblingBranch();
+        $this->setBranchRoundModeRaw(11, json_encode('staff_confirm', JSON_THROW_ON_ERROR));
+        if ($rawMode !== null) {
+            $this->setBranchRoundModeRaw(10, $rawMode);
+        }
+        $flow = $this->openAndBindFlow('DIRECT');
+        $response = $this->submitRound($flow, $this->roundPayload(
+            'baseline-direct-round',
+            '92000001',
+            'OM 1001',
+        ))->assertCreated();
+
+        $this->assertDirectResponseGolden($response, 'baseline-direct-round');
+        $round = QrOrderRound::query()->sole();
+        $order = Order::query()->sole();
+
+        $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $round->status);
+        $this->assertNull($round->confirm_payload);
+        $this->assertSame(
+            json_encode($this->expectedPricedLines(), JSON_THROW_ON_ERROR),
+            $round->getRawOriginal('priced_lines'),
+            'kitchen-direct priced_lines bytes drifted',
+        );
+        $this->assertSame(now()->toIso8601String(), $round->submitted_at?->toIso8601String());
+        $this->assertSame(now()->toIso8601String(), $round->resolved_at?->toIso8601String());
+        $this->assertNull($round->resolved_by_device_id);
+
+        $this->assertSame('5.750', $order->subtotal);
+        $this->assertSame('1.250', $order->discount_total);
+        $this->assertSame('0.000', $order->tax_total);
+        $this->assertSame('4.500', $order->grand_total);
+        $this->assertSame(1, OrderItem::query()->where('order_id', $order->id)->count());
+        $this->assertSame(2, OrderItemAddon::query()
+            ->whereIn('order_item_id', OrderItem::query()->where('order_id', $order->id)->pluck('id'))
+            ->count());
+        $this->assertSame(2, OrderDiscount::query()->where('order_id', $order->id)->count());
+
+        $item = OrderItem::query()->where('order_id', $order->id)->sole();
+        $this->assertSame(101, (int) $item->product_id);
+        $this->assertSame('Contract coffee', $item->product_name_snapshot);
+        $this->assertSame('1.000', $item->qty);
+        $this->assertSame('5.750', $item->unit_price_snapshot);
+        $this->assertSame('1.000', $item->line_discount);
+        $this->assertSame('5.750', $item->line_total);
+        $this->assertSame('No sugar', $item->notes);
+        $this->assertSame([[
+            'ingredient_id' => 301,
+            'qty' => 0.25,
+            'unit' => 'l',
+            'unit_cost' => 0.4,
+        ]], $item->recipe_snapshot_json);
+        $this->assertSame([['product_id' => 102, 'qty' => 1]], $item->component_snapshot_json);
+
+        $discounts = OrderDiscount::query()
+            ->where('order_id', $order->id)
+            ->orderBy('id')
+            ->get();
+        $this->assertSame([501, 502], $discounts->pluck('discount_id')->map(
+            static fn ($id): int => (int) $id,
+        )->all());
+        $this->assertSame(['1.000', '0.250'], $discounts->pluck('amount')->all());
+        $this->assertNotNull($discounts[0]->order_item_id);
+        $this->assertNull($discounts[1]->order_item_id);
+    }
+
+    /** @return array<string, array{string, int, string, string, bool}> */
+    public static function branchRoundModeOverrides(): array
+    {
+        return [
+            'branch confirms over direct company' => [
+                DineInRoundMode::KITCHEN_DIRECT, 10,
+                json_encode('staff_confirm', JSON_THROW_ON_ERROR),
+                QrOrderRound::STATUS_PENDING_CONFIRMATION, true,
+            ],
+            'branch direct over confirming company' => [
+                DineInRoundMode::STAFF_CONFIRM, 10,
+                json_encode('kitchen_direct', JSON_THROW_ON_ERROR),
+                QrOrderRound::STATUS_ACCEPTED, false,
+            ],
+            'sibling direct cannot bypass confirming company' => [
+                DineInRoundMode::STAFF_CONFIRM, 11,
+                json_encode('kitchen_direct', JSON_THROW_ON_ERROR),
+                QrOrderRound::STATUS_PENDING_CONFIRMATION, true,
+            ],
+            'malformed branch cannot bypass confirming company' => [
+                DineInRoundMode::STAFF_CONFIRM, 10,
+                '{not-json',
+                QrOrderRound::STATUS_PENDING_CONFIRMATION, true,
+            ],
+        ];
+    }
+
+    #[DataProvider('branchRoundModeOverrides')]
+    public function test_branch_override_decides_the_round_status(
+        string $companyMode,
+        int $branchId,
+        string $rawBranchMode,
+        string $expectedStatus,
+        bool $expectsConfirmation,
+    ): void {
+        $this->createSiblingBranch();
+        $this->setRoundMode($companyMode);
+        $this->setBranchRoundModeRaw($branchId, $rawBranchMode);
+        $flow = $this->openAndBindFlow('BRANCH-MODE');
+        $this->submitRound($flow, $this->roundPayload(
+            'branch-mode-round',
+            '92000401',
+            null,
+        ))->assertCreated()
+            ->assertJsonPath('data.round.status', $expectedStatus);
+
+        $round = QrOrderRound::query()->sole();
+        $order = Order::query()->sole();
+        $this->assertSame($expectedStatus, $round->status);
+        if ($expectsConfirmation) {
+            $this->assertNotNull($round->confirm_payload);
+            $this->assertNotEmpty($round->confirm_payload);
+            $this->assertNull($round->resolved_at);
+            $this->assertSame('0.000', $order->grand_total);
+        } else {
+            $this->assertNull($round->confirm_payload);
+            $this->assertSame(now()->toIso8601String(), $round->resolved_at?->toIso8601String());
+            $this->assertSame('4.500', $order->grand_total);
+        }
+    }
+
+    public function test_branch_mode_flip_preserves_pending_rounds_and_their_confirmation_or_rejection(): void
+    {
+        $this->setBranchRoundModeRaw(10, json_encode('staff_confirm', JSON_THROW_ON_ERROR));
+        $flow = $this->openAndBindFlow('MODE-FLIP');
+        $firstPayload = $this->roundPayload('before-flip-confirm', '92000501', null);
+        $this->submitRound($flow, $firstPayload)->assertCreated()
+            ->assertJsonPath('data.round.status', QrOrderRound::STATUS_PENDING_CONFIRMATION);
+        $this->submitRound($flow, $this->roundPayload('before-flip-reject', '92000501', null))
+            ->assertCreated()
+            ->assertJsonPath('data.round.status', QrOrderRound::STATUS_PENDING_CONFIRMATION);
+        $rounds = QrOrderRound::query()->orderBy('id')->get();
+        $this->assertCount(2, $rounds);
+        $before = $rounds->map(static fn (QrOrderRound $round): array => $round->getRawOriginal())->all();
+
+        $this->setBranchRoundModeRaw(10, json_encode('kitchen_direct', JSON_THROW_ON_ERROR));
+        foreach ($rounds as $index => $round) {
+            $this->assertSame($before[$index], $round->fresh()->getRawOriginal());
+            $this->assertSame(QrOrderRound::STATUS_PENDING_CONFIRMATION, $round->fresh()->status);
+        }
+        $this->submitRound($flow, $firstPayload)->assertCreated()
+            ->assertJsonPath('data.replayed', true)
+            ->assertJsonPath('data.round.status', QrOrderRound::STATUS_PENDING_CONFIRMATION);
+
+        $resolver = $this->device('fixed_pos');
+        $confirmed = $this->app->make(ConfirmDineInQrRoundAction::class)->handle($resolver, (int) $rounds[0]->id);
+        $rejected = $this->app->make(RejectDineInQrRoundAction::class)->handle($resolver, (int) $rounds[1]->id);
+        $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $confirmed['round']['status']);
+        $this->assertSame(QrOrderRound::STATUS_REJECTED, $rejected['round']['status']);
+        foreach ($rounds as $index => $round) {
+            $round->refresh();
+            $this->assertSame($before[$index]['priced_lines'], $round->getRawOriginal('priced_lines'));
+            $this->assertNull($round->confirm_payload);
+            $this->assertSame(now()->toIso8601String(), $round->resolved_at?->toIso8601String());
+        }
+        $this->assertSame('4.500', Order::query()->sole()->grand_total);
+    }
+
     public function test_staff_confirm_submit_is_private_pending_zero_total_and_idempotent(): void
     {
         $this->setRoundMode(DineInRoundMode::STAFF_CONFIRM);
@@ -821,6 +1000,28 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             ['company_id' => 100, 'key' => 'dine_in_round_mode'],
             ['value' => $raw, 'created_at' => now(), 'updated_at' => now()],
         );
+    }
+
+    private function setBranchRoundModeRaw(int $branchId, string $raw): void
+    {
+        DB::table('pos_branch_settings')->updateOrInsert(
+            ['company_id' => 100, 'branch_id' => $branchId, 'key' => 'dine_in_round_mode'],
+            ['value' => $raw, 'created_at' => now(), 'updated_at' => now()],
+        );
+    }
+
+    private function createSiblingBranch(): void
+    {
+        Branch::query()->create([
+            'id' => 11,
+            'uuid' => (string) Str::uuid(),
+            'company_id' => 100,
+            'name' => 'S5 sibling branch',
+            'latitude' => null,
+            'longitude' => null,
+            'geofence_radius_m' => 500,
+            'status' => 'active',
+        ]);
     }
 
     private function device(string $type): Device

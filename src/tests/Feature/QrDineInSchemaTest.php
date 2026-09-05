@@ -62,6 +62,28 @@ class QrDineInSchemaTest extends TestCase
         $this->assertForeignKey($roundForeignKeys, 'qr_session_id', 'pos_qr_sessions', 'CASCADE');
         $this->assertForeignKey($roundForeignKeys, 'order_id', 'pos_orders', 'SET NULL');
         $this->assertForeignKey($roundForeignKeys, 'resolved_by_device_id', 'pos_devices', 'SET NULL');
+
+        $this->assertSame([
+            'id',
+            'company_id',
+            'branch_id',
+            'key',
+            'value',
+            'created_at',
+            'updated_at',
+        ], Schema::getColumnListing('pos_branch_settings'));
+        $branchSettingIndexes = collect(DB::select("PRAGMA index_list('pos_branch_settings')"))->keyBy('name');
+        $this->assertTrue($branchSettingIndexes->has('pos_branch_settings_branch_key_unique'));
+        $this->assertSame(1, (int) $branchSettingIndexes['pos_branch_settings_branch_key_unique']->unique);
+        $this->assertTrue($branchSettingIndexes->has('pos_branch_settings_company_key_idx'));
+        $this->assertSame(0, (int) $branchSettingIndexes['pos_branch_settings_company_key_idx']->unique);
+        $this->assertSame(
+            ['branch_id', 'key'],
+            collect(DB::select("PRAGMA index_info('pos_branch_settings_branch_key_unique')"))->pluck('name')->all(),
+        );
+        $branchSettingForeignKeys = collect(DB::select("PRAGMA foreign_key_list('pos_branch_settings')"))->keyBy('from');
+        $this->assertForeignKey($branchSettingForeignKeys, 'branch_id', 'pos_branches', 'CASCADE');
+        $this->assertFalse($branchSettingForeignKeys->has('company_id'));
     }
 
     public function test_live_table_partial_unique_applies_only_to_live_dine_in_sessions(): void

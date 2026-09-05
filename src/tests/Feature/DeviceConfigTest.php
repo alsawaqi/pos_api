@@ -1048,6 +1048,84 @@ class DeviceConfigTest extends TestCase
         }
     }
 
+    public function test_dine_in_round_mode_hint_is_the_effective_branch_value(): void
+    {
+        $this->travelTo(now()->setDate(2026, 9, 5)->setTime(12, 0));
+        $this->old = now()->subDay()->toDateTimeString();
+        $this->seedCatalogue();
+        $this->pairedDevice();
+
+        $read = function (?string $since = null): string {
+            $url = '/api/v1/device/config';
+            if ($since !== null) {
+                $url .= '/delta?since='.urlencode($since);
+            }
+
+            $json = $this->withToken('mdev_cfg')->getJson($url)->assertOk()->json();
+            $this->assertSame([
+                'order_cancel_positions',
+                'manager_approval_positions',
+                'reports_positions',
+                'kitchen_positions',
+                'order_numbering',
+                'dine_in_round_mode',
+            ], array_keys($json['data']['settings']));
+            $this->assertArrayNotHasKey(
+                'dine_in_round_mode',
+                $json['data']['branch']['settings'] ?? [],
+            );
+            if ($since !== null) {
+                $this->assertNull($json['data']['branch'], 'the old branch row is delta-filtered, its effective policy is not');
+            }
+
+            return (string) $json['data']['settings']['dine_in_round_mode'];
+        };
+        $setCompany = function (string $mode): void {
+            DB::table('pos_company_settings')->updateOrInsert(
+                ['company_id' => 100, 'key' => 'dine_in_round_mode'],
+                ['value' => json_encode($mode, JSON_THROW_ON_ERROR), 'created_at' => now(), 'updated_at' => now()],
+            );
+        };
+        $setBranchRaw = function (int $branchId, string $raw): void {
+            DB::table('pos_branch_settings')->updateOrInsert(
+                ['company_id' => 100, 'branch_id' => $branchId, 'key' => 'dine_in_round_mode'],
+                ['value' => $raw, 'created_at' => $this->old, 'updated_at' => $this->old],
+            );
+        };
+
+        $this->assertSame('kitchen_direct', $read(), 'no company or branch policy');
+        $setCompany('staff_confirm');
+        $this->assertSame('staff_confirm', $read(), 'company policy inherited');
+        $setBranchRaw(10, json_encode('kitchen_direct', JSON_THROW_ON_ERROR));
+        $this->assertSame('kitchen_direct', $read(), 'branch override wins');
+
+        DB::table('pos_branch_settings')->where('branch_id', 10)->delete();
+        $setCompany('kitchen_direct');
+        $setBranchRaw(11, json_encode('staff_confirm', JSON_THROW_ON_ERROR));
+        $this->assertSame('kitchen_direct', $read(), 'sibling override is isolated');
+
+        $setCompany('staff_confirm');
+        foreach ([
+            '{not-json',
+            json_encode(['staff_confirm'], JSON_THROW_ON_ERROR),
+            json_encode('unknown-mode', JSON_THROW_ON_ERROR),
+            json_encode(null, JSON_THROW_ON_ERROR),
+        ] as $garbage) {
+            $setBranchRaw(10, $garbage);
+            $this->assertSame('staff_confirm', $read(), 'garbage branch policy falls back to the company, not direct');
+        }
+
+        $setBranchRaw(10, json_encode('kitchen_direct', JSON_THROW_ON_ERROR));
+        $since = now()->toIso8601String();
+        $this->assertSame('2026-09-04 12:00:00', $this->old);
+        $this->assertSame('2026-09-05T12:00:00+00:00', $since);
+        $this->assertSame(
+            $this->old,
+            DB::table('pos_branch_settings')->where('branch_id', 10)->value('updated_at'),
+        );
+        $this->assertSame('kitchen_direct', $read($since), 'an old branch policy is emitted even when since is now');
+    }
+
     public function test_audience_measurement_meta_defaults_off_and_follows_company_consent(): void
     {
         $this->pairedDevice();

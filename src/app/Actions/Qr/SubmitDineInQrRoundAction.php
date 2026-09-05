@@ -201,7 +201,7 @@ final class SubmitDineInQrRoundAction
                 );
             }
 
-            $staffConfirm = $this->roundMode->forCompany((int) $session->company_id)
+            $staffConfirm = $this->roundMode->forBranch((int) $session->company_id, (int) $session->branch_id)
                 === DineInRoundMode::STAFF_CONFIRM;
             $confirmPayload = $staffConfirm
                 ? $this->append->buildPayload($session, $loaded, $price, $now)

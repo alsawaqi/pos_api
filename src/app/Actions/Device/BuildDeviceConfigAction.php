@@ -9,10 +9,10 @@ use App\Models\AddOn;
 use App\Models\AddOnGroup;
 use App\Models\Branch;
 use App\Models\BranchStock;
+use App\Models\CompReason;
 use App\Models\Customer;
 use App\Models\CustomerVehiclePlate;
 use App\Models\Device;
-use App\Models\CompReason;
 use App\Models\Discount;
 use App\Models\ExpenseCategory;
 use App\Models\Floor;
@@ -32,7 +32,9 @@ use App\Models\Tax;
 use App\Models\VoidReason;
 use App\Support\OrderNumbering;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -392,9 +394,9 @@ class BuildDeviceConfigAction
                 // POST /device/orders/next-number at payment time and uses
                 // prefix/pad to format its OFFLINE local-counter fallback.
                 'order_numbering' => OrderNumbering::forCompany($companyId),
-                // QR-002 S5 — server reads this policy again on every round;
-                // the device copy is an additive UI hint, never money authority.
-                'dine_in_round_mode' => $this->dineInRoundMode->forCompany($companyId),
+                // QR-003 T0 — effective value for this device's branch; the
+                // server reads it again on every round, never trusting this hint.
+                'dine_in_round_mode' => $this->dineInRoundMode->forBranch($companyId, $branchId),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
@@ -578,8 +580,8 @@ class BuildDeviceConfigAction
      * untouched (full). The SoftDeletes default scope already excludes
      * trashed rows from this "changed" set — they surface in deletedMap().
      *
-     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
-     * @return Builder<\Illuminate\Database\Eloquent\Model>
+     * @param  Builder<Model>  $query
+     * @return Builder<Model>
      */
     private function changed(Builder $query, ?Carbon $since): Builder
     {
@@ -675,7 +677,7 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @param  Builder<\Illuminate\Database\Eloquent\Model>  $query
+     * @param  Builder<Model>  $query
      * @return array<int>
      */
     private function trashedIds(Builder $query, Carbon $since): array
@@ -774,7 +776,7 @@ class BuildDeviceConfigAction
      * @return array<string, mixed>
      */
     /**
-     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $groupRows
+     * @param  Collection<int, \stdClass>|null  $groupRows
      */
     private function mapCategory(ProductCategory $c, $groupRows = null): array
     {
@@ -874,10 +876,10 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $recipeRows
-     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $groupRows
-     * @param  \Illuminate\Support\Collection<int|string, mixed>  $minThresholdByIngredient
-     * @param  \Illuminate\Support\Collection<int|string, mixed>  $branchBalanceByIngredient
+     * @param  Collection<int, \stdClass>|null  $recipeRows
+     * @param  Collection<int, \stdClass>|null  $groupRows
+     * @param  Collection<int|string, mixed>  $minThresholdByIngredient
+     * @param  Collection<int|string, mixed>  $branchBalanceByIngredient
      * @return array<string, mixed>
      */
     private function mapProduct(Product $p, $recipeRows, $groupRows, $branchProduct = null, $deliveryPriceRows = null, $minThresholdByIngredient = null, $branchBalanceByIngredient = null): array
@@ -967,9 +969,9 @@ class BuildDeviceConfigAction
      *                X"; mirrors the merchant dashboard low-stock count).
      *   untracked  → never.
      *
-     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $recipeRows
-     * @param  \Illuminate\Support\Collection<int|string, mixed>|null  $minThresholdByIngredient
-     * @param  \Illuminate\Support\Collection<int|string, mixed>|null  $branchBalanceByIngredient
+     * @param  Collection<int, \stdClass>|null  $recipeRows
+     * @param  Collection<int|string, mixed>|null  $minThresholdByIngredient
+     * @param  Collection<int|string, mixed>|null  $branchBalanceByIngredient
      */
     private function isLowStock(Product $p, $recipeRows, $branchProduct, $minThresholdByIngredient, $branchBalanceByIngredient): bool
     {
@@ -1016,7 +1018,7 @@ class BuildDeviceConfigAction
 
     /**
      * @param  \Illuminate\Database\Eloquent\Collection<int, AddOn>|null  $addons
-     * @param  \Illuminate\Support\Collection<int|string, mixed>|null  $consumptionByAddon
+     * @param  Collection<int|string, mixed>|null  $consumptionByAddon
      * @return array<string, mixed>
      */
     private function mapAddOnGroup(AddOnGroup $g, $addons, $consumptionByAddon = null): array
@@ -1041,7 +1043,7 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, mixed>|null  $consumptionLines
+     * @param  Collection<int, mixed>|null  $consumptionLines
      * @return array<string, mixed>
      */
     private function mapAddOn(AddOn $a, $consumptionLines = null): array
@@ -1114,7 +1116,7 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, \stdClass>|null  $targetRows
+     * @param  Collection<int, \stdClass>|null  $targetRows
      * @return array<string, mixed>
      */
     private function mapDiscount(Discount $d, $targetRows): array
@@ -1228,7 +1230,7 @@ class BuildDeviceConfigAction
      * staff" from it (cross-till reads heal because a new receipt
      * touch()es the message and the delta resurfaces it).
      *
-     * @param  \Illuminate\Support\Collection<int, StaffMessageRead>|null  $reads
+     * @param  Collection<int, StaffMessageRead>|null  $reads
      * @return array<string, mixed>
      */
     private function mapStaffMessage(StaffMessage $m, $reads = null): array
@@ -1266,8 +1268,8 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, LoyaltyAccount>|null  $accounts
-     * @param  \Illuminate\Support\Collection<int, CustomerVehiclePlate>|null  $plates
+     * @param  Collection<int, LoyaltyAccount>|null  $accounts
+     * @param  Collection<int, CustomerVehiclePlate>|null  $plates
      * @return array<string, mixed>
      */
     private function mapCustomer(Customer $c, $accounts = null, $plates = null): array

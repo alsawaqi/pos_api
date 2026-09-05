@@ -132,6 +132,10 @@ final class QrDineInLifetimeInvariantTest extends TestCase
         $this->assertSame('billing', $seating->fresh()->status);
         $this->assertSame(now()->toIso8601String(), $seating->fresh()->billing_at->toIso8601String());
         $this->assertSame($expiresAt, $seating->fresh()->getRawOriginal('expires_at'));
+        $this->assertSame([
+            'opened', 'round_appended', 'customer_order_arrived', 'billing', 'customer_order_arrived',
+            'reopened', 'billing', 'customer_order_arrived',
+        ], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
     }
 
     public function test_deleted_station_bill_less_seating_is_superseded_before_its_horizon(): void
@@ -158,6 +162,11 @@ final class QrDineInLifetimeInvariantTest extends TestCase
         $this->assertSame(2, DB::table('pos_table_sessions')->where('table_id', $flow['table']->id)->count());
         $this->assertSame(1, DB::table('pos_table_sessions')->where('table_id', $flow['table']->id)
             ->whereIn('status', ['open', 'billing', 'closing'])->count());
+        $this->assertSame(['opened', 'expired', 'opened'], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
+        $expiredEvent = DB::table('pos_table_session_events')->where('event_type', 'expired')->sole();
+        $this->assertSame((int) $seating->id, (int) $expiredEvent->table_session_id);
+        $this->assertSame((int) $replacement->id, (int) $expiredEvent->device_id);
+        $this->assertSame('abandoned', json_decode($expiredEvent->payload, true, flags: JSON_THROW_ON_ERROR)['close_reason']);
     }
 
     public function test_prune_expires_only_bill_less_or_terminal_seatings_and_keeps_billing_history(): void
@@ -206,7 +215,11 @@ final class QrDineInLifetimeInvariantTest extends TestCase
             ->expectsOutput('expired=0 deleted=0 seatings_expired=0')->assertSuccessful();
         $this->assertSame($expiredBefore, $terminalSeating->fresh()->getRawOriginal());
         $this->assertDatabaseCount('pos_table_sessions', 3);
-        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 13);
+        $this->assertSame([
+            'opened', 'opened', 'round_appended', 'customer_order_arrived', 'billing', 'customer_order_arrived',
+            'opened', 'round_appended', 'customer_order_arrived', 'billing', 'customer_order_arrived', 'expired', 'expired',
+        ], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
     }
 
     #[DataProvider('randomSeeds')]

@@ -1483,7 +1483,8 @@ final class QrChargeProtocolTest extends TestCase
         $this->postAs($till, '/api/v1/device/qr/clear-table', ['table_id' => $table->id])
             ->assertOk()->assertJsonPath('data.status', 'cleared');
         $this->assertSame($closed, $seating->fresh()->getRawOriginal());
-        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 3);
+        $this->assertSame(['opened', 'sent_to_counter', 'closed'], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
     }
 
     public function test_fallback_refuses_a_live_claim_without_mutating_it(): void

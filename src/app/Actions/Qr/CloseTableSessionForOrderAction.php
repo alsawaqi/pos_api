@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Order;
 use App\Models\TableSession;
 use Carbon\CarbonInterface;
@@ -12,10 +13,12 @@ use RuntimeException;
 /** Order-rooted closure also works after the opening station was hard-deleted. */
 final class CloseTableSessionForOrderAction
 {
-    public function handle(Order $lockedOrder, CarbonInterface $at, string $reason, ?int $deviceId): bool
+    public function __construct(private readonly AppendTableSessionEventAction $journal) {}
+
+    public function handle(Order $lockedOrder, CarbonInterface $at, string $reason, ?int $deviceId): int
     {
         if ($lockedOrder->table_session_id === null) {
-            return false;
+            return 0;
         }
 
         $seating = TableSession::query()
@@ -30,18 +33,42 @@ final class CloseTableSessionForOrderAction
             throw new RuntimeException('The order seating is missing or does not match its parent.');
         }
 
-        return TableSession::query()
-            ->whereKey($seating->getKey())
+        $joined = TableSession::query()
             ->where('company_id', (int) $lockedOrder->company_id)
             ->where('branch_id', (int) $lockedOrder->branch_id)
-            ->where('table_id', (int) $lockedOrder->table_id)
+            ->where('order_id', (int) $lockedOrder->id)
+            ->where('merged_into_id', (int) $seating->id)
+            ->whereKeyNot($seating->id)
             ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
-            ->update([
-                'status' => TableSession::STATUS_CLOSED,
-                'closed_at' => $at,
-                'closed_by_device_id' => $deviceId,
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        $closed = [];
+        foreach (collect([$seating])->concat($joined) as $row) {
+            $changed = TableSession::query()
+                ->whereKey($row->id)
+                ->where('company_id', (int) $lockedOrder->company_id)
+                ->where('branch_id', (int) $lockedOrder->branch_id)
+                ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                ->update([
+                    'status' => TableSession::STATUS_CLOSED,
+                    'closed_at' => $at,
+                    'closed_by_device_id' => $deviceId,
+                    'close_reason' => $reason,
+                    'updated_at' => $at,
+                ]);
+            if ($changed > 0) {
+                $closed[] = $row;
+            }
+        }
+        foreach ($closed as $row) {
+            $this->journal->handle($row, 'closed', [
+                'order_uuid' => (string) $lockedOrder->uuid,
                 'close_reason' => $reason,
-                'updated_at' => $at,
-            ]) > 0;
+            ], $deviceId, $at);
+        }
+
+        return count($closed);
     }
 }

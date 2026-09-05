@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
@@ -20,6 +21,7 @@ final class OpenDineInTableAction
     public function __construct(
         private readonly AllocateQrTempReferenceAction $tempReferences,
         private readonly SupersedeAbandonedTableSessionAction $supersede,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /**
@@ -187,6 +189,7 @@ final class OpenDineInTableAction
                     (int) $device->branch_id,
                 )]);
             $session->update(['table_session_id' => $seating->id]);
+            $this->journal->handle($seating, 'opened', ['session_uuid' => (string) $session->uuid], (int) $device->id, $now);
 
             return [
                 'session' => $session,

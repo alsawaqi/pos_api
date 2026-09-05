@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -18,6 +19,7 @@ final class ConfirmDineInQrRoundAction
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly PresentDeviceQrRoundAction $present,
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /** @return array<string, mixed> */
@@ -59,6 +61,10 @@ final class ConfirmDineInQrRoundAction
                 // Allocate last so the PostgreSQL advisory xact lock is held
                 // for the shortest possible interval before commit.
                 $round->update(['accepted_seq' => $this->acceptedSequence->next()]);
+                $this->journal->forOrder($order, 'round_resolved', [
+                    'round_id' => (int) $round->id,
+                    'outcome' => QrOrderRound::STATUS_ACCEPTED,
+                ], (int) $device->id);
 
                 return $this->present->handle($order->fresh(), $session, $round->fresh());
             },

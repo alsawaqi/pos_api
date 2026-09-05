@@ -204,7 +204,8 @@ final class QrDineInConcurrencyTest extends TestCase
             $this->assertSame($seating->temp_reference, $order->temp_reference);
             $this->assertSame(2, (int) DB::table('pos_temp_reference_sequences')->sole()->next_number);
             $this->assertDatabaseCount('pos_order_sequences', 0);
-            $this->assertDatabaseCount('pos_table_session_events', 0);
+            $this->assertDatabaseCount('pos_table_session_events', 3);
+            $this->assertSame(['opened', 'round_appended', 'customer_order_arrived'], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
         } finally {
             $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
         }

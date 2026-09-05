@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
@@ -14,7 +15,10 @@ use Illuminate\Support\Facades\DB;
 /** Freezes a running tab and selects its attended or station payment path. */
 final class FinishDineInQrOrderAction
 {
-    public function __construct(private readonly EnsureTableSessionForQrSessionAction $seatings) {}
+    public function __construct(
+        private readonly EnsureTableSessionForQrSessionAction $seatings,
+        private readonly AppendTableSessionEventAction $journal,
+    ) {}
 
     /** @return array<string, mixed> */
     public function handle(int $sessionId, string $paymentChoice): array
@@ -110,6 +114,8 @@ final class FinishDineInQrOrderAction
                 ->where('table_id', (int) $session->table_id)
                 ->where('status', TableSession::STATUS_OPEN)
                 ->update(['status' => TableSession::STATUS_BILLING, 'billing_at' => $now]);
+            $this->journal->handle($seating, 'billing', ['order_uuid' => (string) $order->uuid], null, $now);
+            $this->journal->handle($seating, 'customer_order_arrived', ['order_uuid' => (string) $order->uuid], null, $now);
 
             return $this->present($order->fresh());
         });

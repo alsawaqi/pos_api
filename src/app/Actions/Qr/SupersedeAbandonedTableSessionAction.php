@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -15,6 +16,8 @@ use RuntimeException;
 /** Open-only D2: supersede a bill-less, credential-less seating at any age. */
 final class SupersedeAbandonedTableSessionAction
 {
+    public function __construct(private readonly AppendTableSessionEventAction $journal) {}
+
     public function handle(Table $lockedTable, Device $openingDevice, CarbonInterface $at): ?TableSession
     {
         $companyId = (int) $openingDevice->company_id;
@@ -83,6 +86,7 @@ final class SupersedeAbandonedTableSessionAction
             ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
             ->update($attributes);
         $seating->forceFill($attributes)->syncOriginal();
+        $this->journal->handle($seating, 'expired', ['close_reason' => TableSession::CLOSE_ABANDONED], (int) $openingDevice->id, $at);
 
         return $seating;
     }

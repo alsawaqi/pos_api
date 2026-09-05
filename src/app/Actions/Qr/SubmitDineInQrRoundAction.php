@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
@@ -30,6 +31,7 @@ final class SubmitDineInQrRoundAction
         private readonly RefreshQrOrderTotalsAction $refreshTotals,
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
         private readonly EnsureTableSessionForQrSessionAction $seatings,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /**
@@ -304,6 +306,10 @@ final class SubmitDineInQrRoundAction
                     'accepted_seq' => $this->acceptedSequence->next(),
                 ]);
             }
+
+            $eventPayload = ['round_id' => (int) $round->id, 'order_uuid' => (string) $order->uuid];
+            $this->journal->handle($seating, $staffConfirm ? 'round_pending' : 'round_appended', $eventPayload, null, $now);
+            $this->journal->handle($seating, 'customer_order_arrived', $eventPayload, null, $now);
 
             return [
                 'round' => $round->fresh(),

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -15,6 +16,7 @@ final class FallbackQrOrderToCounterAction
 {
     public function __construct(
         private readonly QrChargeRecoveryGuard $recoveryGuard,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /**
@@ -123,6 +125,7 @@ final class FallbackQrOrderToCounterAction
             }
 
             $order->update($updates);
+            $this->journal->forOrder($order, 'sent_to_counter', [], (int) $device->id);
 
             return $this->present($order->refresh());
         });

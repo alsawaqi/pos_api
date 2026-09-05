@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -15,7 +16,10 @@ use RuntimeException;
 /** Attach under the caller's order/session locks; the counter is locked last. */
 final class EnsureTableSessionForQrSessionAction
 {
-    public function __construct(private readonly AllocateQrTempReferenceAction $tempReferences) {}
+    public function __construct(
+        private readonly AllocateQrTempReferenceAction $tempReferences,
+        private readonly AppendTableSessionEventAction $journal,
+    ) {}
 
     public function handle(QrSession $lockedSession, ?Order $lockedOrder, ?Device $device): TableSession
     {
@@ -108,6 +112,11 @@ final class EnsureTableSessionForQrSessionAction
             ->whereNull('table_session_id')
             ->toBase()
             ->update(['table_session_id' => $seating->getKey()]);
+
+        $this->journal->handle($seating, 'opened', [
+            'session_uuid' => (string) $lockedSession->uuid,
+            'lazy_attachment' => true,
+        ], $device?->getKey());
 
         return $seating;
     }

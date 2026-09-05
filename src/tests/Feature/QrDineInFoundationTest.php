@@ -157,7 +157,10 @@ final class QrDineInFoundationTest extends TestCase
         foreach (['order_id', 'billing_at', 'closed_at', 'closed_by_device_id', 'close_reason'] as $column) {
             $this->assertNull($seating->{$column}, $column);
         }
-        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 1);
+        $this->assertDatabaseHas('pos_table_session_events', [
+            'table_session_id' => $seating->id, 'event_type' => 'opened', 'device_id' => $station->id,
+        ]);
         $seatingBefore = $seating->getRawOriginal();
 
         $this->postAs($station, self::OPEN_TABLE_URL, ['table_id' => $valid->id])

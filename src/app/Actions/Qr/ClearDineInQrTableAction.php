@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -15,7 +16,10 @@ use Illuminate\Support\Facades\DB;
 /** Frees a table only after every QR dine-in order is safely terminal. */
 final class ClearDineInQrTableAction
 {
-    public function __construct(private readonly QrChargeRecoveryGuard $recovery) {}
+    public function __construct(
+        private readonly QrChargeRecoveryGuard $recovery,
+        private readonly AppendTableSessionEventAction $journal,
+    ) {}
 
     /** @return array{table_id: int, status: string} */
     public function handle(Device $device, int $tableId): array
@@ -132,17 +136,28 @@ final class ClearDineInQrTableAction
                 ]);
             }
 
-            TableSession::query()
+            $seatings = TableSession::query()
                 ->where('table_id', $tableId)
                 ->where('company_id', (int) $device->company_id)
                 ->where('branch_id', (int) $device->branch_id)
                 ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
-                ->update([
-                    'status' => TableSession::STATUS_CLOSED,
-                    'closed_at' => $now,
-                    'closed_by_device_id' => $device->id,
-                    'close_reason' => TableSession::CLOSE_CLEARED,
-                ]);
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            foreach ($seatings as $seating) {
+                TableSession::query()
+                    ->whereKey($seating->id)
+                    ->where('company_id', (int) $device->company_id)
+                    ->where('branch_id', (int) $device->branch_id)
+                    ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                    ->update([
+                        'status' => TableSession::STATUS_CLOSED,
+                        'closed_at' => $now,
+                        'closed_by_device_id' => $device->id,
+                        'close_reason' => TableSession::CLOSE_CLEARED,
+                    ]);
+                $this->journal->handle($seating, 'closed', ['close_reason' => TableSession::CLOSE_CLEARED], (int) $device->id, $now);
+            }
 
             return ['table_id' => (int) $table->id, 'status' => 'cleared'];
         });

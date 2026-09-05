@@ -86,7 +86,8 @@ final class QrTableSessionLifecycleTest extends TestCase
         $this->assertDatabaseCount('pos_temp_reference_sequences', 0);
         $this->assertDatabaseCount('pos_order_sequences', 0);
         $this->assertDatabaseCount('pos_table_sessions', 6);
-        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 6);
+        $this->assertSame(array_fill(0, 6, 'opened'), DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
     }
 
     public function test_lazy_attachment_without_an_order_allocates_once_and_preserves_credential_lifetime(): void
@@ -143,7 +144,8 @@ final class QrTableSessionLifecycleTest extends TestCase
             // Release only this deliberately corrupt fixture's live-table key.
             $seating->update(['status' => 'expired', 'closed_at' => now(), 'close_reason' => 'expired']);
         }
-        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 3);
+        $this->assertSame(['opened', 'opened', 'opened'], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
     }
 
     public function test_quick_session_cannot_be_lazily_given_a_seating(): void
@@ -195,7 +197,8 @@ final class QrTableSessionLifecycleTest extends TestCase
             ->assertOk();
         $this->assertSame(0, app(ExpireAbandonedTableSessionsAction::class)->handle(now()));
         $this->assertSame($before, $seating->fresh()->getRawOriginal());
-        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $this->assertDatabaseCount('pos_table_session_events', 2);
+        $this->assertSame(['opened', 'closed'], DB::table('pos_table_session_events')->orderBy('id')->pluck('event_type')->all());
     }
 
     public function test_terminal_close_is_one_way_and_credential_less_orders_keep_their_seating_link(): void
@@ -209,10 +212,10 @@ final class QrTableSessionLifecycleTest extends TestCase
             $session->delete();
             $this->assertNull($order->fresh()->qr_session_id);
             $billingAt = $seating->getRawOriginal('billing_at');
-            $closed = DB::transaction(fn (): bool => app(CloseTableSessionForOrderAction::class)->handle(
+            $closed = DB::transaction(fn (): int => app(CloseTableSessionForOrderAction::class)->handle(
                 Order::query()->lockForUpdate()->findOrFail($order->id), now(), $reason, (int) $till->id,
             ));
-            $this->assertTrue($closed);
+            $this->assertSame(1, $closed);
             $seating->refresh();
             $this->assertSame('closed', $seating->status);
             $this->assertSame($reason, $seating->close_reason);
@@ -220,10 +223,10 @@ final class QrTableSessionLifecycleTest extends TestCase
             $this->assertLifecycleInvariants($seating);
             $before = $seating->getRawOriginal();
             $this->travel(1)->minutes();
-            $closedAgain = DB::transaction(fn (): bool => app(CloseTableSessionForOrderAction::class)->handle(
+            $closedAgain = DB::transaction(fn (): int => app(CloseTableSessionForOrderAction::class)->handle(
                 Order::query()->lockForUpdate()->findOrFail($order->id), now(), 'cleared', null,
             ));
-            $this->assertFalse($closedAgain);
+            $this->assertSame(0, $closedAgain);
             $this->assertSame($before, $seating->fresh()->getRawOriginal());
         }
     }

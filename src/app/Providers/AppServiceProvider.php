@@ -2,12 +2,16 @@
 
 namespace App\Providers;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Support\Qr\ForwardedCustomerIp;
 use App\Support\QrApiResponse;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionCommitting;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
@@ -20,7 +24,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(AppendTableSessionEventAction::class);
     }
 
     /**
@@ -28,6 +32,18 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        $this->app['events']->listen(TransactionCommitting::class, function (TransactionCommitting $event): void {
+            $this->app->make(AppendTableSessionEventAction::class)->committing($event->connection);
+        });
+        $this->app['events']->listen(TransactionCommitted::class, function (TransactionCommitted $event): void {
+            $logicalBoundary = $this->app->bound('db.transactions')
+                && $this->app->make('db.transactions')->afterCommitCallbacksShouldBeExecuted($event->connection->transactionLevel());
+            $this->app->make(AppendTableSessionEventAction::class)->committed($event->connection, $logicalBoundary);
+        });
+        $this->app['events']->listen(TransactionRolledBack::class, function (TransactionRolledBack $event): void {
+            $this->app->make(AppendTableSessionEventAction::class)->rolledBack($event->connection);
+        });
+
         // Phase 8 — the device guard. A paired terminal authenticates by
         // presenting its long-lived device_token as a Bearer credential;
         // we resolve it straight off the shared pos_devices table. No

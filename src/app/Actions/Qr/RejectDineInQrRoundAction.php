@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -15,6 +16,7 @@ final class RejectDineInQrRoundAction
     public function __construct(
         private readonly WithLockedDineInQrRoundAction $locked,
         private readonly PresentDeviceQrRoundAction $present,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /** @return array<string, mixed> */
@@ -38,6 +40,10 @@ final class RejectDineInQrRoundAction
                     'resolved_by_device_id' => $device->getKey(),
                     'confirm_payload' => null,
                 ]);
+                $this->journal->forOrder($order, 'round_resolved', [
+                    'round_id' => (int) $round->id,
+                    'outcome' => QrOrderRound::STATUS_REJECTED,
+                ], (int) $device->id);
 
                 return $this->present->handle($order, $session, $round->fresh());
             },

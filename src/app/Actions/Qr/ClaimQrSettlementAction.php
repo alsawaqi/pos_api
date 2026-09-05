@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Device\GeofenceGuard;
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -39,6 +40,7 @@ final class ClaimQrSettlementAction
         private readonly GeofenceGuard $geofence,
         private readonly QrChargeRecoveryGuard $recovery,
         private readonly EnsureTableSessionForQrSessionAction $seatings,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /**
@@ -213,6 +215,7 @@ final class ClaimQrSettlementAction
                     ->where('table_id', (int) $order->table_id)
                     ->where('status', TableSession::STATUS_OPEN)
                     ->update(['status' => TableSession::STATUS_BILLING, 'billing_at' => $now]);
+                $this->journal->handle($seating, 'billing', ['order_uuid' => (string) $order->uuid], (int) $device->id, $now);
             }
 
             return $this->present($order->refresh(), false);

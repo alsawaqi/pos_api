@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -26,6 +27,7 @@ final class ReopenDineInQrPaymentAction
     public function __construct(
         private readonly QrChargeRecoveryGuard $recovery,
         private readonly EnsureTableSessionForQrSessionAction $seatings,
+        private readonly AppendTableSessionEventAction $journal,
     ) {}
 
     /** @return array{order_uuid: string, status: string, session_status: string} */
@@ -128,6 +130,7 @@ final class ReopenDineInQrPaymentAction
                 ->where('table_id', (int) $order->table_id)
                 ->where('status', TableSession::STATUS_BILLING)
                 ->update(['status' => TableSession::STATUS_OPEN, 'billing_at' => null]);
+            $this->journal->handle($seating, 'reopened', ['order_uuid' => (string) $order->uuid], (int) $device->id);
 
             return [
                 'order_uuid' => (string) $order->uuid,

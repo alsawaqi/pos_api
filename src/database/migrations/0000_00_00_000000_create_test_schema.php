@@ -705,6 +705,7 @@ return new class extends Migration
         Schema::create('pos_qr_order_rounds', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('qr_session_id')
+                ->nullable()
                 ->constrained('pos_qr_sessions')
                 ->cascadeOnDelete();
             $table->foreignId('order_id')

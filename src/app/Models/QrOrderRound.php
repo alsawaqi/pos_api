@@ -54,6 +54,12 @@ final class QrOrderRound extends Model
         return $this->belongsTo(Order::class);
     }
 
+    /** @return BelongsTo<TableSession, $this> */
+    public function tableSession(): BelongsTo
+    {
+        return $this->belongsTo(TableSession::class, 'table_session_id');
+    }
+
     /** @return BelongsTo<Device, $this> */
     public function resolvedByDevice(): BelongsTo
     {

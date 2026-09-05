@@ -183,6 +183,14 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $this->assertSame(QrOrderRound::STATUS_REJECTED, $pending->fresh()->status);
         $this->assertSame((int) $holder->id, (int) $pending->fresh()->resolved_by_device_id);
         $this->assertNotNull($pending->fresh()->resolved_at);
+        $seating = $frozen->tableSession()->sole();
+        $this->assertSame('billing', $seating->status);
+        $this->assertSame(now()->toIso8601String(), $seating->billing_at->toIso8601String());
+        $this->assertSame((int) $seating->id, (int) $session->fresh()->table_session_id);
+        $this->assertSame((int) $seating->id, (int) $pending->fresh()->table_session_id);
+        $this->assertNull($seating->closed_at);
+        $this->assertNull($seating->close_reason);
+        $seatingBeforeReplay = $seating->getRawOriginal();
         $this->qrStatus($session, $secret)
             ->assertOk()
             ->assertJsonPath('data.dine_in.payment_state', 'awaiting_counter');
@@ -238,6 +246,7 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             ->assertConflict()
             ->assertJsonPath('errors.0.code', 'charge_already_claimed');
         $this->assertSame($frozen->getRawOriginal(), $order->fresh()->getRawOriginal());
+        $this->assertSame($seatingBeforeReplay, $seating->fresh()->getRawOriginal());
     }
 
     public function test_cancelled_attended_claim_reopens_and_accepts_another_frozen_round(): void
@@ -859,6 +868,12 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             ->assertJsonPath('data.status', Order::STATUS_AWAITING_PAYMENT);
         $openingStation->forceDelete();
 
+        $seating = $order->fresh()->tableSession()->sole();
+        $this->assertSame('billing', $seating->status);
+        $this->assertNull($seating->opened_by_device_id);
+        $this->assertSame((int) $order->id, (int) $seating->order_id);
+        $this->assertNotNull($seating->billing_at);
+        $billingAt = $seating->getRawOriginal('billing_at');
         $this->assertDatabaseMissing('pos_qr_sessions', ['id' => $session->id]);
         $this->assertDatabaseMissing('pos_qr_order_rounds', ['id' => $roundId]);
         $this->assertSame(
@@ -910,6 +925,8 @@ final class QrDineInPaymentRecoveryTest extends TestCase
             ->assertJsonPath('data.receipt_number', null)
             ->assertJsonPath('data.temp_reference', $order->temp_reference);
         $this->assertSame($ambiguousBefore, $this->chargeSnapshot($order->fresh()));
+        $this->assertSame('billing', $seating->fresh()->status);
+        $this->assertSame($billingAt, $seating->fresh()->getRawOriginal('billing_at'));
         $this->claimSettlement($till, $order)
             ->assertConflict()
             ->assertJsonPath('errors.0.code', 'qr_charge_recovery_required');
@@ -943,6 +960,13 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $this->assertSame(Order::STATUS_PAID, $order->fresh()->status);
         $this->assertSame('QR2-00001', $order->fresh()->receipt_number);
         $this->assertSame($order->temp_reference, $order->fresh()->temp_reference);
+        $seating->refresh();
+        $this->assertSame('closed', $seating->status);
+        $this->assertSame('paid', $seating->close_reason);
+        $this->assertSame((int) $till->id, (int) $seating->closed_by_device_id);
+        $this->assertSame(now()->toIso8601String(), $seating->closed_at->toIso8601String());
+        $this->assertSame($billingAt, $seating->getRawOriginal('billing_at'));
+        $closedSeating = $seating->getRawOriginal();
         $this->assertDatabaseHas('pos_order_sequences', [
             'company_id' => 100,
             'branch_id' => 10,
@@ -954,6 +978,8 @@ final class QrDineInPaymentRecoveryTest extends TestCase
         $this->postAs($replacementStation, self::OPEN_TABLE_URL, ['table_id' => $table->id])
             ->assertCreated()
             ->assertJsonPath('data.table_token', $table->qr_token);
+        $this->assertSame($closedSeating, $seating->fresh()->getRawOriginal());
+        $this->assertSame(2, DB::table('pos_table_sessions')->where('table_id', $table->id)->count());
         $this->assertSame(
             1,
             QrSession::query()

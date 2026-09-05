@@ -142,6 +142,9 @@ final class QrDineInStaffConfirmModeTest extends TestCase
 
         $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $round->status);
         $this->assertNull($round->confirm_payload);
+        $this->assertNotNull($order->table_session_id);
+        $this->assertSame((int) $order->table_session_id, (int) $round->table_session_id);
+        $this->assertSame((int) $order->table_session_id, (int) $flow['session']->fresh()->table_session_id);
         $this->assertSame(
             json_encode($this->expectedPricedLines(), JSON_THROW_ON_ERROR),
             $round->getRawOriginal('priced_lines'),
@@ -391,6 +394,9 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $order = Order::query()->sole();
         $roundBeforeReplay = $round->getRawOriginal();
         $orderBeforeReplay = $order->getRawOriginal();
+        $this->assertNotNull($round->table_session_id);
+        $this->assertSame((int) $order->table_session_id, (int) $round->table_session_id);
+        $seatingBeforeReplay = $order->tableSession()->sole()->getRawOriginal();
 
         $this->assertSame((int) $order->id, (int) $round->order_id);
         $this->assertNull($round->resolved_at);
@@ -433,6 +439,7 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $this->assertSame($firstData, $replayData);
         $this->assertSame($roundBeforeReplay, $round->fresh()->getRawOriginal());
         $this->assertSame($orderBeforeReplay, $order->fresh()->getRawOriginal());
+        $this->assertSame($seatingBeforeReplay, $order->tableSession()->sole()->getRawOriginal());
         $this->assertDatabaseCount('pos_qr_order_rounds', 1);
         $this->assertNoOrderChildren($order);
         $this->assertPrivatePayloadDidNotLeak($replay);
@@ -452,6 +459,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $resolver = $this->device('fixed_pos');
         $frozenPayload = $round->confirm_payload;
         $frozenLinesBytes = $round->getRawOriginal('priced_lines');
+        $seatingId = (int) $round->table_session_id;
+        $this->assertGreaterThan(0, $seatingId);
 
         $this->assertIsArray($frozenPayload);
         DB::table('pos_products')->where('id', 101)->update([
@@ -500,6 +509,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $this->assertSame((int) $resolver->id, (int) $round->resolved_by_device_id);
         $this->assertNull($round->confirm_payload);
         $this->assertSame($frozenLinesBytes, $round->getRawOriginal('priced_lines'));
+        $this->assertSame($seatingId, (int) $round->table_session_id);
+        $this->assertSame($seatingId, (int) $order->table_session_id);
         $this->assertSame('5.750', $order->subtotal);
         $this->assertSame('1.250', $order->discount_total);
         $this->assertSame('0.000', $order->tax_total);

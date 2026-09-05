@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
@@ -77,6 +78,34 @@ final class QrDineInFoundationTest extends TestCase
         );
     }
 
+    public function test_quick_rotate_bind_and_checkout_never_create_a_seating(): void
+    {
+        $station = $this->device('payment_station');
+        $productId = $this->product('Quick seating-free coffee', 10);
+        $this->postAs($station, self::ROTATE_URL)->assertOk();
+        $this->assertDatabaseCount('pos_table_sessions', 0);
+        $session = QrSession::query()->whereNull('table_id')->sole();
+        $secret = 'quick-has-no-seating';
+        $this->postJson('/api/v1/public/qr/bind', [
+            'token' => $session->token,
+            'client_secret' => $secret,
+        ])->assertOk();
+        $this->assertDatabaseCount('pos_table_sessions', 0);
+        $this->withHeaders([
+            'X-QR-Session' => $session->uuid,
+            'X-QR-Client-Secret' => $secret,
+        ])->postJson('/api/v1/public/qr/checkout', [
+            'client_request_id' => 'quick-seating-free-checkout',
+            'checkout_choice' => 'counter',
+            'phone' => '90001234',
+            'lines' => [['product_id' => $productId, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
+        ])->assertCreated();
+        $this->assertDatabaseCount('pos_table_sessions', 0);
+        $this->assertNull($session->fresh()->table_session_id);
+        $this->assertNull(Order::query()->sole()->table_session_id);
+        $this->assertDatabaseCount('pos_table_session_events', 0);
+    }
+
     public function test_open_table_enforces_station_branch_state_token_and_one_live_session(): void
     {
         $station = $this->device('payment_station');
@@ -113,6 +142,23 @@ final class QrDineInFoundationTest extends TestCase
             $session->expires_at?->toIso8601String(),
             $session->token_expires_at?->toIso8601String(),
         );
+        $this->assertDatabaseCount('pos_table_sessions', 1);
+        $seating = $session->tableSession()->sole();
+        $this->assertSame('open', $seating->status);
+        $this->assertSame('station', $seating->origin);
+        $this->assertSame(100, (int) $seating->company_id);
+        $this->assertSame(10, (int) $seating->branch_id);
+        $this->assertSame((int) $valid->id, (int) $seating->table_id);
+        $this->assertSame((int) $station->id, (int) $seating->opened_by_device_id);
+        $this->assertSame(now()->toIso8601String(), $seating->opened_at->toIso8601String());
+        $this->assertSame($session->expires_at->toIso8601String(), $seating->expires_at->toIso8601String());
+        $this->assertSame('T-0830-001', $seating->temp_reference);
+        $this->assertTrue(Str::isUuid($seating->uuid));
+        foreach (['order_id', 'billing_at', 'closed_at', 'closed_by_device_id', 'close_reason'] as $column) {
+            $this->assertNull($seating->{$column}, $column);
+        }
+        $this->assertDatabaseCount('pos_table_session_events', 0);
+        $seatingBefore = $seating->getRawOriginal();
 
         $this->postAs($station, self::OPEN_TABLE_URL, ['table_id' => $valid->id])
             ->assertConflict()
@@ -121,6 +167,8 @@ final class QrDineInFoundationTest extends TestCase
             1,
             QrSession::query()->where('table_id', $valid->id)->count(),
         );
+        $this->assertDatabaseCount('pos_table_sessions', 1);
+        $this->assertSame($seatingBefore, $seating->fresh()->getRawOriginal());
     }
 
     public function test_open_table_order_guard_survives_lazy_horizon_expiry(): void
@@ -334,6 +382,11 @@ final class QrDineInFoundationTest extends TestCase
     private function device(string $type, int $branchId = 10): Device
     {
         $this->deviceSequence++;
+        Branch::query()->firstOrCreate(['id' => $branchId], [
+            'uuid' => (string) Str::uuid(), 'company_id' => 100,
+            'name' => 'Foundation branch '.$branchId, 'status' => 'active',
+            'latitude' => null, 'longitude' => null, 'geofence_radius_m' => 500,
+        ]);
 
         return Device::factory()
             ->paired('mdev_qr2_foundation_'.$this->deviceSequence)

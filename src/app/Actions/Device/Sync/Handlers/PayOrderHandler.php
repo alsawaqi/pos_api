@@ -12,6 +12,7 @@ use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
 use App\Actions\Qr\CloseDineInQrSessionAction;
+use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Exceptions\InsufficientLoyaltyBalanceException;
 use App\Models\Branch;
@@ -22,6 +23,7 @@ use App\Models\Payment;
 use App\Models\QrSession;
 use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
+use App\Models\TableSession;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -51,6 +53,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
         private readonly QrChargeRecoveryGuard $qrChargeRecovery,
         private readonly CloseDineInQrSessionAction $closeDineInSession,
         private readonly AllocateOrderNumberAction $orderNumbers,
+        private readonly CloseTableSessionForOrderAction $closeTableSession,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -286,6 +289,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             }
             $order->update($orderUpdate);
             $dineInSessionClosed = $this->closeDineInSession->handle($order, $capturedAt);
+            $this->closeTableSession->handle($order, $capturedAt, TableSession::CLOSE_PAID, (int) $device->getKey());
             if ($order->qr_session_id !== null && ! $dineInSessionClosed) {
                 DB::table('pos_qr_sessions')
                     ->where('id', (int) $order->qr_session_id)

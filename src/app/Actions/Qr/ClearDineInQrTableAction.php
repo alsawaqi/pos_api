@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
+use App\Models\TableSession;
 use Illuminate\Support\Facades\DB;
 
 /** Frees a table only after every QR dine-in order is safely terminal. */
@@ -130,6 +131,18 @@ final class ClearDineInQrTableAction
                     'updated_at' => $now,
                 ]);
             }
+
+            TableSession::query()
+                ->where('table_id', $tableId)
+                ->where('company_id', (int) $device->company_id)
+                ->where('branch_id', (int) $device->branch_id)
+                ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                ->update([
+                    'status' => TableSession::STATUS_CLOSED,
+                    'closed_at' => $now,
+                    'closed_by_device_id' => $device->id,
+                    'close_reason' => TableSession::CLOSE_CLEARED,
+                ]);
 
             return ['table_id' => (int) $table->id, 'status' => 'cleared'];
         });

@@ -8,6 +8,7 @@ use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Pos\Loyalty\WriteLoyaltyTransactionAction;
 use App\Actions\Qr\CloseDineInQrSessionAction;
+use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
@@ -19,6 +20,7 @@ use App\Models\QrOrderRound;
 use App\Models\RoundupDonation;
 use App\Models\SaleCommission;
 use App\Models\SyncEvent;
+use App\Models\TableSession;
 use App\Models\VoidReason;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -60,6 +62,7 @@ class VoidOrderHandler implements SyncEventHandler
         private readonly WriteLoyaltyTransactionAction $loyalty,
         private readonly QrChargeRecoveryGuard $qrChargeRecovery,
         private readonly CloseDineInQrSessionAction $closeDineInSession,
+        private readonly CloseTableSessionForOrderAction $closeTableSession,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -156,6 +159,7 @@ class VoidOrderHandler implements SyncEventHandler
                 'note' => $this->appendReason($order->note, $reason ?? $voidReason?->name),
             ]);
             $this->closeDineInSession->handle($order, $voidedAt);
+            $this->closeTableSession->handle($order, $voidedAt, TableSession::CLOSE_VOIDED, (int) $device->getKey());
             QrOrderRound::query()
                 ->where('order_id', $order->getKey())
                 ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)

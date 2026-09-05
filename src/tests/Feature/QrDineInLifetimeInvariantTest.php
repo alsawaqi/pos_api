@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
@@ -101,6 +102,111 @@ final class QrDineInLifetimeInvariantTest extends TestCase
 
         $this->seedPricingCatalogue();
         $this->enableOrderNumbering();
+    }
+
+    public function test_seating_finish_replay_and_reopen_preserve_the_original_lifetime(): void
+    {
+        $station = $this->deviceFixture('payment_station', 10, 'seating-lifetime');
+        $till = $this->deviceFixture('fixed_pos', 10, 'seating-reopen');
+        $flow = $this->paymentFlow($station, 'SEATING-LIFETIME', 'station');
+        $seating = $flow['order']->fresh()->tableSession()->sole();
+        $openedAt = $seating->getRawOriginal('opened_at');
+        $expiresAt = $seating->getRawOriginal('expires_at');
+        $this->assertSame('billing', $seating->status);
+        $this->assertSame(now()->toIso8601String(), $seating->billing_at->toIso8601String());
+        $this->assertNull($seating->closed_at);
+        $this->assertNull($seating->close_reason);
+        $before = $seating->getRawOriginal();
+        $this->travel(10)->minutes();
+        $this->finishAtStation($flow)->assertOk();
+        $this->assertSame($before, $seating->fresh()->getRawOriginal());
+        $this->reopen($till, $flow['order'])->assertOk();
+        $seating->refresh();
+        $this->assertSame('open', $seating->status);
+        $this->assertNull($seating->billing_at);
+        $this->assertNull($seating->closed_at);
+        $this->assertNull($seating->close_reason);
+        $this->assertSame($openedAt, $seating->getRawOriginal('opened_at'));
+        $this->assertSame($expiresAt, $seating->getRawOriginal('expires_at'));
+        $this->finishAtStation($flow)->assertOk();
+        $this->assertSame('billing', $seating->fresh()->status);
+        $this->assertSame(now()->toIso8601String(), $seating->fresh()->billing_at->toIso8601String());
+        $this->assertSame($expiresAt, $seating->fresh()->getRawOriginal('expires_at'));
+    }
+
+    public function test_deleted_station_bill_less_seating_is_superseded_before_its_horizon(): void
+    {
+        $station = $this->deviceFixture('payment_station', 10, 'superseded-station');
+        $replacement = $this->deviceFixture('payment_station', 10, 'superseding-station');
+        $flow = $this->openAndBindFlow($station, 'SUPERSEDE-NO-AGE');
+        $seating = $flow['session']->tableSession()->sole();
+        $openedAt = $seating->getRawOriginal('opened_at');
+        $expiresAt = $seating->getRawOriginal('expires_at');
+        $station->forceDelete();
+        $this->travel(10)->minutes();
+        $this->assertTrue($seating->expires_at->isFuture());
+        $this->postAs($replacement, self::OPEN_TABLE_URL, ['table_id' => $flow['table']->id])
+            ->assertCreated();
+        $seating->refresh();
+        $this->assertSame('expired', $seating->status);
+        $this->assertSame('abandoned', $seating->close_reason);
+        $this->assertSame((int) $replacement->id, (int) $seating->closed_by_device_id);
+        $this->assertSame(now()->toIso8601String(), $seating->closed_at->toIso8601String());
+        $this->assertNull($seating->billing_at);
+        $this->assertSame($openedAt, $seating->getRawOriginal('opened_at'));
+        $this->assertSame($expiresAt, $seating->getRawOriginal('expires_at'));
+        $this->assertSame(2, DB::table('pos_table_sessions')->where('table_id', $flow['table']->id)->count());
+        $this->assertSame(1, DB::table('pos_table_sessions')->where('table_id', $flow['table']->id)
+            ->whereIn('status', ['open', 'billing', 'closing'])->count());
+    }
+
+    public function test_prune_expires_only_bill_less_or_terminal_seatings_and_keeps_billing_history(): void
+    {
+        $emptyStation = $this->deviceFixture('payment_station', 10, 'prune-empty');
+        $unpaidStation = $this->deviceFixture('payment_station', 10, 'prune-unpaid');
+        $terminalStation = $this->deviceFixture('payment_station', 10, 'prune-terminal');
+        $empty = $this->openAndBindFlow($emptyStation, 'PRUNE-EMPTY');
+        $unpaid = $this->paymentFlow($unpaidStation, 'PRUNE-UNPAID', 'station');
+        $terminal = $this->paymentFlow($terminalStation, 'PRUNE-TERMINAL', 'station');
+        $emptySeating = $empty['session']->tableSession()->sole();
+        $unpaidSeating = $unpaid['order']->fresh()->tableSession()->sole();
+        $terminalSeating = $terminal['order']->fresh()->tableSession()->sole();
+        // Simulate a historical terminal order whose old seating close was missed.
+        $terminal['order']->update(['status' => Order::STATUS_PAID]);
+        $billingAt = $terminalSeating->getRawOriginal('billing_at');
+        foreach ([$emptyStation, $unpaidStation, $terminalStation] as $station) {
+            $station->forceDelete();
+        }
+        $unpaidBefore = $unpaidSeating->fresh()->getRawOriginal();
+        $replacement = $this->deviceFixture('payment_station', 10, 'prune-unpaid-replacement');
+        $this->assertTrue($unpaidSeating->expires_at->isFuture());
+        $this->postAs($replacement, self::OPEN_TABLE_URL, ['table_id' => $unpaid['table']->id])
+            ->assertConflict()->assertJsonPath('errors.0.code', 'qr_table_has_unpaid_order');
+        $this->assertSame($unpaidBefore, $unpaidSeating->fresh()->getRawOriginal());
+        $this->travel(7)->hours();
+        $this->artisan('qr:prune-sessions')
+            ->expectsOutput('expired=0 deleted=0 seatings_expired=2')
+            ->assertSuccessful();
+        foreach ([$emptySeating, $terminalSeating] as $seating) {
+            $seating->refresh();
+            $this->assertSame('expired', $seating->status);
+            $this->assertSame('expired', $seating->close_reason);
+            $this->assertNull($seating->closed_by_device_id);
+            $this->assertSame(now()->toIso8601String(), $seating->closed_at->toIso8601String());
+        }
+        $this->assertNull($emptySeating->billing_at);
+        $this->assertSame($billingAt, $terminalSeating->getRawOriginal('billing_at'));
+        $this->assertSame($unpaidBefore, $unpaidSeating->fresh()->getRawOriginal());
+        $this->postAs($replacement, self::OPEN_TABLE_URL, ['table_id' => $unpaid['table']->id])
+            ->assertConflict()->assertJsonPath('errors.0.code', 'qr_table_has_unpaid_order');
+        $this->assertSame($unpaidBefore, $unpaidSeating->fresh()->getRawOriginal());
+        $expiredBefore = $terminalSeating->getRawOriginal();
+        $this->travel(1)->hours();
+        $this->artisan('qr:prune-sessions')
+            ->expectsOutput('expired=0 deleted=0 seatings_expired=0')->assertSuccessful();
+        $this->assertSame($expiredBefore, $terminalSeating->fresh()->getRawOriginal());
+        $this->assertDatabaseCount('pos_table_sessions', 3);
+        $this->assertDatabaseCount('pos_table_session_events', 0);
     }
 
     #[DataProvider('randomSeeds')]
@@ -1636,6 +1742,11 @@ final class QrDineInLifetimeInvariantTest extends TestCase
 
     private function deviceFixture(string $type, int $branchId, string $label): Device
     {
+        Branch::query()->firstOrCreate(['id' => $branchId], [
+            'uuid' => (string) Str::uuid(), 'company_id' => 100,
+            'name' => 'Lifetime branch '.$branchId, 'status' => 'active',
+            'latitude' => null, 'longitude' => null, 'geofence_radius_m' => 500,
+        ]);
         $this->deviceSequence++;
 
         return Device::factory()

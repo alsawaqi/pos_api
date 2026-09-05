@@ -10,6 +10,7 @@ use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use App\Support\Money;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +38,7 @@ final class ClaimQrSettlementAction
     public function __construct(
         private readonly GeofenceGuard $geofence,
         private readonly QrChargeRecoveryGuard $recovery,
+        private readonly EnsureTableSessionForQrSessionAction $seatings,
     ) {}
 
     /**
@@ -182,6 +184,7 @@ final class ClaimQrSettlementAction
 
             $this->enforceClaimGeofence($device, $gps);
             $claimSeconds = max(1, (int) config('qr.settlement_claim_seconds', 300));
+            $wasOpen = $order->status === Order::STATUS_OPEN;
             $order->update([
                 'status' => Order::STATUS_AWAITING_PAYMENT,
                 'charge_device_id' => $device->getKey(),
@@ -199,6 +202,17 @@ final class ClaimQrSettlementAction
                     'status' => QrSession::STATUS_ORDERED,
                     'last_seen_at' => $now,
                 ]);
+            }
+
+            if ($wasOpen && $session !== null) {
+                $seating = $this->seatings->handle($session, $order, $device);
+                TableSession::query()
+                    ->whereKey($seating->id)
+                    ->where('company_id', (int) $order->company_id)
+                    ->where('branch_id', (int) $order->branch_id)
+                    ->where('table_id', (int) $order->table_id)
+                    ->where('status', TableSession::STATUS_OPEN)
+                    ->update(['status' => TableSession::STATUS_BILLING, 'billing_at' => $now]);
             }
 
             return $this->present($order->refresh(), false);

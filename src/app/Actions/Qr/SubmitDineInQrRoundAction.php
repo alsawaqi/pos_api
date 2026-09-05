@@ -9,6 +9,7 @@ use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use App\Support\Money;
 use App\Support\Pricing\Totals;
 use DateTimeImmutable;
@@ -28,6 +29,7 @@ final class SubmitDineInQrRoundAction
         private readonly DineInRoundMode $roundMode,
         private readonly RefreshQrOrderTotalsAction $refreshTotals,
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
+        private readonly EnsureTableSessionForQrSessionAction $seatings,
     ) {}
 
     /**
@@ -115,6 +117,8 @@ final class SubmitDineInQrRoundAction
                     'QR session was not found.',
                 );
             }
+
+            $seating = $this->seatings->handle($session, $order, $device);
 
             $roundNo = ((int) QrOrderRound::query()
                 ->where('qr_session_id', $session->id)
@@ -208,6 +212,7 @@ final class SubmitDineInQrRoundAction
 
             $round = QrOrderRound::query()->create([
                 'qr_session_id' => $session->id,
+                'table_session_id' => $seating->id,
                 'order_id' => $order?->id,
                 'round_no' => $roundNo,
                 'status' => $staffConfirm
@@ -226,12 +231,27 @@ final class SubmitDineInQrRoundAction
             ]);
 
             if ($order === null) {
+                $reference = $seating->temp_reference;
+                if (trim((string) $reference) === '') {
+                    $reference = $this->tempReferences->handle(
+                        (int) $session->company_id,
+                        (int) $session->branch_id,
+                    );
+                    TableSession::query()
+                        ->whereKey($seating->id)
+                        ->where('company_id', (int) $session->company_id)
+                        ->where('branch_id', (int) $session->branch_id)
+                        ->where('table_id', (int) $session->table_id)
+                        ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                        ->update(['temp_reference' => $reference]);
+                }
                 $order = Order::query()->create([
                     'uuid' => (string) Str::uuid(),
                     'company_id' => $session->company_id,
                     'branch_id' => $session->branch_id,
                     'device_id' => $device->id,
                     'qr_session_id' => $session->id,
+                    'table_session_id' => $seating->id,
                     'client_request_id' => $clientRequestId,
                     'staff_id' => null,
                     'customer_id' => $customer?->customerId,
@@ -249,10 +269,7 @@ final class SubmitDineInQrRoundAction
                     'closed_at' => null,
                     'client_event_id' => null,
                     'receipt_number' => null,
-                    'temp_reference' => $this->tempReferences->handle(
-                        (int) $session->company_id,
-                        (int) $session->branch_id,
-                    ),
+                    'temp_reference' => $reference,
                 ]);
                 $round->update(['order_id' => $order->id]);
             } elseif ($identityDiffers && $customer !== null) {
@@ -260,6 +277,17 @@ final class SubmitDineInQrRoundAction
                     'customer_id' => $customer->customerId,
                     'plate_number' => $customer->plateNumber,
                 ]);
+            }
+
+            if ($seating->order_id === null) {
+                TableSession::query()
+                    ->whereKey($seating->id)
+                    ->where('company_id', (int) $session->company_id)
+                    ->where('branch_id', (int) $session->branch_id)
+                    ->where('table_id', (int) $session->table_id)
+                    ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
+                    ->whereNull('order_id')
+                    ->update(['order_id' => $order->id]);
             }
 
             if (! $staffConfirm) {

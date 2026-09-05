@@ -153,6 +153,17 @@ final class QrDineInStaffConfirmInvariantsTest extends TestCase
         );
         $this->assertSame(Order::STATUS_PAID, $direct['order']->fresh()->status);
         $this->assertSame(Order::STATUS_PAID, $staff['order']->fresh()->status);
+        foreach ([$direct['order'], $staff['order']] as $order) {
+            $seating = $order->fresh()->tableSession()->sole();
+            $this->assertSame('closed', $seating->status);
+            $this->assertSame('paid', $seating->close_reason);
+            $this->assertSame((int) $till->id, (int) $seating->closed_by_device_id);
+            $this->assertSame(
+                [(int) $seating->id],
+                QrOrderRound::query()->where('order_id', $order->id)
+                    ->distinct()->pluck('table_session_id')->map(static fn ($id): int => (int) $id)->all(),
+            );
+        }
     }
 
     public function test_after_an_accept_an_identity_free_round_succeeds_but_phone_or_plate_is_classified(): void

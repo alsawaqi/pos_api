@@ -9,6 +9,7 @@ use App\Models\Floor;
 use App\Models\Order;
 use App\Models\QrSession;
 use App\Models\Table;
+use App\Models\TableSession;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -16,6 +17,11 @@ use Illuminate\Support\Str;
 /** Open the one live dine-in QR session allowed for a branch table. */
 final class OpenDineInTableAction
 {
+    public function __construct(
+        private readonly AllocateQrTempReferenceAction $tempReferences,
+        private readonly SupersedeAbandonedTableSessionAction $supersede,
+    ) {}
+
     /**
      * @return array{session: QrSession, table_token: string}
      */
@@ -93,6 +99,8 @@ final class OpenDineInTableAction
                     'updated_at' => $now,
                 ]);
 
+            $this->supersede->handle($table, $device, $now);
+
             $hasLiveSession = QrSession::query()
                 ->where('table_id', $table->getKey())
                 ->whereIn('status', [
@@ -155,6 +163,30 @@ final class OpenDineInTableAction
                 'status' => QrSession::STATUS_PENDING,
                 'expires_at' => $horizon,
             ]);
+
+            $seating = TableSession::query()->create([
+                'uuid' => (string) Str::uuid(),
+                'company_id' => $device->company_id,
+                'branch_id' => $device->branch_id,
+                'table_id' => $table->getKey(),
+                'status' => TableSession::STATUS_OPEN,
+                'origin' => TableSession::ORIGIN_STATION,
+                'opened_by_device_id' => $device->getKey(),
+                'opened_at' => $now,
+                'expires_at' => $horizon,
+            ]);
+            // The new seating exists before taking the shared temporary counter.
+            TableSession::query()
+                ->whereKey($seating->id)
+                ->where('company_id', (int) $device->company_id)
+                ->where('branch_id', (int) $device->branch_id)
+                ->where('table_id', $table->getKey())
+                ->where('status', TableSession::STATUS_OPEN)
+                ->update(['temp_reference' => $this->tempReferences->handle(
+                    (int) $device->company_id,
+                    (int) $device->branch_id,
+                )]);
+            $session->update(['table_session_id' => $seating->id]);
 
             return [
                 'session' => $session,

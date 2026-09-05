@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Qr\EnsureTableSessionForQrSessionAction;
+use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
@@ -18,6 +20,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Symfony\Component\HttpFoundation\JsonResponse;
 use Tests\TestCase;
 use Throwable;
 
@@ -125,12 +128,85 @@ final class QrDineInConcurrencyTest extends TestCase
                 QrSession::STATUS_PENDING,
                 QrSession::query()->where('table_id', $table->getKey())->sole()->status,
             );
+            $seating = DB::table('pos_table_sessions')->where('table_id', $table->id)->sole();
+            $this->assertSame('open', $seating->status);
+            $this->assertSame(
+                (int) $seating->id,
+                (int) QrSession::query()->where('table_id', $table->id)->sole()->table_session_id,
+            );
+            $this->assertSame(1, DB::table('pos_table_sessions')->where('table_id', $table->id)
+                ->whereIn('status', ['open', 'billing', 'closing'])->count());
+            $this->assertSame(2, (int) DB::table('pos_temp_reference_sequences')->sole()->next_number);
         } finally {
             $this->restoreDatabaseConfigAndDeleteFiles(
                 $databasePath,
                 $originalDefault,
                 $originalSqlite,
             );
+        }
+    }
+
+    public function test_backfill_shaped_ensure_and_first_round_race_create_one_seating_and_one_reference(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-seating-attach-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $station = $this->paymentStation('mdev_qr_seating_concurrency');
+            $table = $this->activeTable('Concurrency seating');
+            $this->seedRoundProduct();
+            $session = QrSession::query()->create([
+                'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+                'device_id' => $station->id, 'table_id' => $table->id,
+                'token' => hash('sha256', (string) Str::uuid()),
+                'token_expires_at' => now()->addHours(6), 'expires_at' => now()->addHours(6),
+                'client_secret_hash' => QrSession::hashClientSecret('seating-race-secret'),
+                'status' => QrSession::STATUS_ACTIVE, 'bound_at' => now(), 'last_seen_at' => now(),
+            ]);
+            $requests = [[
+                'url' => '/api/v1/public/qr/table-round',
+                'token' => '',
+                'payload' => [],
+                'observe_table_id' => (int) $table->id,
+                'ensure_session_id' => (int) $session->id,
+            ], [
+                'url' => '/api/v1/public/qr/table-round',
+                'token' => '',
+                'headers' => ['X-QR-Session' => $session->uuid, 'X-QR-Client-Secret' => 'seating-race-secret'],
+                'payload' => [
+                    'client_request_id' => 'seating-race-first-round',
+                    'phone' => '92000091',
+                    'lines' => [['product_id' => 99001, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
+                ],
+                'observe_table_id' => (int) $table->id,
+            ]];
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertCount(2, $results);
+            foreach ($results as $result) {
+                $this->assertNull($result['error'], (string) $result['error']);
+                $this->assertNotSame(500, $result['status'], $result['body']);
+            }
+            $this->assertSame(200, $results[0]['status'], $results[0]['body']);
+            $this->assertSame(201, $results[1]['status'], $results[1]['body']);
+            DB::purge('sqlite');
+            $seating = DB::table('pos_table_sessions')->where('table_id', $table->id)->sole();
+            $order = Order::query()->where('qr_session_id', $session->id)->sole();
+            $round = QrOrderRound::query()->where('qr_session_id', $session->id)->sole();
+            $this->assertSame((int) $seating->id, (int) $session->fresh()->table_session_id);
+            $this->assertSame((int) $seating->id, (int) $order->table_session_id);
+            $this->assertSame((int) $seating->id, (int) $round->table_session_id);
+            $this->assertSame((int) $order->id, (int) $seating->order_id);
+            $this->assertNotEmpty($seating->temp_reference);
+            $this->assertSame($seating->temp_reference, $order->temp_reference);
+            $this->assertSame(2, (int) DB::table('pos_temp_reference_sequences')->sole()->next_number);
+            $this->assertDatabaseCount('pos_order_sequences', 0);
+            $this->assertDatabaseCount('pos_table_session_events', 0);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
         }
     }
 
@@ -688,8 +764,22 @@ final class QrDineInConcurrencyTest extends TestCase
                 throw new RuntimeException('The parent did not release the QR dine-in start barrier.');
             }
 
-            $response = $kernel->handle($request);
-            $kernel->terminate($request, $response);
+            if (isset($requestData['ensure_session_id'])) {
+                // Model the admin backfill's table -> order -> session -> seating
+                // transaction without adding any production endpoint or database.
+                $seatingId = DB::transaction(function () use ($requestData): int {
+                    PosTable::query()->lockForUpdate()->findOrFail($requestData['observe_table_id']);
+                    $order = Order::query()->where('qr_session_id', $requestData['ensure_session_id'])
+                        ->orderByDesc('id')->lockForUpdate()->first();
+                    $session = QrSession::query()->lockForUpdate()->findOrFail($requestData['ensure_session_id']);
+
+                    return (int) app(EnsureTableSessionForQrSessionAction::class)->handle($session, $order, null)->id;
+                });
+                $response = new JsonResponse(['table_session_id' => $seatingId]);
+            } else {
+                $response = $kernel->handle($request);
+                $kernel->terminate($request, $response);
+            }
 
             $liveTableSessions = 0;
             if ($requestData['observe_table_id'] !== null) {
@@ -820,6 +910,11 @@ final class QrDineInConcurrencyTest extends TestCase
             '--database' => 'sqlite',
             '--force' => true,
         ]));
+        Branch::query()->create([
+            'id' => 10, 'uuid' => (string) Str::uuid(), 'company_id' => 100,
+            'name' => 'Concurrency branch', 'status' => 'active',
+            'latitude' => null, 'longitude' => null, 'geofence_radius_m' => 500,
+        ]);
     }
 
     /**

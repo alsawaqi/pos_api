@@ -7,6 +7,7 @@ namespace App\Actions\Qr;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use Illuminate\Support\Facades\DB;
 
 /** Fail-closed attended reversal of a dine-in payment request. */
@@ -22,7 +23,10 @@ final class ReopenDineInQrPaymentAction
         'charge_outcome',
     ];
 
-    public function __construct(private readonly QrChargeRecoveryGuard $recovery) {}
+    public function __construct(
+        private readonly QrChargeRecoveryGuard $recovery,
+        private readonly EnsureTableSessionForQrSessionAction $seatings,
+    ) {}
 
     /** @return array{order_uuid: string, status: string, session_status: string} */
     public function handle(Device $device, string $orderUuid): array
@@ -115,6 +119,15 @@ final class ReopenDineInQrPaymentAction
                 'closed_at' => null,
                 'last_seen_at' => now(),
             ]);
+
+            $seating = $this->seatings->handle($session, $order, $device);
+            TableSession::query()
+                ->whereKey($seating->id)
+                ->where('company_id', (int) $order->company_id)
+                ->where('branch_id', (int) $order->branch_id)
+                ->where('table_id', (int) $order->table_id)
+                ->where('status', TableSession::STATUS_BILLING)
+                ->update(['status' => TableSession::STATUS_OPEN, 'billing_at' => null]);
 
             return [
                 'order_uuid' => (string) $order->uuid,

@@ -98,6 +98,12 @@ class QrSession extends Model
         return $this->belongsTo(Table::class);
     }
 
+    /** @return BelongsTo<TableSession, $this> */
+    public function tableSession(): BelongsTo
+    {
+        return $this->belongsTo(TableSession::class, 'table_session_id');
+    }
+
     /**
      * @return HasMany<QrOrderRound, $this>
      */

@@ -83,6 +83,68 @@ final class QrTempReferenceTest extends TestCase
         $this->setNumbering(true);
     }
 
+    public function test_open_allocates_once_and_first_round_reuses_the_seating_reference(): void
+    {
+        $station = $this->device();
+        $table = $this->dineInTable($station);
+        $open = $this->postAs($station, '/api/v1/device/qr/open-table', ['table_id' => $table->id])
+            ->assertCreated();
+        $session = QrSession::query()->where('uuid', $open->json('data.session_uuid'))->sole();
+        $seating = $session->tableSession()->sole();
+        $this->assertSame('T-0905-001', $seating->temp_reference);
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
+            'company_id' => 100, 'branch_id' => 10, 'seq_date' => '2026-09-05', 'next_number' => 2,
+        ]);
+        $this->assertDatabaseCount('pos_orders', 0);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+        $secret = 'opened-reference-first-round';
+        $this->postJson('/api/v1/public/qr/table-bind', [
+            'table_token' => $table->qr_token, 'client_secret' => $secret,
+        ])->assertOk();
+        $payload = [
+            'client_request_id' => 'opened-reference-round',
+            'phone' => '90001234',
+            'lines' => [['product_id' => 1, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
+        ];
+        $this->withHeaders($this->qrHeaders($session, $secret))
+            ->postJson('/api/v1/public/qr/table-round', $payload)
+            ->assertCreated()->assertJsonPath('data.order.temp_reference', 'T-0905-001');
+        $order = Order::query()->sole();
+        $this->assertSame('T-0905-001', $order->temp_reference);
+        $this->assertSame((int) $seating->id, (int) $order->table_session_id);
+        $this->assertSame((int) $order->id, (int) $seating->fresh()->order_id);
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
+            'company_id' => 100, 'branch_id' => 10, 'seq_date' => '2026-09-05', 'next_number' => 2,
+        ]);
+        $seatingBefore = $seating->fresh()->getRawOriginal();
+        $this->withHeaders($this->qrHeaders($session, $secret))
+            ->postJson('/api/v1/public/qr/table-round', $payload)
+            ->assertCreated()->assertJsonPath('data.replayed', true);
+        $this->assertSame($seatingBefore, $seating->fresh()->getRawOriginal());
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
+            'company_id' => 100, 'branch_id' => 10, 'seq_date' => '2026-09-05', 'next_number' => 2,
+        ]);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+    }
+
+    public function test_two_opens_without_orders_consume_two_branch_day_references(): void
+    {
+        $station = $this->device();
+        foreach (['T-0905-001', 'T-0905-002'] as $reference) {
+            $table = $this->dineInTable($station);
+            $open = $this->postAs($station, '/api/v1/device/qr/open-table', ['table_id' => $table->id])
+                ->assertCreated();
+            $session = QrSession::query()->where('uuid', $open->json('data.session_uuid'))->sole();
+            $this->assertSame($reference, $session->tableSession()->sole()->temp_reference);
+        }
+        $this->assertDatabaseCount('pos_table_sessions', 2);
+        $this->assertDatabaseCount('pos_orders', 0);
+        $this->assertDatabaseCount('pos_order_sequences', 0);
+        $this->assertDatabaseHas('pos_temp_reference_sequences', [
+            'company_id' => 100, 'branch_id' => 10, 'seq_date' => '2026-09-05', 'next_number' => 3,
+        ]);
+    }
+
     public function test_station_card_payment_allocates_the_official_number_and_preserves_the_temporary_reference(): void
     {
         $station = $this->device();
@@ -361,8 +423,7 @@ final class QrTempReferenceTest extends TestCase
         return [$order, $session, $secret];
     }
 
-    /** @return array{Order, QrSession, string} */
-    private function dineInOrder(Device $station): array
+    private function dineInTable(Device $station): PosTable
     {
         $floor = Floor::query()->create([
             'uuid' => (string) Str::uuid(),
@@ -372,7 +433,8 @@ final class QrTempReferenceTest extends TestCase
             'display_order' => 1,
             'status' => 'active',
         ]);
-        $table = PosTable::query()->create([
+
+        return PosTable::query()->create([
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,
             'floor_id' => $floor->id,
@@ -383,6 +445,12 @@ final class QrTempReferenceTest extends TestCase
             'status' => 'active',
             'display_order' => 1,
         ]);
+    }
+
+    /** @return array{Order, QrSession, string} */
+    private function dineInOrder(Device $station): array
+    {
+        $table = $this->dineInTable($station);
         $secret = 'temp-dine-in-'.Str::uuid();
         $session = $this->qrSession($station, $secret, $table);
         $response = $this->withHeaders($this->qrHeaders($session, $secret))

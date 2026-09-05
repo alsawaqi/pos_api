@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Qr\EnsureTableSessionForQrSessionAction;
 use App\Models\Branch;
 use App\Models\Device;
+use App\Models\Floor;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\QrSession;
+use App\Models\Table as PosTable;
 use Illuminate\Console\Command;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1439,6 +1442,48 @@ final class QrChargeProtocolTest extends TestCase
             'branch_id' => 10,
             'next_number' => 2,
         ]);
+    }
+
+    public function test_dine_in_fallback_keeps_billing_seating_and_void_closes_it_once(): void
+    {
+        $station = $this->device('seating-fallback-station');
+        $till = $this->device('seating-void-till', 'fixed_pos');
+        $floor = Floor::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+            'name' => 'Protocol seating floor', 'display_order' => 1, 'status' => 'active',
+        ]);
+        $table = PosTable::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => $floor->id,
+            'label' => 'PROTOCOL-SEATING', 'seats' => 4, 'shape' => 'square',
+            'qr_token' => hash('sha256', (string) Str::uuid()), 'status' => 'active', 'display_order' => 1,
+        ]);
+        $session = $this->qrSession($station, ['table_id' => $table->id]);
+        $order = $this->order($session, ['table_id' => $table->id, 'order_type' => 'dine_in']);
+        $seating = DB::transaction(function () use ($order, $session, $station) {
+            $lockedOrder = Order::query()->lockForUpdate()->findOrFail($order->id);
+            $lockedSession = QrSession::query()->lockForUpdate()->findOrFail($session->id);
+
+            return app(EnsureTableSessionForQrSessionAction::class)->handle($lockedSession, $lockedOrder, $station);
+        });
+        $seating->refresh();
+        $this->assertSame('billing', $seating->status);
+        $this->assertNotNull($seating->billing_at);
+        $before = $seating->getRawOriginal();
+        $this->postAs($station, self::FALLBACK_URL, ['order_uuid' => $order->uuid])
+            ->assertOk()->assertJsonPath('data.status', Order::STATUS_HELD);
+        $this->assertSame($before, $seating->fresh()->getRawOriginal());
+        $this->assertSyncStatus($this->push($till, [$this->voidEvent($order)]), 'processed');
+        $seating->refresh();
+        $this->assertSame('closed', $seating->status);
+        $this->assertSame('voided', $seating->close_reason);
+        $this->assertSame((int) $till->id, (int) $seating->closed_by_device_id);
+        $this->assertNotNull($seating->closed_at);
+        $this->assertSame($before['billing_at'], $seating->getRawOriginal('billing_at'));
+        $closed = $seating->getRawOriginal();
+        $this->postAs($till, '/api/v1/device/qr/clear-table', ['table_id' => $table->id])
+            ->assertOk()->assertJsonPath('data.status', 'cleared');
+        $this->assertSame($closed, $seating->fresh()->getRawOriginal());
+        $this->assertDatabaseCount('pos_table_session_events', 0);
     }
 
     public function test_fallback_refuses_a_live_claim_without_mutating_it(): void

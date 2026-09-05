@@ -185,7 +185,7 @@ class QrSessionGroundworkTest extends TestCase
         $boundBefore = DB::table('pos_qr_sessions')->where('id', $bound)->first();
 
         $this->artisan('qr:prune-sessions')
-            ->expectsOutput('expired=1 deleted=3')
+            ->expectsOutput('expired=1 deleted=3 seatings_expired=0')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('pos_qr_sessions', [
@@ -221,7 +221,7 @@ class QrSessionGroundworkTest extends TestCase
         $this->insertOrder($sessionId, Order::STATUS_PAID);
 
         $this->artisan('qr:prune-sessions')
-            ->expectsOutput('expired=0 deleted=0')
+            ->expectsOutput('expired=0 deleted=0 seatings_expired=0')
             ->assertSuccessful();
 
         $this->assertDatabaseHas('pos_qr_sessions', ['id' => $sessionId]);

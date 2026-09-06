@@ -9,6 +9,7 @@ use App\Actions\Qr\QrDineInException;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
+use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
 use App\Support\Money;
@@ -101,9 +102,19 @@ final class ListTableBoardAction
             })->get();
         $liveClaims = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
             ->whereIn('id', $orders->modelKeys())->withLiveClaim()->pluck('id')->all();
+        $roundCounts = QrOrderRound::query()
+            ->selectRaw('order_id, SUM(CASE WHEN qr_session_id IS NOT NULL THEN 1 ELSE 0 END) AS customer_rounds, SUM(CASE WHEN qr_session_id IS NULL THEN 1 ELSE 0 END) AS staff_rounds')
+            ->whereIn('order_id', $orders->modelKeys())
+            ->where('status', '!=', QrOrderRound::STATUS_REJECTED)
+            ->groupBy('order_id')->get()->keyBy('order_id');
+        $credentialStatuses = QrSession::query()
+            ->where('company_id', $companyId)->where('branch_id', $branchId)
+            ->whereIn('table_session_id', $seatings->whereNull('merged_into_id')->modelKeys())
+            ->whereIn('status', QrSession::EXPIRABLE_STATUSES)
+            ->orderBy('id')->pluck('status', 'table_session_id');
 
         return $tables->map(function (Table $table) use (
-            $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims,
+            $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims, $roundCounts, $credentialStatuses,
         ): array {
             /** @var TableSession|null $seating */
             $seating = $seatingsByTable->get($table->id);
@@ -161,6 +172,7 @@ final class ListTableBoardAction
                             'held_lines' => $held,
                         ];
                     })->values()->all(),
+                    'credential_status' => $credentialStatuses->get($primary?->id),
                 ],
                 'bill' => $order === null ? null : [
                     'order_uuid' => (string) $order->uuid,
@@ -171,6 +183,9 @@ final class ListTableBoardAction
                     'pending_rounds' => $pending->count(),
                     Order::STATUS_AWAITING_PAYMENT => $order->status === Order::STATUS_AWAITING_PAYMENT,
                     'charge_claim_live' => in_array($order->id, $liveClaims),
+                    'source' => $order->source,
+                    'customer_rounds' => (int) ($roundCounts->get($order->id)?->customer_rounds ?? 0),
+                    'staff_rounds' => (int) ($roundCounts->get($order->id)?->staff_rounds ?? 0),
                 ],
             ];
         })->all();

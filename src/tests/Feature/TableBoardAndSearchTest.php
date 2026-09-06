@@ -4,10 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Qr\BindQrTableSessionAction;
+use App\Actions\Qr\OpenDineInTableAction;
+use App\Actions\Qr\SubmitDineInQrRoundAction;
+use App\Actions\Tables\AppendStaffRoundAction;
+use App\Actions\Tables\OpenStaffTableSessionAction;
 use App\Models\Floor;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
@@ -271,11 +277,13 @@ final class TableBoardAndSearchTest extends TestCase
                 'uuid' => $seating->uuid, 'status' => 'open', 'origin' => 'staff_till', 'temp_reference' => 'T-0905-001',
                 'opened_at' => '2026-09-05T12:00:00+00:00', 'expires_at' => '2026-09-05T18:00:00+00:00',
                 'needs_review' => false, 'needs_review_count' => 0, 'joined_table_ids' => [], 'pending_rounds' => [],
+                'credential_status' => null,
             ],
             'bill' => [
                 'order_uuid' => $order->uuid, 'status' => 'open', 'grand_total_baisas' => 1000,
                 'receipt_number' => null, 'temp_reference' => 'T-0905-001', 'pending_rounds' => 0,
                 'awaiting_payment' => false, 'charge_claim_live' => false,
+                'source' => 'main_pos', 'customer_rounds' => 0, 'staff_rounds' => 0,
             ],
         ];
         $board = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk();
@@ -283,5 +291,122 @@ final class TableBoardAndSearchTest extends TestCase
         $search = $this->getJson('/api/v1/device/tables/search?q=t-0905')->assertOk();
         $this->assertSame(['data' => ['tables' => [$row]], 'meta' => ['money_unit' => 'baisas'], 'errors' => []], $search->json());
         fwrite(STDOUT, "\nT4_BOARD_JSON=".$board->getContent()."\nT4_SEARCH_JSON=".$search->getContent()."\n");
+    }
+
+    public function test_board_keys_follow_staff_bill_station_attach_and_customer_adoption(): void
+    {
+        $till = $this->seatingDevice();
+        $station = $this->seatingDevice('payment_station');
+        $table = $this->seatingTable();
+        $product = $this->seatingProduct();
+        $common = ['seating_key' => (string) Str::uuid(), 'table_id' => (int) $table->id, 'queued_offline' => false];
+        $opened = app(OpenStaffTableSessionAction::class)->handle($till, $common + [
+            'opened_at' => now()->toIso8601String(),
+        ], now(), now());
+        $lines = [['product_id' => (int) $product->id, 'qty' => 1, 'addon_ids' => [], 'notes' => null]];
+        $staff = app(AppendStaffRoundAction::class)->handle($till, $common + [
+            'client_request_id' => 't7-staff-round', 'submitted_at' => now()->toIso8601String(),
+            'lines' => $lines,
+        ], now(), now());
+        $this->assertSame('appended', $staff['outcome']);
+        $staffBoard = $this->withToken($till->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+            ->assertJsonCount(1, 'data.tables')
+            ->assertJsonPath('data.tables.0.seating.uuid', $opened['table_session_uuid'])
+            ->assertJsonPath('data.tables.0.seating.credential_status', null)
+            ->assertJsonPath('data.tables.0.bill.order_uuid', $staff['order_uuid'])
+            ->assertJsonPath('data.tables.0.bill.source', 'main_pos')
+            ->assertJsonPath('data.tables.0.bill.customer_rounds', 0)
+            ->assertJsonPath('data.tables.0.bill.staff_rounds', 1);
+
+        $attached = app(OpenDineInTableAction::class)->handle($station, (int) $table->id);
+        $attachedBoard = $this->getJson('/api/v1/device/tables/board')->assertOk()
+            ->assertJsonPath('data.tables.0.seating.uuid', $opened['table_session_uuid'])
+            ->assertJsonPath('data.tables.0.seating.credential_status', 'pending')
+            ->assertJsonPath('data.tables.0.bill.order_uuid', $staff['order_uuid'])
+            ->assertJsonPath('data.tables.0.bill.source', 'main_pos')
+            ->assertJsonPath('data.tables.0.bill.customer_rounds', 0)
+            ->assertJsonPath('data.tables.0.bill.staff_rounds', 1);
+        $session = app(BindQrTableSessionAction::class)->handle($attached['table_token'], 't7-board-secret');
+        $this->assertNotNull($session);
+        $this->getJson('/api/v1/device/tables/board')->assertOk()
+            ->assertJsonPath('data.tables.0.seating.credential_status', 'active');
+        $customer = app(SubmitDineInQrRoundAction::class)->handle((int) $session->id, [
+            'client_request_id' => 't7-customer-round', 'phone' => '92001234', 'lines' => $lines,
+        ], '127.0.0.1');
+        $this->assertSame($staff['order_uuid'], $customer['order']->uuid);
+        $adoptedBoard = $this->getJson('/api/v1/device/tables/board')->assertOk()
+            ->assertJsonPath('data.tables.0.seating.uuid', $opened['table_session_uuid'])
+            ->assertJsonPath('data.tables.0.seating.credential_status', 'active')
+            ->assertJsonPath('data.tables.0.bill.order_uuid', $staff['order_uuid'])
+            ->assertJsonPath('data.tables.0.bill.source', 'qr_web')
+            ->assertJsonPath('data.tables.0.bill.customer_rounds', 1)
+            ->assertJsonPath('data.tables.0.bill.staff_rounds', 1);
+        $this->assertDatabaseCount('pos_orders', 1);
+        $this->assertDatabaseCount('pos_qr_order_rounds', 2);
+        fwrite(STDOUT, "\nT7_BOARD_STAFF_JSON=".$staffBoard->getContent()
+            ."\nT7_BOARD_ATTACHED_JSON=".$attachedBoard->getContent()
+            ."\nT7_BOARD_ADOPTED_JSON=".$adoptedBoard->getContent()."\n");
+    }
+
+    public function test_board_round_counts_include_pending_and_accepted_but_exclude_rejected_and_other_bills(): void
+    {
+        $device = $this->seatingDevice();
+        $seating = $this->seatingRow($this->seatingTable());
+        $order = $this->seatingOrder($seating, ['source' => 'qr_web']);
+        $session = QrSession::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+            'device_id' => null, 'table_id' => $seating->table_id, 'table_session_id' => $seating->id,
+            'token' => hash('sha256', (string) Str::uuid()), 'token_expires_at' => now()->addHours(6),
+            'status' => QrSession::STATUS_ACTIVE, 'expires_at' => now()->addHours(6),
+        ]);
+        foreach ([QrOrderRound::STATUS_ACCEPTED, QrOrderRound::STATUS_PENDING_CONFIRMATION, QrOrderRound::STATUS_REJECTED] as $index => $status) {
+            $this->seatingRound($seating, $order, ['status' => $status]);
+            $this->seatingRound($seating, $order, [
+                'qr_session_id' => $session->id, 'round_no' => $index + 1, 'status' => $status,
+            ]);
+        }
+        $this->seatingRound($seating, null, ['qr_session_id' => $session->id, 'round_no' => 4]);
+        $other = $this->seatingRow($this->seatingTable('Other'));
+        $otherOrder = $this->seatingOrder($other);
+        $this->seatingRound($other, $otherOrder);
+        $board = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+            ->assertJsonPath('data.tables.0.bill.source', 'qr_web')
+            ->assertJsonPath('data.tables.0.bill.customer_rounds', 2)
+            ->assertJsonPath('data.tables.0.bill.staff_rounds', 2)
+            ->assertJsonPath('data.tables.1.bill.source', 'main_pos')
+            ->assertJsonPath('data.tables.1.bill.customer_rounds', 0)
+            ->assertJsonPath('data.tables.1.bill.staff_rounds', 1);
+        $search = $this->getJson('/api/v1/device/tables/search?q=Table')->assertOk()->assertJsonCount(1, 'data.tables');
+        $this->assertSame($board->json('data.tables.0'), $search->json('data.tables.0'));
+    }
+
+    public function test_joined_board_rows_use_only_the_primary_seatings_live_credential(): void
+    {
+        $device = $this->seatingDevice();
+        $primary = $this->seatingRow($this->seatingTable('Primary'));
+        $order = $this->seatingOrder($primary);
+        $joined = $this->seatingRow($this->seatingTable('Joined'), [
+            'merged_into_id' => $primary->id, 'temp_reference' => null, 'order_id' => $order->id,
+        ]);
+        $createSession = static fn (TableSession $seating, string $status): QrSession => QrSession::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+            'device_id' => null, 'table_id' => $seating->table_id, 'table_session_id' => $seating->id,
+            'token' => hash('sha256', (string) Str::uuid()), 'token_expires_at' => now()->addHours(6),
+            'status' => $status, 'expires_at' => now()->addHours(6),
+        ]);
+        $session = $createSession($primary, QrSession::STATUS_PENDING);
+        $createSession($joined, QrSession::STATUS_ACTIVE);
+        foreach (QrSession::EXPIRABLE_STATUSES as $status) {
+            $session->update(['status' => $status]);
+            $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+                ->assertJsonPath('data.tables.0.seating.credential_status', $status)
+                ->assertJsonPath('data.tables.1.seating.credential_status', $status);
+        }
+        foreach ([QrSession::STATUS_CLOSED, QrSession::STATUS_EXPIRED] as $status) {
+            $session->update(['status' => $status]);
+            $this->getJson('/api/v1/device/tables/board')->assertOk()
+                ->assertJsonPath('data.tables.0.seating.credential_status', null)
+                ->assertJsonPath('data.tables.1.seating.credential_status', null);
+        }
     }
 }

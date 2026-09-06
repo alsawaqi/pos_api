@@ -21,13 +21,14 @@ final class AppendQrPricedLinesAction
 {
     public function __construct(private readonly OrderLineSnapshotter $snapshots) {}
 
+    /** @return array<int, int> */
     public function handle(
         Order $order,
         QrSession $session,
         QrPricingLoadResult $loaded,
         PriceResult $price,
         CarbonInterface $appliedAt,
-    ): void {
+    ): array {
         $itemIds = [];
         foreach ($loaded->resolvedLines as $index => $resolved) {
             $productSnapshots = $this->snapshots->product($resolved->product);
@@ -61,6 +62,8 @@ final class AppendQrPricedLinesAction
         }
 
         $this->writeDiscountRows($order, $loaded, $price, $itemIds, $appliedAt);
+
+        return $itemIds;
     }
 
     /**
@@ -192,8 +195,9 @@ final class AppendQrPricedLinesAction
      * Append only the server-authored private payload frozen at submission.
      *
      * @param  array<string, mixed>  $payload
+     * @return array<int, int>
      */
-    public function handleStored(Order $order, array $payload): void
+    public function handleStored(Order $order, array $payload): array
     {
         if (($payload['version'] ?? null) !== 1
             || ! is_array($payload['items'] ?? null)
@@ -261,6 +265,8 @@ final class AppendQrPricedLinesAction
                 'applied_at' => $storedDiscount['applied_at'],
             ]);
         }
+
+        return $itemIds;
     }
 
     private function lineDiscountBaisas(PriceResult $price, int $lineIndex): int

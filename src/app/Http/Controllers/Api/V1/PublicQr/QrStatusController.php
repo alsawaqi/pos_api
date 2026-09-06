@@ -87,7 +87,9 @@ class QrStatusController
                 'round_no' => (int) $round->round_no,
                 'status' => (string) $round->status,
                 'entered_by' => $round->qr_session_id === null ? 'staff' : 'customer',
-                'priced_lines' => $round->priced_lines,
+                'priced_lines' => array_map(static fn (array $line): array => array_diff_key(
+                    $line, array_flip(['order_item_id', 'cancellations']),
+                ), $round->priced_lines ?? []),
                 'subtotal_baisas' => (int) $round->subtotal_baisas,
                 'tax_baisas' => (int) $round->tax_baisas,
                 'total_baisas' => (int) $round->total_baisas,

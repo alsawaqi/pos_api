@@ -17,6 +17,7 @@ use App\Actions\Device\Sync\Handlers\ProductWasteHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
 use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
 use App\Actions\Device\Sync\Handlers\StockCountHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionCancelLineHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionCloseHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionJoinHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionMoveHandler;
@@ -65,6 +66,7 @@ class SyncEventDispatcher
         private readonly TableSessionMoveHandler $tableMove,
         private readonly TableSessionJoinHandler $tableJoin,
         private readonly TableSessionCloseHandler $tableClose,
+        private readonly TableSessionCancelLineHandler $tableCancelLine,
     ) {}
 
     /**
@@ -94,6 +96,7 @@ class SyncEventDispatcher
             'table.session.move' => $this->tableMove,
             'table.session.join' => $this->tableJoin,
             'table.session.close' => $this->tableClose,
+            'table.session.cancel_line' => $this->tableCancelLine,
         ];
     }
 

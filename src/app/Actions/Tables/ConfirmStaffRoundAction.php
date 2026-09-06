@@ -48,13 +48,16 @@ final class ConfirmStaffRoundAction
                 throw new QrDineInException('nothing_to_confirm', 409, 'Every line is held; reject this round and re-enter the requested items.');
             }
 
-            $this->append->handleStored($order, $round->confirm_payload);
+            $itemIds = $this->append->handleStored($order, $round->confirm_payload);
             $lines = $round->priced_lines ?? [];
             $droppedCount = 0;
+            $pricedIndex = 0;
             foreach ($lines as &$line) {
                 if (isset($line['held_reason'])) {
                     $line['held_disposition'] = 'dropped_at_review';
                     $droppedCount++;
+                } else {
+                    $line['order_item_id'] = $itemIds[$pricedIndex++];
                 }
             }
             unset($line);

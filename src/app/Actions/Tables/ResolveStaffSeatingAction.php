@@ -42,6 +42,7 @@ final class ResolveStaffSeatingAction
                 'order_uuid' => ['sometimes', 'nullable', 'uuid'],
             ],
             'round' => [
+                'order_uuid' => ['sometimes', 'nullable', 'uuid'],
                 'client_request_id' => ['required', 'string', 'max:64'],
                 'submitted_at' => ['required', 'date'],
                 'printed_at' => ['sometimes', 'nullable', 'date'],
@@ -66,6 +67,18 @@ final class ResolveStaffSeatingAction
                 'join_table_ids' => ['required', 'array', 'min:1', 'max:100'],
                 'join_table_ids.*' => ['integer', 'min:1', 'distinct'],
                 'joined_at' => ['required', 'date'],
+            ],
+            'cancel_line' => [
+                'client_request_id' => ['required', 'string', 'max:64'],
+                'product_id' => ['required', 'integer', 'min:1'],
+                'addon_ids' => ['sometimes', 'array', 'max:50'],
+                'addon_ids.*' => ['integer', 'distinct'],
+                'notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
+                'qty' => ['required', 'integer', 'min:1', 'max:999'],
+                'prepared' => ['required', 'boolean'],
+                'reason' => ['sometimes', 'nullable', 'string', 'max:200'],
+                'authorized_by' => ['sometimes', 'nullable', 'string', 'max:100'],
+                'cancelled_at' => ['required', 'date'],
             ],
             'close' => [
                 'closed_at' => ['required', 'date'],

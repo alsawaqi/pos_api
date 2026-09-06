@@ -350,9 +350,14 @@ final class QrSharedBillIdentityTest extends TestCase
         $actual = $status['data']['dine_in']['rounds'][0];
         $this->assertSame('customer', $actual['entered_by']);
         unset($actual['entered_by']);
+        $expectedPublicLines = $round->priced_lines;
+        foreach ($expectedPublicLines as &$expectedLine) {
+            unset($expectedLine['order_item_id']);
+        }
+        unset($expectedLine);
         $this->assertSame([
             'id' => (int) $round->id, 'round_no' => (int) $round->round_no,
-            'status' => $round->status, 'priced_lines' => $round->priced_lines,
+            'status' => $round->status, 'priced_lines' => $expectedPublicLines,
             'subtotal_baisas' => (int) $round->subtotal_baisas,
             'tax_baisas' => (int) $round->tax_baisas, 'total_baisas' => (int) $round->total_baisas,
             'submitted_at' => $round->submitted_at->toIso8601String(),

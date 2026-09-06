@@ -316,7 +316,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $item = OrderItem::query()->where('order_id', $bill->id)->sole();
         $this->assertSame($payload['lines'][0]['product_id'], (int) $item->product_id);
         $this->assertSame('1.000', $item->unit_price_snapshot);
-        $this->assertSame($beforeLines[0], $round->fresh()->priced_lines[0]);
+        $this->assertSame($beforeLines[0] + ['order_item_id' => (int) $item->id], $round->fresh()->priced_lines[0]);
         $dropped = $beforeLines[1] + ['held_disposition' => 'dropped_at_review'];
         $this->assertSame($dropped, $round->fresh()->priced_lines[1]);
         $this->assertSame([$dropped], $ack['dropped_lines']);

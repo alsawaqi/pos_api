@@ -45,7 +45,9 @@ final class StaffRoundReviewTest extends TestCase
         $this->assertCount(2, $items);
         $this->assertSame($oldItems[0], $items[0]->toArray());
         $this->assertSame('1.000', $items[1]->unit_price_snapshot);
-        $this->assertSame($snapshot['priced_lines'], $round->fresh()->getRawOriginal('priced_lines'));
+        $expectedLines = json_decode($snapshot['priced_lines'], true, flags: JSON_THROW_ON_ERROR);
+        $expectedLines[0]['order_item_id'] = (int) $items[1]->id;
+        $this->assertSame(json_encode($expectedLines, JSON_THROW_ON_ERROR), $round->fresh()->getRawOriginal('priced_lines'));
         $this->assertSame($snapshot['kitchen_printed_at'], $round->fresh()->getRawOriginal('kitchen_printed_at'));
         $this->assertSame($snapshot['origin_table_session_id'], $round->fresh()->getRawOriginal('origin_table_session_id'));
         $this->assertTrue($ack['needs_review']);

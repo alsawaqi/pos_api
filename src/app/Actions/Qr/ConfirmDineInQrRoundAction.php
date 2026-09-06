@@ -50,8 +50,14 @@ final class ConfirmDineInQrRoundAction
                     throw $this->notPending();
                 }
 
-                $this->append->handleStored($order, $payload);
+                $itemIds = $this->append->handleStored($order, $payload);
+                $lines = $round->priced_lines;
+                foreach ($lines as $index => &$line) {
+                    $line['order_item_id'] = $itemIds[$index];
+                }
+                unset($line);
                 $round->update([
+                    'priced_lines' => $lines,
                     'status' => QrOrderRound::STATUS_ACCEPTED,
                     'resolved_at' => now(),
                     'resolved_by_device_id' => $device->getKey(),

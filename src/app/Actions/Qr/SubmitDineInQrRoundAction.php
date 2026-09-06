@@ -349,7 +349,13 @@ final class SubmitDineInQrRoundAction
             }
 
             if (! $staffConfirm) {
-                $this->append->handle($order, $session, $loaded, $price, $now);
+                $itemIds = $this->append->handle($order, $session, $loaded, $price, $now);
+                $lines = $round->priced_lines;
+                foreach ($lines as $index => &$line) {
+                    $line['order_item_id'] = $itemIds[$index];
+                }
+                unset($line);
+                $round->update(['priced_lines' => $lines]);
                 $this->refreshTotals->handle($order);
             }
             foreach ($joinedSeatings as $joined) {

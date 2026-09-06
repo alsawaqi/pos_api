@@ -119,7 +119,8 @@ final class AppendStaffRoundAction
             }
             if ($order === null) {
                 $order = Order::query()->create([
-                    'uuid' => (string) Str::uuid(),
+                    'uuid' => isset($payload['order_uuid']) && ! Order::query()->where('uuid', $payload['order_uuid'])->exists()
+                        ? $payload['order_uuid'] : (string) Str::uuid(),
                     'company_id' => $device->company_id,
                     'branch_id' => $device->branch_id,
                     'device_id' => $device->id,
@@ -170,7 +171,16 @@ final class AppendStaffRoundAction
                 'accepted_seq' => null,
             ]);
             if (! $needsReview) {
-                $this->append->handle($order, $pricingContext, $loaded, $price, $now);
+                $itemIds = $this->append->handle($order, $pricingContext, $loaded, $price, $now);
+                $lines = $round->priced_lines;
+                $pricedIndex = 0;
+                foreach ($lines as &$line) {
+                    if (! isset($line['held_reason'])) {
+                        $line['order_item_id'] = $itemIds[$pricedIndex++];
+                    }
+                }
+                unset($line);
+                $round->update(['priced_lines' => $lines]);
                 $this->totals->handle($order);
                 $round->update(['accepted_seq' => $this->acceptedSequence->next()]);
             }

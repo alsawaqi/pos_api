@@ -146,7 +146,7 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $this->assertSame((int) $order->table_session_id, (int) $round->table_session_id);
         $this->assertSame((int) $order->table_session_id, (int) $flow['session']->fresh()->table_session_id);
         $this->assertSame(
-            json_encode($this->expectedPricedLines(), JSON_THROW_ON_ERROR),
+            json_encode([$this->expectedPricedLines()[0] + ['order_item_id' => (int) OrderItem::query()->where('order_id', $order->id)->sole()->id]], JSON_THROW_ON_ERROR),
             $round->getRawOriginal('priced_lines'),
             'kitchen-direct priced_lines bytes drifted',
         );
@@ -227,7 +227,7 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $round->status);
         $this->assertNull($round->confirm_payload);
         $this->assertSame(
-            json_encode($this->expectedPricedLines(), JSON_THROW_ON_ERROR),
+            json_encode([$this->expectedPricedLines()[0] + ['order_item_id' => (int) OrderItem::query()->where('order_id', $order->id)->sole()->id]], JSON_THROW_ON_ERROR),
             $round->getRawOriginal('priced_lines'),
             'kitchen-direct priced_lines bytes drifted',
         );
@@ -362,6 +362,9 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $rejected = $this->app->make(RejectDineInQrRoundAction::class)->handle($resolver, (int) $rounds[1]->id);
         $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $confirmed['round']['status']);
         $this->assertSame(QrOrderRound::STATUS_REJECTED, $rejected['round']['status']);
+        $expectedConfirmedLines = json_decode($before[0]['priced_lines'], true, flags: JSON_THROW_ON_ERROR);
+        $expectedConfirmedLines[0]['order_item_id'] = (int) OrderItem::query()->where('order_id', $rounds[0]->order_id)->sole()->id;
+        $before[0]['priced_lines'] = json_encode($expectedConfirmedLines, JSON_THROW_ON_ERROR);
         foreach ($rounds as $index => $round) {
             $round->refresh();
             $this->assertSame($before[$index]['priced_lines'], $round->getRawOriginal('priced_lines'));
@@ -487,7 +490,9 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         );
 
         $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $presented['round']['status']);
-        $this->assertSame($this->expectedPricedLines(), $presented['round']['priced_lines']);
+        $expectedOwnedLines = $this->expectedPricedLines();
+        $expectedOwnedLines[0]['order_item_id'] = (int) OrderItem::query()->where('order_id', $order->id)->sole()->id;
+        $this->assertSame($expectedOwnedLines, $presented['round']['priced_lines']);
         $this->assertSame(now()->toIso8601String(), $presented['round']['resolved_at']);
         $this->assertSame([
             'subtotal_baisas' => 5750,
@@ -508,7 +513,9 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         $this->assertSame(now()->toIso8601String(), $round->resolved_at?->toIso8601String());
         $this->assertSame((int) $resolver->id, (int) $round->resolved_by_device_id);
         $this->assertNull($round->confirm_payload);
-        $this->assertSame($frozenLinesBytes, $round->getRawOriginal('priced_lines'));
+        $expectedFrozenLines = json_decode($frozenLinesBytes, true, flags: JSON_THROW_ON_ERROR);
+        $expectedFrozenLines[0]['order_item_id'] = $expectedOwnedLines[0]['order_item_id'];
+        $this->assertSame(json_encode($expectedFrozenLines, JSON_THROW_ON_ERROR), $round->getRawOriginal('priced_lines'));
         $this->assertSame($seatingId, (int) $round->table_session_id);
         $this->assertSame($seatingId, (int) $order->table_session_id);
         $this->assertSame('5.750', $order->subtotal);

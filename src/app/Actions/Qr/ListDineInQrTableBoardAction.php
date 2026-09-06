@@ -119,6 +119,7 @@ final class ListDineInQrTableBoardAction
                     ->where('qr_session_id', $session->id)
                     ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
                     ->orderBy('round_no')
+                    ->orderBy('id')
                     ->get();
             $acceptedRoundCount = $session === null
                 ? 0
@@ -137,7 +138,7 @@ final class ListDineInQrTableBoardAction
                     ->get();
             $boardRounds = $pendingRounds
                 ->concat($recentAcceptedRounds)
-                ->sortBy(static fn (QrOrderRound $round): int => (int) $round->round_no)
+                ->sortBy([['round_no', 'asc'], ['id', 'asc']])
                 ->values();
             $orphaned = $order !== null && (
                 $session === null

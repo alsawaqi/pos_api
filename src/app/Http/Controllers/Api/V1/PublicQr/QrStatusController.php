@@ -59,6 +59,7 @@ class QrStatusController
                 static fn ($query) => $query->where('order_id', $order->id),
                 static fn ($query) => $query->where('qr_session_id', $session->id))
             ->orderBy('round_no')
+            ->orderBy('id')
             ->get();
         $roundAllowed = $session->status === QrSession::STATUS_ACTIVE
             && ($order === null || $order->status === Order::STATUS_OPEN);

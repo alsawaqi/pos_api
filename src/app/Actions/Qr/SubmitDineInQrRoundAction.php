@@ -163,9 +163,12 @@ final class SubmitDineInQrRoundAction
                 ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
                 ->orderBy('id')->lockForUpdate()->get();
 
-            $roundNo = ((int) QrOrderRound::query()
+            $lastBillRoundNo = $order === null ? null : QrOrderRound::query()
+                ->where('order_id', $order->id)
+                ->max('round_no');
+            $roundNo = ((int) ($lastBillRoundNo ?? QrOrderRound::query()
                 ->where('qr_session_id', $session->id)
-                ->max('round_no')) + 1;
+                ->max('round_no'))) + 1;
             $acceptedRoundExists = QrOrderRound::query()
                 ->where('qr_session_id', $session->id)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)

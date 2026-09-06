@@ -10,6 +10,7 @@ use App\Actions\Qr\ClaimQrSettlementAction;
 use App\Actions\Qr\ClearDineInQrTableAction;
 use App\Actions\Qr\ConfirmDineInQrRoundAction;
 use App\Actions\Qr\FinishDineInQrOrderAction;
+use App\Actions\Qr\ListDineInQrTableBoardAction;
 use App\Actions\Qr\OpenDineInTableAction;
 use App\Actions\Qr\QrChargeException;
 use App\Actions\Qr\QrDineInException;
@@ -53,6 +54,89 @@ final class QrSharedBillIdentityTest extends TestCase
         $this->travelTo(Carbon::parse('2026-09-05 12:00:00', 'UTC'));
         $this->withoutMiddleware(ThrottleRequests::class);
         Cache::flush();
+    }
+
+    /** @return array<string, array{bool}> */
+    public static function sharedRoundOrigins(): array
+    {
+        return ['staff first' => [true], 'customer first' => [false]];
+    }
+
+    #[DataProvider('sharedRoundOrigins')]
+    public function test_shared_bill_round_numbers_follow_bill_order_and_public_status(bool $staffFirst): void
+    {
+        $flow = $this->flow();
+        if ($staffFirst) {
+            $staff = $this->staffRound($flow);
+            $customer = $this->customerRound($flow);
+        } else {
+            $customer = $this->customerRound($flow);
+            $staff = $this->staffRound($flow);
+        }
+        $ids = $staffFirst
+            ? [$staff['round_id'], (int) $customer['round']->id]
+            : [(int) $customer['round']->id, $staff['round_id']];
+        $origins = $staffFirst ? ['staff', 'customer'] : ['customer', 'staff'];
+        $this->assertSame(1, Order::query()->count());
+        $this->assertSame([1, 2], QrOrderRound::query()
+            ->where('order_id', $customer['order']->id)->orderBy('id')->pluck('round_no')->all());
+        $publicRounds = $this->qrStatus($flow['session'])['data']['dine_in']['rounds'];
+        $this->assertSame($ids, array_column($publicRounds, 'id'));
+        $this->assertSame([1, 2], array_column($publicRounds, 'round_no'));
+        $this->assertSame($origins, array_column($publicRounds, 'entered_by'));
+        $replay = $this->customerRound($flow);
+        $this->assertTrue($replay['replayed']);
+        $this->assertSame((int) $customer['round']->id, (int) $replay['round']->id);
+        $this->assertSame(2, QrOrderRound::query()->count());
+        fwrite(STDOUT, "\nT6_R2_ROUND_ORDER=".json_encode([
+            'staff_first' => $staffFirst, 'round_no' => array_column($publicRounds, 'round_no'),
+            'entered_by' => $origins, 'replayed' => $replay['replayed'],
+        ], JSON_THROW_ON_ERROR)."\n");
+    }
+
+    /** @return array<string, array{string}> */
+    public static function duplicateRoundStatuses(): array
+    {
+        return [
+            'accepted tie' => [QrOrderRound::STATUS_ACCEPTED],
+            'pending and accepted tie' => [QrOrderRound::STATUS_PENDING_CONFIRMATION],
+        ];
+    }
+
+    #[DataProvider('duplicateRoundStatuses')]
+    public function test_legacy_round_number_ties_are_ordered_by_id_in_status_and_board(string $status): void
+    {
+        $flow = $this->flow();
+        $customer = $this->customerRound($flow);
+        $later = $this->seatingRound($flow['seating'], $customer['order'], [
+            'qr_session_id' => $flow['session']->id, 'round_no' => 1,
+            'status' => $status, 'resolved_at' => now()->addSecond(),
+        ]);
+        $ids = [(int) $customer['round']->id, (int) $later->id];
+        $queries = [];
+        DB::listen(function (QueryExecuted $query) use (&$queries): void {
+            if (str_contains($query->sql, 'from "pos_qr_order_rounds"')) {
+                $queries[] = $query->sql;
+            }
+        });
+        $publicRounds = $this->qrStatus($flow['session'])['data']['dine_in']['rounds'];
+        $this->assertSame($ids, array_column($publicRounds, 'id'));
+        $this->assertSame([1, 1], array_column($publicRounds, 'round_no'));
+        $this->assertTrue(collect($queries)->contains(
+            static fn (string $sql): bool => str_contains($sql, 'order by "round_no" asc, "id" asc'),
+        ), 'Public status must explicitly break legacy round-number ties by id.');
+        $queries = [];
+        $board = app(ListDineInQrTableBoardAction::class)->handle($flow['till']);
+        $this->assertCount(1, $board);
+        $this->assertSame($ids, array_column($board[0]['rounds'], 'id'));
+        $this->assertTrue(collect($queries)->contains(
+            static fn (string $sql): bool => str_contains($sql, 'order by "round_no" asc, "id" asc'),
+        ), 'The pending-round query must explicitly break legacy ties by id.');
+        fwrite(STDOUT, "\nT6_R2_LEGACY_ROUND_ORDER=".json_encode([
+            'status' => $status, 'round_no' => array_column($publicRounds, 'round_no'),
+            'public_ids' => array_column($publicRounds, 'id'),
+            'board_ids' => array_column($board[0]['rounds'], 'id'),
+        ], JSON_THROW_ON_ERROR)."\n");
     }
 
     public function test_case_12_staff_first_bill_is_adopted_with_exact_identity_without_replacing_children(): void
@@ -234,6 +318,7 @@ final class QrSharedBillIdentityTest extends TestCase
         $this->staffConfirmMode();
         $result = $this->customerRound($flow);
         $staffPending = $this->seatingRound($flow['seating'], $result['order'], [
+            'round_no' => 3,
             'status' => QrOrderRound::STATUS_PENDING_CONFIRMATION, 'needs_review' => true,
             'confirm_payload' => ['private' => 'staff'], 'resolved_at' => null,
         ]);

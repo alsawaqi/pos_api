@@ -65,7 +65,7 @@ class QrSessionGroundworkTest extends TestCase
 
     public function test_sqlite_mirror_has_the_qr_columns_and_named_indexes(): void
     {
-        $this->assertCount(22, Schema::getColumnListing('pos_qr_sessions'));
+        $this->assertCount(24, Schema::getColumnListing('pos_qr_sessions'));
         foreach ([
             'temp_reference',
             'qr_session_id',

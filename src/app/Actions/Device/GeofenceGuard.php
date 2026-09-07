@@ -24,7 +24,7 @@ use RuntimeException;
 final class GeofenceGuard
 {
     /** GPS-jitter tolerance on top of the branch radius (§9.4). */
-    private const TOLERANCE_M = 100.0;
+    public const TOLERANCE_M = 100.0;
 
     private const EARTH_RADIUS_M = 6_371_000.0;
 
@@ -70,6 +70,20 @@ final class GeofenceGuard
         $radius = (int) ($branch->geofence_radius_m ?? self::DEFAULT_RADIUS_M);
 
         return $distance <= $radius + self::TOLERANCE_M;
+    }
+
+    public function radiusMetres(Branch $branch): int
+    {
+        return (int) ($branch->geofence_radius_m ?? self::DEFAULT_RADIUS_M);
+    }
+
+    public function distanceMetres(Branch $branch, float $lat, float $lng): ?float
+    {
+        if (! $this->isFenced($branch)) {
+            return null;
+        }
+
+        return $this->haversineMetres((float) $branch->latitude, (float) $branch->longitude, $lat, $lng);
     }
 
     private function haversineMetres(float $lat1, float $lng1, float $lat2, float $lng2): float

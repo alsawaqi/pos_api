@@ -1070,6 +1070,8 @@ class DeviceConfigTest extends TestCase
                 'order_numbering',
                 'dine_in_round_mode',
                 'table_sessions_mode',
+                'qr_table_card_enabled',
+                'qr_scan_geofence_mode',
             ], array_keys($json['data']['settings']));
             $this->assertArrayNotHasKey(
                 'dine_in_round_mode',
@@ -1168,6 +1170,49 @@ class DeviceConfigTest extends TestCase
             'company_id' => 200, 'value' => json_encode('shadow'),
         ]);
         $this->assertSame('off', $read()['table_sessions_mode'], 'company mismatch fails closed');
+    }
+
+    public function test_card_settings_are_uncached_branch_only_hints_in_full_and_delta(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $read = function (bool $delta): array {
+            $url = '/api/v1/device/config'.($delta ? '/delta?since='.urlencode(now()->toIso8601String()) : '');
+
+            return $this->withToken('mdev_cfg')->getJson($url)->assertOk()->json('data.settings');
+        };
+        foreach (['qr_table_card_enabled' => 'off', 'qr_scan_geofence_mode' => 'advisory'] as $key => $default) {
+            foreach ([false, true] as $delta) {
+                $this->assertSame($default, $read($delta)[$key]);
+            }
+            DB::table('pos_company_settings')->insert([
+                'company_id' => 100, 'key' => $key, 'value' => '"on"',
+            ]);
+            DB::table('pos_branch_settings')->insert([
+                'company_id' => 100, 'branch_id' => 11, 'key' => $key, 'value' => '"enforce"',
+            ]);
+            $this->assertSame($default, $read(false)[$key], 'no company or sibling fallback');
+            $valid = $key === 'qr_table_card_enabled' ? ['off', 'on'] : ['off', 'advisory', 'enforce'];
+            foreach ($valid as $value) {
+                DB::table('pos_branch_settings')->updateOrInsert(
+                    ['company_id' => 100, 'branch_id' => 10, 'key' => $key],
+                    ['value' => json_encode($value), 'created_at' => $this->old, 'updated_at' => $this->old],
+                );
+                foreach ([false, true] as $delta) {
+                    $this->assertSame($value, $read($delta)[$key]);
+                }
+            }
+            foreach (['{broken', 'null', 'true', '1', '["on"]', '{"mode":"enforce"}', '"ON"', '"unknown"'] as $raw) {
+                DB::table('pos_branch_settings')->where('branch_id', 10)->where('key', $key)->update(['value' => $raw]);
+                foreach ([false, true] as $delta) {
+                    $this->assertSame($default, $read($delta)[$key]);
+                }
+            }
+            DB::table('pos_branch_settings')->where('branch_id', 10)->where('key', $key)->update([
+                'company_id' => 200, 'value' => json_encode(end($valid)),
+            ]);
+            $this->assertSame($default, $read(false)[$key], 'foreign company excluded');
+        }
     }
 
     public function test_audience_measurement_meta_defaults_off_and_follows_company_consent(): void

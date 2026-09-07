@@ -18,7 +18,7 @@ class QrDineInSchemaTest extends TestCase
 
     public function test_sqlite_mirror_has_all_qr2_columns_indexes_and_foreign_keys(): void
     {
-        foreach (['table_id', 'secret_rotated_at', 'table_session_id', 'origin', 'scan_fingerprint_hash', 'scan_ip_hash', 'scan_geofence_verdict'] as $column) {
+        foreach (['table_id', 'secret_rotated_at', 'table_session_id', 'origin', 'scan_fingerprint_hash', 'scan_ip_hash', 'scan_geofence_verdict', 'released_at', 'handover_from_id'] as $column) {
             $this->assertTrue(Schema::hasColumn('pos_qr_sessions', $column), $column);
         }
 
@@ -121,6 +121,9 @@ class QrDineInSchemaTest extends TestCase
                 'geofence_verdict',
                 'scanned_at',
                 'created_at',
+                'outcome',
+                'accuracy_m',
+                'distance_m',
             ],
             'pos_kitchen_tickets' => [
                 'id',

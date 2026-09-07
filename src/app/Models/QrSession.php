@@ -54,6 +54,7 @@ class QrSession extends Model
             'secret_rotated_at' => 'datetime',
             'expires_at' => 'datetime',
             'closed_at' => 'datetime',
+            'released_at' => 'datetime',
         ];
     }
 
@@ -110,6 +111,12 @@ class QrSession extends Model
     public function rounds(): HasMany
     {
         return $this->hasMany(QrOrderRound::class, 'qr_session_id');
+    }
+
+    /** @return BelongsTo<QrSession, $this> */
+    public function handoverFrom(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'handover_from_id');
     }
 
     public function isDineIn(): bool

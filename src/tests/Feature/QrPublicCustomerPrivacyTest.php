@@ -470,6 +470,8 @@ final class QrPublicCustomerPrivacyTest extends TestCase
             'scan_fingerprint_hash',
             'scan_ip_hash',
             'scan_geofence_verdict',
+            'released_at',
+            'handover_from_id',
             'token',
             'token_expires_at',
             'status',

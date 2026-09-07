@@ -560,6 +560,9 @@ return new class extends Migration
             $table->string('scan_ip_hash', 64)->nullable();
             $table->string('scan_geofence_verdict', 16)->nullable();
             $table->index(['table_session_id'], 'pos_qr_sessions_table_session_idx');
+            $table->timestamp('released_at')->nullable();
+            $table->foreignId('handover_from_id')->nullable()->constrained('pos_qr_sessions')->nullOnDelete();
+            $table->index('released_at', 'pos_qr_sessions_released_idx');
         });
 
         DB::statement(
@@ -778,13 +781,16 @@ return new class extends Migration
             // owner | viewer | refused: first scanner owns, second is read-only.
             $table->string('role', 16);
             $table->string('device_fingerprint_hash', 64)->nullable(); // SHA-256 only.
-            $table->string('ip_hash', 64)->nullable(); // SHA-256 only.
+            $table->string('ip_hash', 64)->nullable(); // App-key HMAC, never a raw IP.
             $table->decimal('latitude', 10, 7)->nullable();
             $table->decimal('longitude', 10, 7)->nullable();
             // inside | outside | unknown | refused (T9)
             $table->string('geofence_verdict', 16)->nullable();
             $table->timestamp('scanned_at');
             $table->timestamp('created_at');
+            $table->string('outcome', 24)->nullable();
+            $table->unsignedInteger('accuracy_m')->nullable();
+            $table->unsignedInteger('distance_m')->nullable();
             $table->index(['branch_id', 'scanned_at'], 'pos_qr_session_scans_branch_scanned_idx');
             $table->index(['table_id', 'scanned_at'], 'pos_qr_session_scans_table_scanned_idx');
         });

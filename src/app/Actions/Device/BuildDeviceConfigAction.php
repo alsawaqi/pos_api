@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Actions\Device;
 
 use App\Actions\Qr\DineInRoundMode;
+use App\Actions\Qr\QrScanGeofenceMode;
+use App\Actions\Qr\QrTableCardEnabled;
 use App\Actions\Tables\TableSessionsMode;
 use App\Models\AddOn;
 use App\Models\AddOnGroup;
@@ -58,6 +60,8 @@ class BuildDeviceConfigAction
     public function __construct(
         private readonly DineInRoundMode $dineInRoundMode,
         private readonly TableSessionsMode $tableSessionsMode,
+        private readonly QrTableCardEnabled $tableCardEnabled,
+        private readonly QrScanGeofenceMode $scanGeofenceMode,
     ) {}
 
     /**
@@ -402,6 +406,8 @@ class BuildDeviceConfigAction
                 // server reads it again on every round, never trusting this hint.
                 'dine_in_round_mode' => $this->dineInRoundMode->forBranch($companyId, $branchId),
                 'table_sessions_mode' => $this->tableSessionsMode->forBranch($companyId, $branchId),
+                'qr_table_card_enabled' => $this->tableCardEnabled->forBranch($companyId, $branchId) ? 'on' : 'off',
+                'qr_scan_geofence_mode' => $this->scanGeofenceMode->forBranch($companyId, $branchId),
             ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),

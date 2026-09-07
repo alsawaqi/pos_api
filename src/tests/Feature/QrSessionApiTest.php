@@ -89,6 +89,22 @@ class QrSessionApiTest extends TestCase
         ])->getJson('/api/v1/public/qr/session-probe');
     }
 
+    public function test_default_quick_lifetime_is_two_hours_with_one_minute_token_rotation(): void
+    {
+        $now = Carbon::parse('2026-09-07 12:00:00');
+        $this->travelTo($now);
+
+        $this->assertSame(120, config('qr.session_lifetime_minutes'));
+        $this->assertSame(60, config('qr.token_rotation_seconds'));
+        $this->device('station-default-lifetime');
+        $this->rotate('station-default-lifetime')->assertOk();
+
+        $session = QrSession::query()->sole();
+        $this->assertTrue($session->created_at->equalTo($now));
+        $this->assertTrue($session->expires_at->equalTo($now->copy()->addMinutes(120)));
+        $this->assertTrue($session->token_expires_at->equalTo($now->copy()->addSeconds(60)));
+    }
+
     public function test_only_an_active_assigned_payment_station_can_rotate(): void
     {
         $now = Carbon::parse('2026-08-26 12:00:00');

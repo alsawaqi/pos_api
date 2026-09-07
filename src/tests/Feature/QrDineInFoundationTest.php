@@ -295,7 +295,7 @@ final class QrDineInFoundationTest extends TestCase
             ->assertJsonPath('errors.0.code', 'qr_table_not_found');
     }
 
-    public function test_first_bind_ignores_rotation_window_and_rebind_is_loss_free_and_supersedes_secret(): void
+    public function test_first_bind_ignores_rotation_window_and_a_second_secret_is_read_only(): void
     {
         $station = $this->device('payment_station');
         $table = $this->table(branchId: 10, label: 'T-REBIND');
@@ -328,25 +328,26 @@ final class QrDineInFoundationTest extends TestCase
             'table_token' => $table->qr_token,
             'client_secret' => $secondSecret,
         ])->assertOk()
-            ->assertJsonPath('data.session_uuid', $session->uuid)
-            ->assertJsonPath('data.status', QrSession::STATUS_ACTIVE);
+            ->assertJsonPath('data.session_uuid', null)
+            ->assertJsonPath('data.status', 'read_only')
+            ->assertJsonPath('data.read_only', true);
 
         $session->refresh();
-        $this->assertTrue($session->clientSecretMatches($secondSecret));
-        $this->assertFalse($session->clientSecretMatches($firstSecret));
+        $this->assertFalse($session->clientSecretMatches($secondSecret));
+        $this->assertTrue($session->clientSecretMatches($firstSecret));
         $this->assertSame($boundAt, $session->bound_at?->toIso8601String());
-        $this->assertSame(now()->toIso8601String(), $session->secret_rotated_at?->toIso8601String());
+        $this->assertNull($session->secret_rotated_at);
         $this->assertSame($orderBefore, $order->fresh()->getRawOriginal());
 
         $this->qrStatus($session, $firstSecret)
-            ->assertNotFound()
-            ->assertJsonPath('errors.0.code', 'qr_session_not_found');
-        $this->qrStatus($session, $secondSecret)
             ->assertOk()
             ->assertJsonPath('data.order.uuid', $order->uuid);
+        $this->qrStatus($session, $secondSecret)
+            ->assertNotFound()
+            ->assertJsonPath('errors.0.code', 'qr_session_not_found');
     }
 
-    public function test_ordered_or_stationless_table_bind_is_generic_and_never_rotates_the_secret(): void
+    public function test_ordered_table_bind_is_read_only_and_stationless_stays_generic(): void
     {
         $station = $this->device('payment_station');
         $table = $this->table(branchId: 10, label: 'T-FROZEN');
@@ -366,8 +367,8 @@ final class QrDineInFoundationTest extends TestCase
         $this->postJson(self::TABLE_BIND_URL, [
             'table_token' => $table->qr_token,
             'client_secret' => 'must-not-replace-ordered',
-        ])->assertNotFound()
-            ->assertExactJson($this->genericBindFailure());
+        ])->assertOk()
+            ->assertJsonPath('data.read_only', true);
         $this->assertSame($beforeOrdered, $session->fresh()->getRawOriginal());
 
         $session->update(['status' => QrSession::STATUS_ACTIVE]);

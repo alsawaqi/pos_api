@@ -497,6 +497,24 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         }
     }
 
+    public function test_qr_scan_schema_contains_only_the_named_hash_and_location_contract(): void
+    {
+        $actual = Schema::getColumnListing('pos_qr_session_scans');
+        $expected = [
+            'id', 'company_id', 'branch_id', 'table_id', 'qr_session_id', 'table_session_id',
+            'role', 'device_fingerprint_hash', 'ip_hash', 'latitude', 'longitude', 'geofence_verdict',
+            'scanned_at', 'created_at', 'outcome', 'accuracy_m', 'distance_m',
+        ];
+        sort($actual);
+        sort($expected);
+        $this->assertSame($expected, $actual);
+        foreach (['phone', 'plate', 'name', 'customer_id', 'user_agent', 'fingerprint', 'ip'] as $fragment) {
+            $this->assertFalse(collect($actual)->contains(static fn (string $column): bool => ! in_array(
+                $column, ['device_fingerprint_hash', 'ip_hash'], true,
+            ) && str_contains($column, $fragment)));
+        }
+    }
+
     public function test_named_qr_limiter_keys_ignore_raw_phone_and_plate_values(): void
     {
         $phone = '96660001';

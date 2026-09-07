@@ -37,6 +37,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceStaffRoundReviewController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableClaimOwnerController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableReleaseCredentialController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSessionController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
@@ -170,6 +171,8 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/qr/reopen-payment', DeviceQrReopenPaymentController::class)
             ->middleware('throttle:qr-table-device-write')
             ->name('device.qr.reopen-payment');
+        Route::post('device/tables/{uuid}/release-credential', DeviceTableReleaseCredentialController::class)
+            ->middleware('throttle:qr-table-device-write')->name('device.tables.release-credential');
         Route::get('device/tables/board', DeviceTableBoardController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.tables.board');

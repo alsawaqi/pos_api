@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Device\GeofenceGuard;
+use App\Models\Branch;
 use App\Models\Floor;
 use App\Models\Table;
 
@@ -12,6 +14,9 @@ final class BuildQrTableMenuAction
 {
     public function __construct(
         private readonly BuildQrBranchMenuAction $menu,
+        private readonly QrTableCardEnabled $cards,
+        private readonly QrScanGeofenceMode $geofenceMode,
+        private readonly GeofenceGuard $geofence,
     ) {}
 
     /** @return array<string, mixed> */
@@ -41,10 +46,19 @@ final class BuildQrTableMenuAction
             (int) $floor->branch_id,
         );
 
+        $branch = Branch::query()->whereKey((int) $floor->branch_id)
+            ->where('company_id', (int) $table->company_id)->first();
+
         return [
             'table' => [
                 'uuid' => (string) $table->uuid,
                 'label' => (string) $table->label,
+            ],
+            'branch' => ['name' => $branch?->name, 'name_ar' => $branch?->name_ar],
+            'card' => [
+                'enabled' => $this->cards->forBranch((int) $table->company_id, (int) $floor->branch_id),
+                'geofence_mode' => $this->geofenceMode->forBranch((int) $table->company_id, (int) $floor->branch_id),
+                'branch_fenced' => $branch !== null && $this->geofence->isFenced($branch),
             ],
         ] + $menu;
     }

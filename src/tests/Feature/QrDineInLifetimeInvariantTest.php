@@ -282,12 +282,14 @@ final class QrDineInLifetimeInvariantTest extends TestCase
                 );
             } elseif ($operation === 'rebind') {
                 $oldSecret = $flow['secret'];
-                $flow['secret'] = 'replacement-'.$seed;
+                $candidateSecret = 'replacement-'.$seed;
                 $this->postJson(self::TABLE_BIND_URL, [
                     'table_token' => $flow['table']->qr_token,
-                    'client_secret' => $flow['secret'],
-                ])->assertOk();
+                    'client_secret' => $candidateSecret,
+                ])->assertOk()->assertJsonPath('data.read_only', true);
                 $this->sendQrStatus($flow['session'], $oldSecret)
+                    ->assertOk()->assertJsonPath('data.order.uuid', $order->uuid);
+                $this->sendQrStatus($flow['session'], $candidateSecret)
                     ->assertNotFound()
                     ->assertJsonPath('errors.0.code', 'qr_session_not_found');
             } elseif ($operation === 'wrong_secret') {
@@ -1154,12 +1156,11 @@ final class QrDineInLifetimeInvariantTest extends TestCase
         $this->postJson(self::TABLE_BIND_URL, [
             'table_token' => $table->qr_token,
             'client_secret' => $secondSecret,
-        ])->assertOk();
+        ])->assertOk()->assertJsonPath('data.read_only', true);
         $this->assertTrackedLifetimeInvariants($orders, $sessions, $context.' rebind');
         $this->sendQrStatus($session, $firstSecret)
-            ->assertNotFound()
-            ->assertJsonPath('errors.0.code', 'qr_session_not_found');
-        $this->assertTrackedLifetimeInvariants($orders, $sessions, $context.' superseded browser');
+            ->assertOk();
+        $this->assertTrackedLifetimeInvariants($orders, $sessions, $context.' owner retained');
 
         $quick = $this->quickCheckout($station, 'alphabet-quick-'.$this->phoneSequence);
         $this->assertTrackedLifetimeInvariants($orders, $sessions, $context.' quick checkout');

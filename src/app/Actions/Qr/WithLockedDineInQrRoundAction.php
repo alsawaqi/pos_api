@@ -63,10 +63,26 @@ final class WithLockedDineInQrRoundAction
                 throw $this->notFound();
             }
 
+            $credentialIds = [(int) $session->id];
+            $parentId = $session->handover_from_id;
+            while ($parentId !== null && ! in_array((int) $parentId, $credentialIds, true)) {
+                $parent = QrSession::query()->whereKey((int) $parentId)
+                    ->where('company_id', (int) $order->company_id)->where('branch_id', (int) $order->branch_id)
+                    ->where('table_id', (int) $order->table_id)
+                    ->where('table_session_id', $order->table_session_id ?? 0)
+                    ->whereNotNull('released_at')->whereIn('status', [QrSession::STATUS_CLOSED, QrSession::STATUS_EXPIRED])
+                    ->lockForUpdate()->first();
+                if ($parent === null || (int) $session->table_session_id !== (int) $order->table_session_id) {
+                    break;
+                }
+                $credentialIds[] = (int) $parent->id;
+                $parentId = $parent->handover_from_id;
+            }
+
             $round = QrOrderRound::query()
                 ->whereKey($roundId)
                 ->where('order_id', $order->getKey())
-                ->where('qr_session_id', $session->getKey())
+                ->whereIn('qr_session_id', $credentialIds)
                 ->lockForUpdate()
                 ->first();
             if ($round === null) {

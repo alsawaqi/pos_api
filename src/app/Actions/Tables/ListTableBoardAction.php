@@ -111,7 +111,7 @@ final class ListTableBoardAction
             ->where('company_id', $companyId)->where('branch_id', $branchId)
             ->whereIn('table_session_id', $seatings->whereNull('merged_into_id')->modelKeys())
             ->whereIn('status', QrSession::EXPIRABLE_STATUSES)
-            ->orderBy('id')->pluck('status', 'table_session_id');
+            ->orderBy('id')->get(['table_session_id', 'status', 'origin', 'scan_geofence_verdict'])->keyBy('table_session_id');
 
         return $tables->map(function (Table $table) use (
             $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims, $roundCounts, $credentialStatuses,
@@ -172,7 +172,9 @@ final class ListTableBoardAction
                             'held_lines' => $held,
                         ];
                     })->values()->all(),
-                    'credential_status' => $credentialStatuses->get($primary?->id),
+                    'credential_status' => $credentialStatuses->get($primary?->id)?->status,
+                    'credential_origin' => $credentialStatuses->get($primary?->id)?->origin,
+                    'credential_geofence' => $credentialStatuses->get($primary?->id)?->scan_geofence_verdict,
                 ],
                 'bill' => $order === null ? null : [
                     'order_uuid' => (string) $order->uuid,

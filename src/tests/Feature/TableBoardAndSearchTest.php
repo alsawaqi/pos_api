@@ -278,6 +278,8 @@ final class TableBoardAndSearchTest extends TestCase
                 'opened_at' => '2026-09-05T12:00:00+00:00', 'expires_at' => '2026-09-05T18:00:00+00:00',
                 'needs_review' => false, 'needs_review_count' => 0, 'joined_table_ids' => [], 'pending_rounds' => [],
                 'credential_status' => null,
+                'credential_origin' => null,
+                'credential_geofence' => null,
             ],
             'bill' => [
                 'order_uuid' => $order->uuid, 'status' => 'open', 'grand_total_baisas' => 1000,
@@ -378,6 +380,32 @@ final class TableBoardAndSearchTest extends TestCase
             ->assertJsonPath('data.tables.1.bill.staff_rounds', 1);
         $search = $this->getJson('/api/v1/device/tables/search?q=Table')->assertOk()->assertJsonCount(1, 'data.tables');
         $this->assertSame($board->json('data.tables.0'), $search->json('data.tables.0'));
+    }
+
+    public function test_card_and_station_credential_metadata_is_additive_on_board_and_search(): void
+    {
+        $till = $this->seatingDevice();
+        foreach (['station' => 'inside', 'table_card' => 'refused'] as $origin => $verdict) {
+            $table = $this->seatingTable('Card '.$origin);
+            $seating = $this->seatingRow($table);
+            $this->seatingOrder($seating);
+            QrSession::query()->create([
+                'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+                'device_id' => $origin === 'station' ? $this->seatingDevice('payment_station')->id : null,
+                'table_id' => $table->id, 'table_session_id' => $seating->id,
+                'origin' => $origin, 'scan_geofence_verdict' => $verdict,
+                'token' => Str::random(64), 'token_expires_at' => now()->addHours(6),
+                'status' => 'active', 'expires_at' => now()->addHours(6),
+            ]);
+        }
+        $board = $this->withToken($till->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+            ->assertJsonPath('data.tables.0.seating.credential_origin', 'station')
+            ->assertJsonPath('data.tables.0.seating.credential_geofence', 'inside')
+            ->assertJsonPath('data.tables.1.seating.credential_origin', 'table_card')
+            ->assertJsonPath('data.tables.1.seating.credential_geofence', 'refused');
+        $search = $this->getJson('/api/v1/device/tables/search?q=Card')->assertOk();
+        $this->assertSame($board->json('data.tables'), $search->json('data.tables'));
+        fwrite(STDOUT, "\nT9_BOARD=".json_encode($board->json())."\n");
     }
 
     public function test_joined_board_rows_use_only_the_primary_seatings_live_credential(): void

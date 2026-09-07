@@ -5,7 +5,13 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Actions\Qr\BindQrTableSessionAction;
+use App\Actions\Qr\ExpireAbandonedTableSessionsAction;
+use App\Actions\Qr\FallbackQrOrderToCounterAction;
+use App\Actions\Qr\ListDineInQrTableBoardAction;
+use App\Actions\Qr\ListStationQrAwaitingOrdersAction;
+use App\Actions\Qr\QrChargeException;
 use App\Actions\Qr\QrDineInException;
+use App\Actions\Qr\ReopenDineInQrPaymentAction;
 use App\Actions\Qr\SubmitDineInQrRoundAction;
 use App\Actions\Qr\SupersedeAbandonedTableSessionAction;
 use App\Models\Customer;
@@ -155,5 +161,79 @@ class QrTableCardAdmissionTest extends TestCase
         $this->assertDatabaseHas('pos_table_session_events', [
             'table_session_id' => $seating->id, 'event_type' => 'expired', 'device_id' => null,
         ]);
+    }
+
+    public function test_card_and_handover_credentials_use_awaiting_board_reopen_and_safe_counter_recovery(): void
+    {
+        $till = $this->seatingDevice();
+        $station = $this->seatingDevice('payment_station');
+        foreach ([false, true] as $handover) {
+            $current = $this->card(['status' => QrSession::STATUS_ORDERED]);
+            $seating = $this->seatingRow($current->table, [
+                'origin' => TableSession::ORIGIN_TABLE_CARD, 'status' => TableSession::STATUS_BILLING,
+                'opened_by_device_id' => null, 'billing_at' => now(), 'expires_at' => now()->addHours(6),
+            ]);
+            $current->update(['table_session_id' => $seating->id]);
+            if ($handover) {
+                $old = $this->card([
+                    'table_id' => $current->table_id, 'table_session_id' => $seating->id,
+                    'status' => QrSession::STATUS_CLOSED, 'released_at' => now(), 'closed_at' => now(),
+                ]);
+                $current->update(['handover_from_id' => $old->id]);
+            }
+            $bill = $this->seatingOrder($seating, [
+                'qr_session_id' => $current->id, 'source' => 'qr_web', 'status' => 'awaiting_payment',
+            ]);
+            $awaiting = collect(app(ListStationQrAwaitingOrdersAction::class)->handle($station))
+                ->firstWhere('order_uuid', $bill->uuid);
+            $this->assertNotNull($awaiting);
+            $this->assertSame($current->uuid, $awaiting['session_uuid']);
+            $board = collect(app(ListDineInQrTableBoardAction::class)->handle($till))
+                ->firstWhere('table_id', $current->table_id);
+            $this->assertSame($current->uuid, $board['session_uuid']);
+            $this->assertSame($bill->uuid, $board['order']['uuid']);
+            $this->assertFalse($board['orphaned']);
+            $reopened = app(ReopenDineInQrPaymentAction::class)->handle($till, $bill->uuid);
+            $this->assertSame('open', $reopened['status']);
+            $this->assertSame('active', $current->fresh()->status);
+            $this->assertSame('open', $seating->fresh()->status);
+            $this->assertNull($seating->fresh()->billing_at);
+            $before = $bill->fresh()->getRawOriginal();
+            try {
+                app(FallbackQrOrderToCounterAction::class)->handle($till, $bill->uuid);
+                $this->fail('A live card is not a dead station.');
+            } catch (QrChargeException $exception) {
+                $this->assertSame('order_not_awaiting_payment', $exception->codeName);
+            }
+            $this->assertSame($before, $bill->fresh()->getRawOriginal());
+            $current->update(['status' => QrSession::STATUS_EXPIRED, 'expires_at' => now()]);
+            $seating->update(['expires_at' => now()]);
+            $this->assertSame(0, app(ExpireAbandonedTableSessionsAction::class)->handle(now(), $current->table_id, 100, 10));
+            $fallback = app(FallbackQrOrderToCounterAction::class)->handle($till, $bill->uuid);
+            $this->assertSame('held', $fallback['status']);
+            $this->assertSame($current->id, $bill->fresh()->qr_session_id);
+            $this->assertSame($before['grand_total'], $bill->fresh()->getRawOriginal('grand_total'));
+            $this->assertSame($before['temp_reference'], $fallback['temp_reference']);
+            $this->assertNull($current->fresh()->released_at);
+        }
+    }
+
+    public function test_empty_card_seating_expires_without_device_attribution_or_handover(): void
+    {
+        $current = $this->card(['status' => QrSession::STATUS_EXPIRED, 'expires_at' => now()]);
+        $seating = $this->seatingRow($current->table, [
+            'origin' => TableSession::ORIGIN_TABLE_CARD, 'opened_by_device_id' => null, 'expires_at' => now(),
+        ]);
+        $current->update(['table_session_id' => $seating->id]);
+        $this->assertSame(1, app(ExpireAbandonedTableSessionsAction::class)->handle(now(), $current->table_id, 100, 10));
+        $this->assertSame('expired', $seating->fresh()->status);
+        $this->assertSame('expired', $seating->fresh()->close_reason);
+        $this->assertNull($seating->fresh()->closed_by_device_id);
+        $this->assertNull($current->fresh()->released_at);
+        $this->assertNull($current->fresh()->handover_from_id);
+        $this->assertDatabaseHas('pos_table_session_events', [
+            'table_session_id' => $seating->id, 'event_type' => 'expired', 'device_id' => null,
+        ]);
+        $this->assertSame(0, app(ExpireAbandonedTableSessionsAction::class)->handle(now(), $current->table_id, 100, 10));
     }
 }

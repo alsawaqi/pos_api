@@ -271,7 +271,8 @@ final class SubmitDineInQrRoundAction
                 ], null, $now);
             }
 
-            $staffConfirm = $this->roundMode->forBranch((int) $session->company_id, (int) $session->branch_id)
+            $staffConfirm = $session->origin === 'table_card'
+                || $this->roundMode->forBranch((int) $session->company_id, (int) $session->branch_id)
                 === DineInRoundMode::STAFF_CONFIRM;
             $confirmPayload = $staffConfirm
                 ? $this->append->buildPayload($session, $loaded, $price, $now)
@@ -387,7 +388,11 @@ final class SubmitDineInQrRoundAction
             }
 
             $eventPayload = ['round_id' => (int) $round->id, 'order_uuid' => (string) $order->uuid];
-            $this->journal->handle($seating, $staffConfirm ? 'round_pending' : 'round_appended', $eventPayload, null, $now);
+            $this->journal->handle($seating, $staffConfirm ? 'round_pending' : 'round_appended',
+                $staffConfirm ? $eventPayload + [
+                    'credential_origin' => $session->origin,
+                    'geofence' => $session->scan_geofence_verdict,
+                ] : $eventPayload, null, $now);
             $this->journal->handle($seating, 'customer_order_arrived', $eventPayload, null, $now);
 
             return [

@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1\PublicQr;
 
+use App\Actions\Qr\DineInRoundMode;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use App\Support\Money;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -54,9 +56,21 @@ class QrStatusController
             ]);
         }
 
+        $seating = TableSession::query()->whereKey($session->table_session_id)
+            ->where('company_id', $session->company_id)->where('branch_id', $session->branch_id)
+            ->where('table_id', $session->table_id)->first();
+        if ($seating?->merged_into_id !== null) {
+            $seating = TableSession::query()->whereKey($seating->merged_into_id)
+                ->where('company_id', $session->company_id)->where('branch_id', $session->branch_id)->first();
+        }
+        // Read-only visibility before staff-bill adoption must not grant any
+        // new finish/payment right or make this bill the credential's order.
+        $visibleOrder = $order ?? ($seating?->order_id === null ? null : Order::query()
+            ->whereKey($seating->order_id)->where('table_session_id', $seating->id)
+            ->where('company_id', $session->company_id)->where('branch_id', $session->branch_id)->first());
         $rounds = QrOrderRound::query()
-            ->when($order !== null,
-                static fn ($query) => $query->where('order_id', $order->id),
+            ->when($visibleOrder !== null,
+                static fn ($query) => $query->where('order_id', $visibleOrder->id),
                 static fn ($query) => $query->where('qr_session_id', $session->id))
             ->orderBy('round_no')
             ->orderBy('id')
@@ -83,6 +97,22 @@ class QrStatusController
 
         $data['dine_in'] = [
             'table_id' => (int) $session->table_id,
+            'credential' => [
+                'origin' => $session->origin,
+                'staff_confirm' => $session->origin === 'table_card'
+                    || app(DineInRoundMode::class)->forBranch((int) $session->company_id, (int) $session->branch_id) === DineInRoundMode::STAFF_CONFIRM,
+                'identity_required' => ! QrOrderRound::query()->where('qr_session_id', $session->id)
+                    ->where('status', QrOrderRound::STATUS_ACCEPTED)->exists()
+                    && ! ($session->handover_from_id !== null && $order?->customer_id !== null),
+            ],
+            'seating' => [
+                'temp_reference' => $seating?->temp_reference,
+                'opened_by' => match ($seating?->origin ?? $session->origin) {
+                    TableSession::ORIGIN_STAFF_TILL, TableSession::ORIGIN_STAFF_HANDHELD => 'staff',
+                    TableSession::ORIGIN_TABLE_CARD => 'customer',
+                    default => 'station',
+                },
+            ],
             'rounds' => $rounds->map(static fn (QrOrderRound $round): array => [
                 'id' => (int) $round->id,
                 'round_no' => (int) $round->round_no,
@@ -97,8 +127,8 @@ class QrStatusController
                 'submitted_at' => $round->submitted_at?->toIso8601String(),
                 'resolved_at' => $round->resolved_at?->toIso8601String(),
             ])->values()->all(),
-            'running_total_baisas' => $order instanceof Order
-                ? Money::toBaisas($order->grand_total)
+            'running_total_baisas' => $visibleOrder instanceof Order
+                ? Money::toBaisas($visibleOrder->grand_total)
                 : 0,
             'payment_state' => $this->paymentState($order),
             'round_submission' => [

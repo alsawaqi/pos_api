@@ -26,7 +26,9 @@ final class SubmitDineInQrRoundRequest extends PublicQrRequest
         $identityAllowed = $session instanceof QrSession
             && ! $session->rounds()
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)
-                ->exists();
+                ->exists()
+            && ! ($session->handover_from_id !== null
+                && $session->orders()->latest('id')->first()?->customer_id !== null);
         // An existing client_request_id is a transport replay. Its identity
         // fields are harmless because the action returns the stored response
         // before processing them, and allowing them preserves the exact

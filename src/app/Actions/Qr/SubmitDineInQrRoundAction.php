@@ -100,6 +100,9 @@ final class SubmitDineInQrRoundAction
                     'A live dine-in QR session is required.',
                 );
             }
+            if ($session->released_at !== null) {
+                throw new QrDineInException('qr_session_not_found', 404, 'QR session was not found.');
+            }
             $credentialOrderId = Order::query()
                 ->where('qr_session_id', $session->id)
                 ->latest('id')
@@ -140,7 +143,9 @@ final class SubmitDineInQrRoundAction
                 ->whereKey((int) $session->device_id)
                 ->lockForUpdate()
                 ->first();
-            if (! $this->isUsableOpeningStation($session, $device)) {
+            if ($session->device_id === null
+                ? ($session->origin !== 'table_card' || $session->table_id === null)
+                : ! $this->isUsableOpeningStation($session, $device)) {
                 throw new QrDineInException(
                     'qr_session_not_found',
                     404,
@@ -173,7 +178,8 @@ final class SubmitDineInQrRoundAction
                 ->where('qr_session_id', $session->id)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)
                 ->exists();
-            $identityAllowed = ! $acceptedRoundExists;
+            $identityAllowed = ! $acceptedRoundExists
+                && ! ($session->handover_from_id !== null && $order?->customer_id !== null);
             $phonePresent = array_key_exists('phone', $payload)
                 && is_string($payload['phone'])
                 && $payload['phone'] !== '';
@@ -310,7 +316,7 @@ final class SubmitDineInQrRoundAction
                     'uuid' => (string) Str::uuid(),
                     'company_id' => $session->company_id,
                     'branch_id' => $session->branch_id,
-                    'device_id' => $device->id,
+                    'device_id' => $device?->id,
                     'qr_session_id' => $session->id,
                     'table_session_id' => $seating->id,
                     'client_request_id' => $clientRequestId,

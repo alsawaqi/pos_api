@@ -78,7 +78,8 @@ final class EnsureTableSessionForQrSessionAction
             'branch_id' => $branchId,
             'table_id' => $tableId,
             'status' => $billing ? TableSession::STATUS_BILLING : TableSession::STATUS_OPEN,
-            'origin' => TableSession::ORIGIN_STATION,
+            'origin' => $lockedSession->origin === 'table_card'
+                ? TableSession::ORIGIN_TABLE_CARD : TableSession::ORIGIN_STATION,
             'opened_by_device_id' => $lockedSession->device_id,
             'order_id' => $lockedOrder?->getKey(),
             'opened_at' => $lockedSession->created_at,

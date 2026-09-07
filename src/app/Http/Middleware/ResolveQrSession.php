@@ -31,7 +31,7 @@ class ResolveQrSession
                 ->lockForUpdate()
                 ->first();
 
-            if ($session === null) {
+            if ($session === null || $session->released_at !== null) {
                 return null;
             }
 
@@ -63,7 +63,11 @@ class ResolveQrSession
             }
 
             $device = Device::withTrashed()->whereKey($session->device_id)->first();
-            if ($device === null
+            if ($session->device_id === null) {
+                if ($session->origin !== 'table_card' || $session->table_id === null) {
+                    return null;
+                }
+            } elseif ($device === null
                 || $device->trashed()
                 || $device->status !== 'active'
                 || ! $device->isAssigned()

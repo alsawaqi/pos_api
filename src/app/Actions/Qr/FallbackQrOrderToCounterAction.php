@@ -188,6 +188,10 @@ final class FallbackQrOrderToCounterAction
         if ($session === null) {
             throw new QrChargeException('order_not_bound_to_device_session', 409, 'The credential does not match this order.');
         }
+        if ($session->device_id === null && $session->origin === 'table_card') {
+            return [in_array($session->status, [QrSession::STATUS_EXPIRED, QrSession::STATUS_CLOSED], true)
+                || $session->isExpiredAt($at) || $session->released_at !== null, $session];
+        }
         $station = $session->device_id === null ? null : Device::query()->withTrashed()
             ->whereKey((int) $session->device_id)->where('company_id', (int) $order->company_id)
             ->where('branch_id', (int) $order->branch_id)->first();

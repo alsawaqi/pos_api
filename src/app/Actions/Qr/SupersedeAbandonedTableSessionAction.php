@@ -18,10 +18,18 @@ final class SupersedeAbandonedTableSessionAction
 {
     public function __construct(private readonly AppendTableSessionEventAction $journal) {}
 
-    public function handle(Table $lockedTable, Device $openingDevice, CarbonInterface $at): ?TableSession
-    {
-        $companyId = (int) $openingDevice->company_id;
-        $branchId = (int) $openingDevice->branch_id;
+    public function handle(
+        Table $lockedTable,
+        ?Device $openingDevice,
+        CarbonInterface $at,
+        ?int $companyId = null,
+        ?int $branchId = null,
+    ): ?TableSession {
+        $companyId ??= $openingDevice === null ? null : (int) $openingDevice->company_id;
+        $branchId ??= $openingDevice === null ? null : (int) $openingDevice->branch_id;
+        if ($companyId === null || $branchId === null) {
+            throw new RuntimeException('A device-less opening requires explicit company and branch.');
+        }
         $tableId = (int) $lockedTable->getKey();
 
         if ((int) $lockedTable->company_id !== $companyId) {
@@ -74,7 +82,7 @@ final class SupersedeAbandonedTableSessionAction
         $attributes = [
             'status' => TableSession::STATUS_EXPIRED,
             'closed_at' => $at,
-            'closed_by_device_id' => $openingDevice->getKey(),
+            'closed_by_device_id' => $openingDevice?->getKey(),
             'close_reason' => TableSession::CLOSE_ABANDONED,
             'updated_at' => $at,
         ];
@@ -86,7 +94,7 @@ final class SupersedeAbandonedTableSessionAction
             ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
             ->update($attributes);
         $seating->forceFill($attributes)->syncOriginal();
-        $this->journal->handle($seating, 'expired', ['close_reason' => TableSession::CLOSE_ABANDONED], (int) $openingDevice->id, $at);
+        $this->journal->handle($seating, 'expired', ['close_reason' => TableSession::CLOSE_ABANDONED], $openingDevice?->getKey(), $at);
 
         return $seating;
     }

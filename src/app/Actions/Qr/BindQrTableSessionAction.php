@@ -36,7 +36,7 @@ final class BindQrTableSessionAction
                 ->lockForUpdate()
                 ->first();
 
-            if ($session === null) {
+            if ($session === null || $session->released_at !== null) {
                 return null;
             }
 
@@ -60,7 +60,9 @@ final class BindQrTableSessionAction
                 ->whereKey($session->device_id)
                 ->first();
 
-            if (! $this->isUsableStation($session, $device)) {
+            if ($session->device_id === null
+                ? ($session->origin !== 'table_card' || $session->table_id === null)
+                : ! $this->isUsableStation($session, $device)) {
                 return null;
             }
 

@@ -89,7 +89,7 @@ final class ClaimQrSettlementAction
             if ($order === null) {
                 throw new QrChargeException('order_not_found', 404, 'The order was not found.');
             }
-            if (! $this->isDineInQrOrder($order)) {
+            if (! $this->isAttendedSettleableQrOrder($order)) {
                 throw new QrChargeException(
                     'qr_order_not_settleable',
                     409,
@@ -106,7 +106,9 @@ final class ClaimQrSettlementAction
                     if ($order->charge_outcome === null
                         && $order->charge_device_id !== null
                         && (int) $order->charge_device_id === (int) $device->getKey()) {
-                        $this->assertHeldClaimSession($session, $now);
+                        if ($order->order_type !== 'quick') {
+                            $this->assertHeldClaimSession($session, $now);
+                        }
 
                         return $this->present($order, true);
                     }
@@ -176,7 +178,7 @@ final class ClaimQrSettlementAction
                 'confirm_payload' => null,
                 'updated_at' => $now,
             ]);
-            if ($acceptedRounds === 0
+            if ($order->order_type !== 'quick' && $acceptedRounds === 0
                 && ! $this->isAcceptedRoundlessSafeFallbackOrphan($session, $order)) {
                 // Return instead of throwing so the terminal-safe pending
                 // cleanup commits before the controller emits the refusal.
@@ -202,7 +204,8 @@ final class ClaimQrSettlementAction
             // A safe orphan has already passed through fallback-to-counter.
             // Preserve its expired/null credential rather than reviving a
             // browser session merely because an attended till reserved it.
-            if ($session !== null && $session->status !== QrSession::STATUS_EXPIRED) {
+            if ($session !== null && $session->status !== QrSession::STATUS_EXPIRED
+                && ($order->order_type !== 'quick' || $session->expires_at?->gt($now))) {
                 $session->update([
                     'status' => QrSession::STATUS_ORDERED,
                     'last_seen_at' => $now,
@@ -238,11 +241,11 @@ final class ClaimQrSettlementAction
         return $result;
     }
 
-    private function isDineInQrOrder(Order $order): bool
+    private function isAttendedSettleableQrOrder(Order $order): bool
     {
         return $order->source === Order::SOURCE_QR_WEB
-            && $order->order_type === 'dine_in'
-            && $order->table_id !== null;
+            && (($order->order_type === 'dine_in' && $order->table_id !== null)
+                || ($order->order_type === 'quick' && $order->table_id === null));
     }
 
     private function lockSettlementSession(Order $order, Device $device): ?QrSession
@@ -268,7 +271,11 @@ final class ClaimQrSettlementAction
             ->whereKey((int) $order->qr_session_id)
             ->where('company_id', (int) $device->company_id)
             ->where('branch_id', (int) $device->branch_id)
-            ->where('table_id', (int) $order->table_id)
+            ->when(
+                $order->order_type === 'quick',
+                fn ($query) => $query->whereNull('table_id'),
+                fn ($query) => $query->where('table_id', (int) $order->table_id),
+            )
             ->lockForUpdate()
             ->first();
         if ($session === null) {
@@ -287,6 +294,13 @@ final class ClaimQrSettlementAction
         Order $order,
         CarbonInterface $at,
     ): void {
+        if ($order->order_type === 'quick') {
+            if ($this->isSafeFallbackHeldOrder($order)) {
+                return;
+            }
+
+            throw new QrChargeException('qr_order_not_settleable', 409, 'Send this quick QR order to the counter before settlement.');
+        }
         if ($this->isSafeFallbackHeldOrder($order)
             && ($session === null || $session->status === QrSession::STATUS_EXPIRED)) {
             return;

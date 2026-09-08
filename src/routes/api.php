@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceQrClearTableController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrConfirmRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrOpenTableController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrPendingOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrRejectRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrReleaseChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrReopenPaymentController;
@@ -182,6 +183,12 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/tables/search', DeviceTableSearchController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.tables.search');
+        Route::post('device/qr/pending-orders/{uuid}/to-counter', [DeviceQrPendingOrdersController::class, 'toCounter'])
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.pending-orders.to-counter');
+        Route::get('device/qr/pending-orders', [DeviceQrPendingOrdersController::class, 'index'])
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.qr.pending-orders');
         Route::get('device/qr/awaiting-orders', DeviceQrAwaitingOrdersController::class)
             ->middleware('throttle:qr-station-read')
             ->name('device.qr.awaiting-orders');

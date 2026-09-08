@@ -20,6 +20,8 @@ class Phase1InertnessTest extends TestCase
                 'app/Actions/Qr/ClaimQrChargeAction.php',
                 'app/Actions/Qr/ReleaseQrChargeAction.php',
                 'app/Actions/Qr/FallbackQrOrderToCounterAction.php',
+                // T10b's authorized quick-order protocol emits order_not_awaiting_payment.
+                'app/Actions/Qr/MoveQuickQrOrderToCounterAction.php',
                 'app/Console/Commands/SweepStaleQrCharges.php',
             ],
             'payment_station' => [

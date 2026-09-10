@@ -128,8 +128,81 @@ final class QrCheckoutConcurrencyTest extends TestCase
         }
     }
 
+    public function test_distinct_concurrent_customers_cannot_oversell_three_units(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('stream_socket_pair')) {
+            throw new RuntimeException('The QR stock concurrency proof requires PCNTL and Unix socket pairs.');
+        }
+        $databasePath = tempnam(sys_get_temp_dir(), 'pos-api-qr-checkout-');
+        if ($databasePath === false) {
+            throw new RuntimeException('Unable to allocate the disposable SQLite database.');
+        }
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->configureSqlite($this->app, $databasePath);
+            DB::purge('sqlite');
+            $this->assertSame(0, Artisan::call('migrate:fresh', ['--database' => 'sqlite', '--force' => true]));
+            $this->seedCheckoutProduct();
+            DB::table('pos_products')->where('id', 1)->update(['stock_mode' => 'unit']);
+            DB::table('pos_branch_product')->insert([
+                'branch_id' => 10, 'product_id' => 1, 'is_available' => true,
+                'stock_qty' => '3.000', 'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $secret = 'synthetic-concurrent-stock-secret';
+            $sessionUuids = [];
+            for ($worker = 0; $worker < self::WORKER_COUNT; $worker++) {
+                // Different station locks: the balance, not one device/session,
+                // must serialize competing buyers.
+                $station = Device::factory()->paired('mdev_stock_worker_'.$worker)->create([
+                    'company_id' => 100, 'branch_id' => 10, 'device_type' => 'payment_station',
+                ]);
+                $sessionUuids[] = (string) $this->createQrSession($station, $secret)->uuid;
+            }
+            $payload = [
+                'client_request_id' => 'independent-stock-request', 'checkout_choice' => 'counter',
+                'phone' => '90001234',
+                'lines' => [['product_id' => 1, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
+            ];
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $sessionUuids[0], $secret, $payload, $sessionUuids);
+            $this->assertCount(self::WORKER_COUNT, $results);
+            $created = 0;
+            $refused = 0;
+            foreach ($results as $result) {
+                $this->assertNull($result['error']);
+                if ($result['status'] === 201) {
+                    $created++;
+                } else {
+                    $this->assertSame(422, $result['status'], $result['body']);
+                    $this->assertSame('product_unavailable', data_get(json_decode($result['body'], true), 'errors.0.code'));
+                    $refused++;
+                }
+            }
+            $this->assertSame(3, $created);
+            $this->assertSame(7, $refused);
+            DB::purge('sqlite');
+            $this->assertDatabaseCount('pos_orders', 3);
+            $this->assertDatabaseCount('pos_order_items', 3);
+            $this->assertSame(3.0, (float) DB::table('pos_order_items')->sum('qty'));
+            $this->assertSame(3.0, (float) DB::table('pos_branch_product')->value('stock_qty'));
+            $this->assertDatabaseCount('pos_product_stock_movements', 0);
+        } finally {
+            DB::purge('sqlite');
+            config()->set('database.default', $originalDefault);
+            config()->set('database.connections.sqlite', $originalSqlite);
+            DB::purge('sqlite');
+            foreach ([$databasePath, $databasePath.'-wal', $databasePath.'-shm'] as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    }
+
     /**
      * @param  array<string, mixed>  $payload
+     * @param  list<string>  $sessionUuids
      * @return list<array{status: int, body: string, error: string|null}>
      */
     private function runConcurrentRequests(
@@ -137,6 +210,7 @@ final class QrCheckoutConcurrencyTest extends TestCase
         string $sessionUuid,
         string $secret,
         array $payload,
+        array $sessionUuids = [],
     ): array {
         $workers = [];
 
@@ -168,7 +242,7 @@ final class QrCheckoutConcurrencyTest extends TestCase
                 $this->runChild(
                     $childSocket,
                     $databasePath,
-                    $sessionUuid,
+                    $sessionUuids[$worker] ?? $sessionUuid,
                     $secret,
                     $payload,
                 );

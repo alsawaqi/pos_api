@@ -25,6 +25,7 @@ final class SubmitDineInQrRoundAction
 
     public function __construct(
         private readonly LoadQrPricingInputAction $pricing,
+        private readonly AssertQrStockAvailableAction $stock,
         private readonly ResolveQrCustomerAction $customers,
         private readonly DistinctQrPhoneGuard $phoneGuard,
         private readonly AllocateQrTempReferenceAction $tempReferences,
@@ -223,6 +224,7 @@ final class SubmitDineInQrRoundAction
                 DateTimeImmutable::createFromInterface($now),
             );
             $price = Totals::priceOrder($loaded->pricingInput);
+            $this->stock->handle((int) $session->company_id, (int) $session->branch_id, $loaded->resolvedLines);
 
             $customer = null;
             $identityDiffers = false;

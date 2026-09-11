@@ -186,6 +186,9 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/qr/pending-orders/{uuid}/to-counter', [DeviceQrPendingOrdersController::class, 'toCounter'])
             ->middleware('throttle:qr-table-device-write')
             ->name('device.qr.pending-orders.to-counter');
+        Route::post('device/qr/pending-orders/{uuid}/items', [DeviceQrPendingOrdersController::class, 'appendItems'])
+            ->middleware('throttle:qr-table-device-write')
+            ->name('device.qr.pending-orders.items');
         Route::get('device/qr/pending-orders', [DeviceQrPendingOrdersController::class, 'index'])
             ->middleware('throttle:qr-table-device-read')
             ->name('device.qr.pending-orders');

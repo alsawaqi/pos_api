@@ -41,11 +41,32 @@ final class LoadQrPricingInputAction
         array $lines,
         ?DateTimeImmutable $now = null,
     ): QrPricingLoadResult {
+        return $this->load($companyId, $branchId, $lines, $now, false);
+    }
+
+    /** Staff may sell tablet-hidden products, but never internal ingredients.
+     * @param  list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}>  $lines
+     */
+    public function handleForStaff(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null): QrPricingLoadResult
+    {
+        return $this->load($companyId, $branchId, $lines, $now, true);
+    }
+
+    /** @param list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}> $lines */
+    private function load(
+        int $companyId,
+        int $branchId,
+        array $lines,
+        ?DateTimeImmutable $now,
+        bool $staff,
+    ): QrPricingLoadResult {
         $now ??= DateTimeImmutable::createFromInterface(now());
         $normalisedLines = $this->normaliseLines($lines);
         $productIds = array_values(array_unique(array_column($normalisedLines, 'product_id')));
-        $products = $this->products->forBranch($companyId, $branchId)
-            ->whereIn('pos_products.id', $productIds)->get()->keyBy('id');
+        $query = $staff
+            ? $this->products->soldByBranch($companyId, $branchId)->where('is_internal', false)
+            : $this->products->forBranch($companyId, $branchId);
+        $products = $query->whereIn('pos_products.id', $productIds)->get()->keyBy('id');
         $branchProducts = BranchProduct::query()->where('branch_id', $branchId)
             ->whereIn('product_id', $productIds)->get()->keyBy('product_id');
 

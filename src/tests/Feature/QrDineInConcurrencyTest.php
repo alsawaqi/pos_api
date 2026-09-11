@@ -726,6 +726,120 @@ final class QrDineInConcurrencyTest extends TestCase
         }
     }
 
+    public function test_ten_staff_quick_addition_replays_append_exactly_once(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-dine-in-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $this->seedRoundProduct();
+            $order = $this->quickCounterOrder();
+            $requestId = (string) Str::uuid();
+            $requests = [];
+            for ($worker = 0; $worker < 10; $worker++) {
+                $device = $this->attendedTill('synthetic-quick-append-'.$worker);
+                $requests[] = [
+                    'url' => '/api/v1/device/qr/pending-orders/'.$order->uuid.'/items',
+                    'token' => $device->device_token, 'observe_table_id' => null,
+                    'payload' => ['client_request_id' => $requestId, 'lines' => [
+                        ['product_id' => 99001, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
+                    ]],
+                ];
+            }
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertCount(10, $results);
+            $created = 0;
+            $ids = [];
+            foreach ($results as $result) {
+                $this->assertNull($result['error']);
+                $this->assertSame(200, $result['status'], $result['body']);
+                $body = $this->decodeBody($result['body']);
+                $created += data_get($body, 'data.replayed') ? 0 : 1;
+                $ids[] = data_get($body, 'data.addition.id');
+                $this->assertSame(5750, data_get($body, 'data.order.grand_total_baisas'));
+            }
+            $this->assertSame(1, $created);
+            $this->assertCount(1, array_unique($ids));
+            DB::purge('sqlite');
+            $this->assertDatabaseCount('pos_orders', 1);
+            $this->assertDatabaseCount('pos_order_items', 2);
+            $this->assertDatabaseCount('pos_qr_order_rounds', 1);
+            $this->assertSame('5.750', $order->fresh()->grand_total);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
+
+    public function test_staff_quick_addition_racing_till_claim_cannot_change_frozen_amount(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-qr-dine-in-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $this->seedRoundProduct();
+            $order = $this->quickCounterOrder();
+            $adding = $this->attendedTill('synthetic-quick-add');
+            $paying = $this->attendedTill('synthetic-quick-pay');
+            $requests = [[
+                'url' => '/api/v1/device/qr/pending-orders/'.$order->uuid.'/items',
+                'token' => $adding->device_token, 'observe_table_id' => null,
+                'payload' => ['client_request_id' => (string) Str::uuid(), 'lines' => [
+                    ['product_id' => 99001, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
+                ]],
+            ], [
+                'url' => self::CLAIM_SETTLEMENT_URL, 'token' => $paying->device_token,
+                'observe_table_id' => null, 'payload' => ['order_uuid' => $order->uuid],
+            ]];
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            foreach ($results as $result) {
+                $this->assertNull($result['error']);
+            }
+            $this->assertSame(200, $results[1]['status'], $results[1]['body']);
+            $appended = $results[0]['status'] === 200;
+            if (! $appended) {
+                $this->assertSame(409, $results[0]['status'], $results[0]['body']);
+                $this->assertSame('charge_already_claimed', data_get($this->decodeBody($results[0]['body']), 'errors.0.code'));
+            }
+            $expected = $appended ? 5750 : 1000;
+            $this->assertSame($expected, data_get($this->decodeBody($results[1]['body']), 'data.charge_amount_baisas'));
+            DB::purge('sqlite');
+            $order->refresh();
+            $this->assertSame($expected, (int) $order->charge_amount_baisas);
+            $this->assertSame($paying->id, $order->charge_device_id);
+            $this->assertSame('awaiting_payment', $order->status);
+            $this->assertSame($appended ? '5.750' : '1.000', $order->grand_total);
+            $this->assertDatabaseCount('pos_orders', 1);
+            $this->assertDatabaseCount('pos_order_items', $appended ? 2 : 1);
+            $this->assertDatabaseCount('pos_qr_order_rounds', $appended ? 1 : 0);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
+
+    private function quickCounterOrder(): Order
+    {
+        $order = Order::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+            'order_type' => 'quick', 'source' => 'qr_web', 'status' => 'held',
+            'temp_reference' => 'T-TEST-001', 'subtotal' => '1.000',
+            'discount_total' => '0.000', 'comp_total' => '0.000',
+            'tax_total' => '0.000', 'grand_total' => '1.000', 'opened_at' => now(),
+        ]);
+        DB::table('pos_order_items')->insert([
+            'order_id' => $order->id, 'product_name_snapshot' => 'Original customer item',
+            'qty' => '1.000', 'unit_price_snapshot' => '1.000', 'line_discount' => '0.000',
+            'line_total' => '1.000', 'status' => 'open',
+        ]);
+
+        return $order;
+    }
+
     /**
      * @param  list<array{
      *     url: string,

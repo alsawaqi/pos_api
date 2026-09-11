@@ -123,7 +123,7 @@ class CreateOrderHandler implements SyncEventHandler
                 ));
             }
             if ($existing !== null
-                && in_array($existing->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION, Order::STATUS_VOID, Order::STATUS_REFUNDED], true)) {
+                && in_array($existing->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION, Order::STATUS_VOID, Order::STATUS_REFUNDED, Order::STATUS_COMBINED], true)) {
                 // P-G7 — pending_verification blocks the upsert too: the
                 // punched delivery snapshot + its consumed inventory must not
                 // be silently replaced while it awaits the provider statement.

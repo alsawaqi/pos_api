@@ -103,6 +103,10 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 throw new RuntimeException('order already paid: '.$orderUuid);
             }
 
+            if ($order->status === Order::STATUS_COMBINED) {
+                throw new RuntimeException('combined order is not payable: '.$orderUuid);
+            }
+
             $claimAt = now();
             $claimIsLive = Order::query()
                 ->whereKey($order->getKey())

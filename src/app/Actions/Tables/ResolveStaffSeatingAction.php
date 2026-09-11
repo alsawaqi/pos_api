@@ -35,6 +35,8 @@ final class ResolveStaffSeatingAction
         ];
 
         return $common + match ($operation) {
+            // The combine action validates its own explicit preview/PIN input.
+            'combine' => [],
             'open' => [
                 'opened_at' => ['required', 'date'],
                 'joined_table_ids' => ['sometimes', 'array', 'max:100'],
@@ -104,7 +106,7 @@ final class ResolveStaffSeatingAction
 
         for ($attempt = 0; ; $attempt++) {
             try {
-                return DB::transaction(function () use ($device, $payload, $operation): array {
+                return DB::transaction(function () use ($device, $payload, $operation, $kind): array {
                     $lockedDevice = Device::query()->whereKey($device->id)->lockForUpdate()->first();
                     if ($lockedDevice === null || $lockedDevice->status !== 'active' || ! $lockedDevice->isAssigned()
                         || (int) $lockedDevice->company_id !== (int) $device->company_id
@@ -163,7 +165,7 @@ final class ResolveStaffSeatingAction
                     $result = $operation($lockedDevice, $tables, $orders, $sessions, $seatings);
                     $events = $this->journal->flush();
                     $ids = array_map(static fn ($event): int => (int) $event->id, $events);
-                    $result['event_id'] = $ids[0] ?? null;
+                    $result['event_id'] = $ids[0] ?? ($kind === 'combine' ? ($result['event_id'] ?? null) : null);
                     if (($result['held_lines'] ?? []) !== [] && isset($result['round_id'])) {
                         // A new seating may journal opened first. Revision 3
                         // specifically makes a catalogue hold point at its round.

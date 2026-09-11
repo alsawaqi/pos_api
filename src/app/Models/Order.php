@@ -47,6 +47,10 @@ class Order extends Model
 
     public const STATUS_REFUNDED = 'refunded';
 
+    // Archived unpaid source of an explicit manager-reviewed combine. Not a
+    // paid sale, void or refund; its original frozen children remain as audit.
+    public const STATUS_COMBINED = 'combined';
+
     /** @var list<string> */
     public const TYPES = ['quick', 'dine_in', 'to_go', 'delivery', 'car'];
 

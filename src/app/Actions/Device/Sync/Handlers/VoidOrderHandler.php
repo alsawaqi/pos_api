@@ -117,6 +117,10 @@ class VoidOrderHandler implements SyncEventHandler
                 throw new RuntimeException('order already void: '.$orderUuid);
             }
 
+            if ($order->status === Order::STATUS_COMBINED) {
+                throw new RuntimeException('combined order is read-only history: '.$orderUuid);
+            }
+
             $claimAt = now();
             if ($this->qrChargeRecovery->isAmbiguousCounterRecovery($order, $claimAt)
                 && ! $this->qrChargeRecovery->isAttendedDevice($device)) {

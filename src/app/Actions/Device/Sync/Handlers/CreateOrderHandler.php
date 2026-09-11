@@ -21,8 +21,10 @@ use App\Models\OrderDiscount;
 use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
 use App\Models\Product;
+use App\Models\QrOrderRound;
 use App\Models\SyncEvent;
 use App\Models\Table;
+use App\Models\TableSession;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -126,6 +128,18 @@ class CreateOrderHandler implements SyncEventHandler
                 // punched delivery snapshot + its consumed inventory must not
                 // be silently replaced while it awaits the provider statement.
                 throw new RuntimeException(sprintf('order %s already exists in terminal status %s', $order['uuid'], $existing->status));
+            }
+
+            // Shared table bills are append-only. A delayed legacy hold,
+            // finalize or transfer snapshot must not purge round-owned items.
+            // Check the LOCKED existing bill, never the incoming source/type.
+            // Historical/back-link evidence also fails closed if a partial
+            // legacy link lost the order's table_session_id. These are reads,
+            // not new table/session locks after the existing order lock.
+            if ($existing !== null && ($existing->table_session_id !== null
+                || TableSession::query()->where('order_id', $existing->id)->exists()
+                || QrOrderRound::query()->where('order_id', $existing->id)->whereNotNull('table_session_id')->exists())) {
+                throw new RuntimeException('shared_table_snapshot_replacement_forbidden');
             }
 
             $columns = [

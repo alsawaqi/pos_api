@@ -20,6 +20,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrAcceptedRoundsController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrAwaitingOrdersController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrCheckoutController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimSettlementController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClearTableController;
@@ -197,6 +198,9 @@ Route::prefix('v1')->group(function (): void {
             ->name('device.qr.awaiting-orders');
         Route::post('device/qr/claim-charge', DeviceQrClaimChargeController::class)
             ->name('device.qr.claim-charge');
+        Route::get('device/qr/orders/{uuid}/checkout', DeviceQrCheckoutController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.qr.checkout');
         Route::post('device/qr/claim-settlement', DeviceQrClaimSettlementController::class)
             ->middleware('throttle:qr-settlement-claim')
             ->name('device.qr.claim-settlement');

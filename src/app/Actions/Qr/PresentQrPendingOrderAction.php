@@ -104,7 +104,7 @@ final class PresentQrPendingOrderAction
     }
 
     /** @return array<string, mixed> */
-    private function mapOrder(Order $order): array
+    public function mapOrder(Order $order): array
     {
         $itemIds = $order->items
             ->map(fn (OrderItem $item): int => (int) $item->id)

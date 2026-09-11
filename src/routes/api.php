@@ -38,6 +38,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceStaffRoundReviewController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableClaimOwnerController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableDetailController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableReleaseCredentialController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
@@ -178,6 +179,9 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/tables/board', DeviceTableBoardController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.tables.board');
+        Route::get('device/tables/{tableId}/detail', DeviceTableDetailController::class)
+            ->whereNumber('tableId')->middleware('throttle:qr-table-device-read')
+            ->name('device.tables.detail');
         Route::get('device/tables/feed', DeviceTableFeedController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.tables.feed');

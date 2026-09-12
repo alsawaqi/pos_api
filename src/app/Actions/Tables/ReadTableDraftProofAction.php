@@ -11,6 +11,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\SyncEvent;
 use App\Models\TableSession;
+use Closure;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
@@ -24,7 +25,20 @@ final class ReadTableDraftProofAction
 
     public function handle(Device $device, int $tableId, array $input): array
     {
-        return $this->detail->inspect($device, $tableId, function (Device $current, array $detail) use ($input, $tableId): array {
+        return $this->detail->inspect($device, $tableId, $this->reader($input, $tableId));
+    }
+
+    /** Recovery extends evidence only; the original read endpoint stays non-authorizing. */
+    public function recovery(Device $device, int $tableId, array $input, bool $locked = false): array
+    {
+        return $locked
+            ? $this->detail->inspectLocked($device, $tableId, $this->reader($input, $tableId, true))
+            : $this->detail->inspect($device, $tableId, $this->reader($input, $tableId, true));
+    }
+
+    private function reader(array $input, int $tableId, bool $recovery = false): Closure
+    {
+        return function (Device $current, array $detail) use ($input, $tableId, $recovery): array {
             $values = Validator::make($input, [
                 'order_uuid' => ['required', 'uuid'],
                 'kind' => ['required', 'in:staff_rounds,legacy_hold'],
@@ -92,15 +106,41 @@ final class ReadTableDraftProofAction
                 || $bill['tax_total_baisas'] < 0 || $bill['grand_total_baisas'] !== $bill['subtotal_baisas'] + $bill['tax_total_baisas']) {
                 throw $this->changed();
             }
+            $legacyOwners = $owners;
+            if ($recovery) {
+                $this->assertRecoveryHistory($current, $order, $seat, $values, $rounds->all());
+                foreach ($rounds as $round) {
+                    foreach ($round->priced_lines as $line) {
+                        $itemId = $line['order_item_id'];
+                        if (! isset($items[$itemId]) || ($owners[$itemId] ?? null) !== (int) $round->id
+                            || $this->roundItem($line) !== $items[$itemId]) {
+                            throw $this->changed();
+                        }
+                    }
+                }
+                // Only the deterministic, accounting-only original hold may
+                // supply the legacy subset after baseline adoption. New staff
+                // or customer rounds never become a local legacy cache.
+                foreach ($rounds as $round) {
+                    if ($round->client_request_id === 'legacy-baseline:'.$order->uuid) {
+                        foreach ($round->priced_lines as $line) {
+                            if (($line['accounting_only'] ?? false) !== true) {
+                                throw $this->changed();
+                            }
+                            unset($legacyOwners[$line['order_item_id']]);
+                        }
+                    }
+                }
+            }
             $evidence = $values['kind'] === 'staff_rounds'
-                ? $this->staffRounds($current, $order, $seat, $values['event_ids'], $rounds->keyBy('id')->all(), $items, $owners)
-                : [$this->legacyHold($current, $order, $items, $owners)];
+                ? $this->staffRounds($current, $order, $seat, $values['event_ids'], $rounds->keyBy('id')->all(), $items, $owners, $recovery)
+                : [$this->legacyHold($current, $order, $items, $legacyOwners)];
             if ($values['kind'] === 'staff_rounds' && array_diff_key($items, $owners) !== []) {
                 // Existing totals refresh sums accepted rounds. An unowned
                 // legacy baseline cannot safely receive a delta yet.
                 throw $this->refusal('draft_proof_baseline_required', 'Legacy bill items need an explicit baseline before another staff round. Keep the draft.');
             }
-            if ($values['kind'] === 'staff_rounds') {
+            if ($values['kind'] === 'staff_rounds' || ($recovery && array_diff_key($items, $owners) === [])) {
                 $this->assertRoundBalances($rounds->all(), $bill);
             }
 
@@ -108,10 +148,89 @@ final class ReadTableDraftProofAction
                 'proof_policy' => 'same_bill_draft_v1', 'read_only' => true, 'archive_authorized' => false,
                 'table_id' => $tableId, 'table_label' => $detail['table']['label'], 'device_id' => (int) $current->id,
                 'order_uuid' => $order->uuid, 'table_session_uuid' => $seat->uuid, 'kind' => $values['kind'],
-                'delta_policy' => $values['kind'] === 'staff_rounds' ? 'proven_local_rounds_only' : 'blocked_until_baseline_adoption',
+                'delta_policy' => $values['kind'] === 'staff_rounds' || $recovery ? 'proven_local_rounds_only' : 'blocked_until_baseline_adoption',
                 'bill' => $bill, 'acknowledged' => $evidence,
             ];
-        });
+        };
+    }
+
+    /** Recovery refuses incomplete own history, not merely an incomplete requested subset. */
+    private function assertRecoveryHistory(Device $device, Order $order, TableSession $seat, array $values, array $rounds): void
+    {
+        foreach (['pos_loyalty_transactions', 'pos_sale_commissions', 'pos_roundup_donations'] as $ledger) {
+            if (DB::table($ledger)->where('order_id', $order->id)->exists()) {
+                throw $this->ineligible();
+            }
+        }
+        foreach (['pos_stock_movements', 'pos_product_stock_movements'] as $ledger) {
+            if (DB::table($ledger)->where('reference_type', 'pos_orders')->where('reference_id', $order->id)->exists()) {
+                throw $this->ineligible();
+            }
+        }
+        foreach ($rounds as $round) {
+            if ($round->status !== QrOrderRound::STATUS_ACCEPTED || $round->needs_review
+                || $round->origin_table_session_id !== null || ! is_array($round->priced_lines)
+                || ! array_is_list($round->priced_lines) || $round->priced_lines === []) {
+                throw $this->changed();
+            }
+            foreach ($round->priced_lines as $line) {
+                if (! is_array($line) || ! is_int($line['order_item_id'] ?? null) || $line['order_item_id'] < 1
+                    || isset($line['held_reason']) || ! empty($line['cancellations']) || ! empty($line['cancelled_qty'])) {
+                    throw $this->changed();
+                }
+            }
+        }
+        $events = SyncEvent::query()->where('device_id', $device->id)
+            ->whereIn('event_type', ['order.hold', 'order.create', 'table.session.round'])->get();
+        $ownRoundEvents = [];
+        $ownedRoundIds = [];
+        $roundIds = array_map(static fn (QrOrderRound $round): int => (int) $round->id, $rounds);
+        $seatingKeys = TableSession::query()->where('company_id', $device->company_id)->where('branch_id', $device->branch_id)
+            ->where(function ($query) use ($seat): void {
+                $query->whereKey($seat->id)->orWhere('merged_into_id', $seat->id);
+            })->pluck('client_request_id')->filter()->all();
+        foreach ($events as $event) {
+            $payload = is_array($event->payload_json) ? $event->payload_json : [];
+            $result = is_array($event->result_json) ? $event->result_json : [];
+            if ($event->event_type !== 'table.session.round') {
+                if (($payload['order']['uuid'] ?? null) === $order->uuid && $event->client_event_id !== $order->client_event_id) {
+                    throw $this->changed();
+                }
+
+                continue;
+            }
+            $roundId = $result['round_id'] ?? null;
+            $belongs = ($payload['order_uuid'] ?? null) === $order->uuid || ($result['order_uuid'] ?? null) === $order->uuid
+                || ($result['table_session_uuid'] ?? null) === $seat->uuid
+                || (is_int($roundId) && in_array($roundId, $roundIds, true))
+                || ((int) ($payload['table_id'] ?? 0) === (int) $seat->table_id
+                    && in_array($payload['seating_key'] ?? null, $seatingKeys, true));
+            if (! $belongs) {
+                continue;
+            }
+            if ($event->ack_status !== SyncEvent::STATUS_PROCESSED || $event->processed_at === null
+                || ! is_int($roundId) || ! in_array($roundId, $roundIds, true)
+                || ! in_array($result['outcome'] ?? null, ['appended', 'seating_created', 'replayed'], true)
+                || ($result['round_status'] ?? null) !== QrOrderRound::STATUS_ACCEPTED) {
+                throw $this->changed();
+            }
+            $ownRoundEvents[] = $event->client_event_id;
+            $ownedRoundIds[] = $roundId;
+        }
+        foreach ($rounds as $round) {
+            if ($round->qr_session_id === null && (int) $round->resolved_by_device_id === (int) $device->id
+                && $round->client_request_id !== 'legacy-baseline:'.$order->uuid && ! in_array((int) $round->id, $ownedRoundIds, true)) {
+                throw $this->changed();
+            }
+        }
+        if ($values['kind'] === 'staff_rounds') {
+            $requested = $values['event_ids'];
+            sort($requested, SORT_STRING);
+            sort($ownRoundEvents, SORT_STRING);
+            if ($requested !== $ownRoundEvents) {
+                throw $this->refusal('draft_recovery_incomplete_history', 'Review every acknowledged local round together. Keep the entire local draft.');
+            }
+        }
     }
 
     /** Pure evidence reuse by the locked accounting writer; no snapshot or writes here. */
@@ -189,7 +308,7 @@ final class ReadTableDraftProofAction
         }
     }
 
-    private function staffRounds(Device $device, Order $order, TableSession $seat, array $ids, array $rounds, array $items, array $owners): array
+    private function staffRounds(Device $device, Order $order, TableSession $seat, array $ids, array $rounds, array $items, array $owners, bool $recovery = false): array
     {
         $proofs = [];
         $seen = [];
@@ -202,11 +321,19 @@ final class ReadTableDraftProofAction
                 throw $this->changed();
             }
             $round = $rounds[$result['round_id']] ?? null;
+            $seatingMatches = ($result['table_session_uuid'] ?? null) === $seat->uuid;
+            if ($recovery && ! $seatingMatches && ($result['winner_table_session_uuid'] ?? null) === $seat->uuid) {
+                $seatingMatches = TableSession::query()->where('company_id', $device->company_id)
+                    ->where('branch_id', $device->branch_id)->where('table_id', $seat->table_id)
+                    ->where('uuid', $result['table_session_uuid'] ?? null)->where('client_request_id', $payload['seating_key'] ?? null)
+                    ->where('status', TableSession::STATUS_MERGED)->where('close_reason', TableSession::CLOSE_ATTACHED)
+                    ->where('merged_into_id', $seat->id)->where('opened_by_device_id', $device->id)->exists();
+            }
             if ($round === null || isset($seen[$round->id]) || $round->qr_session_id !== null
                 || (int) $round->table_session_id !== (int) $seat->id || $round->origin_table_session_id !== null
                 || $round->status !== QrOrderRound::STATUS_ACCEPTED
                 || ! in_array($result['outcome'] ?? null, ['appended', 'seating_created', 'replayed'], true)
-                || ($result['order_uuid'] ?? null) !== $order->uuid || ($result['table_session_uuid'] ?? null) !== $seat->uuid
+                || ($result['order_uuid'] ?? null) !== $order->uuid || ! $seatingMatches
                 || ($result['round_status'] ?? null) !== QrOrderRound::STATUS_ACCEPTED
                 || ($result['round_no'] ?? null) !== (int) $round->round_no
                 || ($result['total_baisas'] ?? null) !== (int) $round->total_baisas

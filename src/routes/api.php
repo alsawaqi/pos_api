@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceTableClaimOwnerController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableCombineController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableDetailController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableDraftProofController;
+use App\Http\Controllers\Api\V1\Device\DeviceTableDraftRecoveryController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableReleaseCredentialController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
@@ -187,6 +188,12 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/tables/{tableId}/draft-proof', DeviceTableDraftProofController::class)
             ->whereNumber('tableId')->middleware('throttle:qr-table-device-read')
             ->name('device.tables.draft-proof');
+        Route::get('device/tables/{tableId}/draft-recovery', [DeviceTableDraftRecoveryController::class, 'preview'])
+            ->whereNumber('tableId')->middleware('throttle:qr-table-device-read')
+            ->name('device.tables.draft-recovery.preview');
+        Route::post('device/tables/{tableId}/draft-recovery', [DeviceTableDraftRecoveryController::class, 'store'])
+            ->whereNumber('tableId')->middleware('throttle:qr-table-device-write')
+            ->name('device.tables.draft-recovery.store');
         Route::get('device/tables/{tableId}/combine-preview', [DeviceTableCombineController::class, 'preview'])
             ->whereNumber('tableId')->middleware('throttle:qr-table-device-read')
             ->name('device.tables.combine-preview');

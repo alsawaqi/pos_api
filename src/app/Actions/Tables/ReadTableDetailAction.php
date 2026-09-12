@@ -38,7 +38,20 @@ final class ReadTableDetailAction
     {
         $this->assertAttended($device);
 
-        return $this->snapshot->handle(function () use ($device, $tableId, $read): array {
+        return $this->snapshot->handle($this->reader($device, $tableId, $read));
+    }
+
+    /** Caller owns a consistent read snapshot or the resolver's entire locked graph. */
+    public function inspectLocked(Device $device, int $tableId, Closure $read): array
+    {
+        $this->assertAttended($device);
+
+        return ($this->reader($device, $tableId, $read))();
+    }
+
+    private function reader(Device $device, int $tableId, Closure $read): Closure
+    {
+        return function () use ($device, $tableId, $read): array {
             $current = Device::withTrashed()->find($device->id);
             if ($current === null || (int) $current->company_id !== (int) $device->company_id
                 || (int) $current->branch_id !== (int) $device->branch_id) {
@@ -170,7 +183,7 @@ final class ReadTableDetailAction
             ];
 
             return $read($current, $detail);
-        });
+        };
     }
 
     private function assertAttended(Device $device): void
@@ -192,6 +205,7 @@ final class ReadTableDetailAction
         return [
             'id' => (int) $round->id, 'round_no' => (int) $round->round_no, 'status' => (string) $round->status,
             'entered_by' => $round->qr_session_id === null ? 'staff' : 'customer',
+            'client_request_id' => $round->qr_session_id === null ? $round->client_request_id : null,
             'needs_review' => (bool) $round->needs_review,
             'priced_lines' => array_map(static function (array $line): array {
                 $safe = Arr::only($line, ['line_index', 'product_id', 'product_name', 'product_name_ar', 'qty', 'notes',

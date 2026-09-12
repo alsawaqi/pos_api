@@ -36,7 +36,7 @@ final class ResolveStaffSeatingAction
 
         return $common + match ($operation) {
             // The combine action validates its own explicit preview/PIN input.
-            'combine' => [],
+            'combine', 'draft_recovery' => [],
             'open' => [
                 'opened_at' => ['required', 'date'],
                 'joined_table_ids' => ['sometimes', 'array', 'max:100'],
@@ -135,7 +135,10 @@ final class ResolveStaffSeatingAction
                     }
                     foreach (array_unique($requested) as $tableId) {
                         $table = $tables->get((int) $tableId);
-                        if ($table === null || $table->trashed()) {
+                        // Recovery may only replay its immutable receipt for
+                        // an archived table. A new recovery still validates
+                        // the live table in its action before any writes.
+                        if (($table === null || $table->trashed()) && $kind !== 'draft_recovery') {
                             throw new QrDineInException('table_not_found', 404, 'The table was not found in this branch.');
                         }
                     }
@@ -165,7 +168,7 @@ final class ResolveStaffSeatingAction
                     $result = $operation($lockedDevice, $tables, $orders, $sessions, $seatings);
                     $events = $this->journal->flush();
                     $ids = array_map(static fn ($event): int => (int) $event->id, $events);
-                    $result['event_id'] = $ids[0] ?? ($kind === 'combine' ? ($result['event_id'] ?? null) : null);
+                    $result['event_id'] = $ids[0] ?? (in_array($kind, ['combine', 'draft_recovery'], true) ? ($result['event_id'] ?? null) : null);
                     if (($result['held_lines'] ?? []) !== [] && isset($result['round_id'])) {
                         // A new seating may journal opened first. Revision 3
                         // specifically makes a catalogue hold point at its round.

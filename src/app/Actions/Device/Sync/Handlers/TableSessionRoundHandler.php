@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Qr\QrDineInException;
 use App\Actions\Tables\AppendStaffRoundAction;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Device;
 use App\Models\SyncEvent;
 
@@ -16,6 +18,11 @@ final class TableSessionRoundHandler implements SyncEventHandler
 
     public function handle(SyncEvent $event, Device $device): array
     {
-        return $this->action->handle($device, $event->payload_json, $event->client_timestamp, $event->server_received_at);
+        try {
+            return $this->action->handle($device, $event->payload_json, $event->client_timestamp, $event->server_received_at);
+        } catch (QrDineInException $exception) {
+            // The action transaction rolled back, including any alias writes.
+            return EnsureLegacyTableBillBaselineAction::syncRefusal($exception, $event->payload_json);
+        }
     }
 }

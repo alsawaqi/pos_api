@@ -22,6 +22,7 @@ final class CancelStaffLineAction
         private readonly ResolveStaffSeatingAction $resolver,
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /** @param array<string, mixed> $payload
@@ -57,6 +58,7 @@ final class CancelStaffLineAction
                 return $result('bill_terminal') + ['cancelled_qty' => 0, 'unlinked_line_count' => 0,
                     'grand_total_baisas' => $order === null ? 0 : Money::toBaisas($order->grand_total), 'rounds' => []];
             }
+            $this->baseline->handle($order);
             $rounds = QrOrderRound::query()->where('order_id', $order->id)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)->orderByDesc('round_no')->orderByDesc('id')
                 ->lockForUpdate()->get();

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -20,6 +21,7 @@ final class ConfirmDineInQrRoundAction
         private readonly PresentDeviceQrRoundAction $present,
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /** @return array<string, mixed> */
@@ -50,6 +52,7 @@ final class ConfirmDineInQrRoundAction
                     throw $this->notPending();
                 }
 
+                $this->baseline->handle($order);
                 $itemIds = $this->append->handleStored($order, $payload);
                 $lines = $round->priced_lines;
                 foreach ($lines as $index => &$line) {

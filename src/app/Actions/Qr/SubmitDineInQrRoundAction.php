@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
@@ -36,6 +37,7 @@ final class SubmitDineInQrRoundAction
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
         private readonly EnsureTableSessionForQrSessionAction $seatings,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /**
@@ -169,6 +171,9 @@ final class SubmitDineInQrRoundAction
                 ->whereIn('status', [TableSession::STATUS_OPEN, TableSession::STATUS_BILLING])
                 ->orderBy('id')->lockForUpdate()->get();
 
+            if ($order !== null && $order->status === Order::STATUS_OPEN) {
+                $this->baseline->handle($order);
+            }
             $lastBillRoundNo = $order === null ? null : QrOrderRound::query()
                 ->where('order_id', $order->id)
                 ->max('round_no');

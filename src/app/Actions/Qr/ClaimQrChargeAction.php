@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Device\GeofenceGuard;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -25,6 +26,7 @@ final class ClaimQrChargeAction
 {
     public function __construct(
         private readonly GeofenceGuard $geofence,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /**
@@ -93,6 +95,12 @@ final class ClaimQrChargeAction
             $this->assertStationAdmission($session, $authenticatedDevice);
 
             $this->enforceClaimGeofence($authenticatedDevice, $gps);
+
+            try {
+                $this->baseline->assertReadyForCharge($order);
+            } catch (QrDineInException $exception) {
+                throw new QrChargeException($exception->codeName, $exception->httpStatus, $exception->getMessage());
+            }
 
             $claimSeconds = max(1, (int) config('qr.charge_claim_seconds', 180));
             $order->update([

@@ -493,14 +493,14 @@ final class TableDraftProofTest extends TestCase
     {
         [$device, $table, $seat, $product, $event, $order, $input] = $this->legacyFixture();
         $this->roundEvent($device, $seat, $product->id, 3);
-        // Observed existing writer limitation: items are 5.000, but refresh
-        // currently totals only the 3.000 accepted round. This stage detects,
-        // not repairs, that accounting gap. No archive/delta UI may use it.
+        // Owner-approved 4C4B correction: a frozen baseline now contributes
+        // the original 2.000 before the new 3.000 round is appended. Client
+        // archival remains a separate, deliberately unavailable permission.
         $this->assertSame(5000, (int) round((float) $order->items()->sum('line_total') * 1000));
-        $this->assertSame('3.000', (string) $order->fresh()->grand_total);
+        $this->assertSame('5.000', (string) $order->fresh()->grand_total);
         fwrite(STDOUT, "\nUNIFIED_LEGACY_BASELINE_GAP=".json_encode([
             'original_legacy_baisas' => 2000, 'new_round_baisas' => 3000,
-            'item_rows_baisas' => 5000, 'observed_header_baisas' => 3000,
+            'item_rows_baisas' => 5000, 'observed_header_baisas' => 5000,
             'proof_refusal' => 'draft_proof_evidence_changed',
         ], JSON_THROW_ON_ERROR)."\n");
         $before = $this->rows();

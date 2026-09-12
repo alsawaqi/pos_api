@@ -32,6 +32,7 @@ final class ConfirmStaffRoundAction
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /** @return array<string, mixed> */
@@ -48,6 +49,7 @@ final class ConfirmStaffRoundAction
                 throw new QrDineInException('nothing_to_confirm', 409, 'Every line is held; reject this round and re-enter the requested items.');
             }
 
+            $this->baseline->handle($order);
             $itemIds = $this->append->handleStored($order, $round->confirm_payload);
             $lines = $round->priced_lines ?? [];
             $droppedCount = 0;

@@ -36,6 +36,7 @@ final class AppendStaffRoundAction
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly AllocateQrRoundAcceptedSequenceAction $acceptedSequence,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /** @param array<string, mixed> $payload
@@ -83,6 +84,10 @@ final class AppendStaffRoundAction
             // that authorizes new money; no claim/provenance fields change here.
             if (($order !== null && $order->status !== Order::STATUS_OPEN) || $primary->status !== TableSession::STATUS_OPEN) {
                 return $this->resolver->result('bill_unpaid', $payload, $row, $primary, $order);
+            }
+
+            if ($order !== null) {
+                $this->baseline->handle($order);
             }
 
             $now = now();

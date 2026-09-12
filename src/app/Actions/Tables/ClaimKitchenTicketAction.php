@@ -12,6 +12,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Models\TableSessionEvent;
 use Closure;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -143,6 +144,12 @@ final class ClaimKitchenTicketAction
                             throw new RuntimeException(self::SNAPSHOT_CHANGED);
                         }
                     }
+                    // Accounting adoption is never a kitchen submission, even
+                    // when an old ticket already exists. Check the shared path
+                    // so recording a result cannot bypass claim admission.
+                    if ($this->isAccountingOnly($order, $round)) {
+                        throw new QrDineInException('kitchen_round_not_printable', 409, 'This round is not eligible for printing.');
+                    }
                     $ticket = KitchenTicket::query()->where('company_id', $holder->company_id)
                         ->where('branch_id', $holder->branch_id)->where('ticket_key', $ticketKey)
                         ->lockForUpdate()->first();
@@ -182,6 +189,25 @@ final class ClaimKitchenTicketAction
                 static fn (array $line): bool => ! isset($line['held_reason']))),
             'event_id' => null,
         ];
+    }
+
+    private function isAccountingOnly(Order $order, QrOrderRound $round): bool
+    {
+        if (collect($round->priced_lines ?? [])->contains(
+            static fn (array $line): bool => ($line['accounting_only'] ?? false) === true,
+        )) {
+            return true;
+        }
+
+        // Existing combine imports predate the explicit line marker. Their
+        // immutable journal binds the imported round to this tenant and bill.
+        // A nullable accepted sequence alone also describes legitimate prints.
+        return $round->table_session_id !== null && TableSessionEvent::query()
+            ->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)
+            ->where('table_session_id', $round->table_session_id)->where('event_type', 'merged')
+            ->where('payload->action', 'legacy_bill_combined')->where('payload->order_uuid', $order->uuid)
+            ->where('payload->result->order_uuid', $order->uuid)
+            ->where('payload->result->round_id', (int) $round->id)->exists();
     }
 
     private function notFound(): QrDineInException

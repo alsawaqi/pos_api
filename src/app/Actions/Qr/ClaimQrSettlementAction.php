@@ -6,6 +6,7 @@ namespace App\Actions\Qr;
 
 use App\Actions\Device\GeofenceGuard;
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -41,6 +42,7 @@ final class ClaimQrSettlementAction
         private readonly QrChargeRecoveryGuard $recovery,
         private readonly EnsureTableSessionForQrSessionAction $seatings,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /**
@@ -152,6 +154,21 @@ final class ClaimQrSettlementAction
             }
 
             $this->assertSessionAdmission($session, $order, $now);
+
+            try {
+                // Existing hard-delete fallback keeps its frozen orphan bill
+                // after credential/round cascades. Do not reinterpret it as a
+                // legacy hold or bypass any admission/provenance guard above.
+                $roundlessOrphan = $order->client_event_id === null
+                    && $this->isAcceptedRoundlessSafeFallbackOrphan($session, $order)
+                    && ! QrOrderRound::query()->where('order_id', $order->id)
+                        ->where('status', QrOrderRound::STATUS_ACCEPTED)->exists();
+                if (! $roundlessOrphan) {
+                    $this->baseline->handle($order);
+                }
+            } catch (QrDineInException $exception) {
+                throw new QrChargeException($exception->codeName, $exception->httpStatus, $exception->getMessage());
+            }
 
             // Pending staff-confirmation rows are not accepted money. Make
             // them terminal inside this transaction before deciding whether

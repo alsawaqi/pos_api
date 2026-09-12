@@ -114,6 +114,35 @@ final class ReadTableDraftProofAction
         });
     }
 
+    /** Pure evidence reuse by the locked accounting writer; no snapshot or writes here. */
+    public function legacyAccountingEvidence(Order $order, array $snapshot, array $owners): array
+    {
+        $event = $order->client_event_id === null ? null : SyncEvent::query()
+            ->where('client_event_id', $order->client_event_id)->first();
+        $owner = $event === null ? null : Device::withTrashed()->whereKey($event->device_id)
+            ->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)->first();
+        if ($owner === null || ((int) $order->device_id !== (int) $owner->id && ! $this->stationAdopted($order, $owner))) {
+            throw $this->changed();
+        }
+        $items = [];
+        foreach ($this->frozen->present($snapshot)['items'] as $item) {
+            $items[$item['id']] = $this->item($item);
+        }
+        $proof = $this->legacyHold($owner, $order, $items, $owners);
+        $stored = $event->payload_json['order'];
+        foreach (['subtotal_baisas', 'tax_total_baisas', 'grand_total_baisas'] as $field) {
+            if (! is_int($stored[$field] ?? null) || $stored[$field] < 0) {
+                throw $this->changed();
+            }
+        }
+        if ($stored['grand_total_baisas'] !== $stored['subtotal_baisas'] + $stored['tax_total_baisas']) {
+            throw $this->changed();
+        }
+
+        return $proof + ['device_id' => (int) $owner->id, 'subtotal_baisas' => $stored['subtotal_baisas'],
+            'tax_baisas' => $stored['tax_total_baisas'], 'total_baisas' => $stored['grand_total_baisas']];
+    }
+
     private function stationAdopted(Order $order, Device $device): bool
     {
         if ($order->source !== Order::SOURCE_QR_WEB || $order->qr_session_id === null || $order->device_id === null) {
@@ -205,6 +234,7 @@ final class ReadTableDraftProofAction
                 $item = $items[$itemId ?? 0] ?? null;
                 if ($item === null || ($owners[$itemId] ?? null) !== (int) $round->id
                     || isset($line['held_reason']) || ! empty($line['cancellations']) || ! empty($line['cancelled_qty'])
+                    || ($line['accounting_only'] ?? false) === true
                     || ($line['line_index'] ?? null) !== $index
                     || $this->roundItem($line) !== $item
                     || $this->requestLine($requested[$index] ?? []) !== $this->requestLine([

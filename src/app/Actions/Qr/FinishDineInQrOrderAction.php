@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
@@ -18,6 +19,7 @@ final class FinishDineInQrOrderAction
     public function __construct(
         private readonly EnsureTableSessionForQrSessionAction $seatings,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly EnsureLegacyTableBillBaselineAction $baseline,
     ) {}
 
     /** @return array<string, mixed> */
@@ -53,6 +55,9 @@ final class FinishDineInQrOrderAction
                 ->latest('id')
                 ->lockForUpdate()
                 ->first();
+            if ($order?->status === Order::STATUS_OPEN && $session->status === QrSession::STATUS_ACTIVE) {
+                $this->baseline->handle($order);
+            }
             $acceptedRounds = QrOrderRound::query()
                 ->where('order_id', $order?->id ?? 0)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)

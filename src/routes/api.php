@@ -48,6 +48,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceTableReleaseCredentialController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSessionController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
+use App\Http\Controllers\Api\V1\Device\DeviceWorkspaceVoidController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use App\Http\Controllers\Api\V1\PublicQr\QrBindController;
@@ -227,6 +228,10 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/qr/orders/{uuid}/checkout', DeviceQrCheckoutController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.qr.checkout');
+        Route::get('device/qr/orders/{uuid}/void-preview', DeviceWorkspaceVoidController::class)
+            ->middleware('throttle:qr-table-device-read')->name('device.qr.void-preview');
+        Route::post('device/qr/orders/{uuid}/void', DeviceWorkspaceVoidController::class)
+            ->middleware(['throttle:pos-login', 'throttle:qr-table-device-write'])->name('device.qr.workspace-void');
         Route::post('device/qr/claim-settlement', DeviceQrClaimSettlementController::class)
             ->middleware('throttle:qr-settlement-claim')
             ->name('device.qr.claim-settlement');

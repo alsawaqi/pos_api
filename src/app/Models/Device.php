@@ -44,6 +44,8 @@ class Device extends Model implements Authenticatable
 
     protected $table = 'pos_devices';
 
+    public const TYPE_PAYMENT_STATION = 'payment_station';
+
     /**
      * @return array<string, string>
      */
@@ -86,6 +88,6 @@ class Device extends Model implements Authenticatable
 
     public function isPaymentStation(): bool
     {
-        return $this->device_type === 'payment_station';
+        return $this->device_type === self::TYPE_PAYMENT_STATION;
     }
 }

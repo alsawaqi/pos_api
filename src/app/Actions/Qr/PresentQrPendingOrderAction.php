@@ -74,6 +74,8 @@ final class PresentQrPendingOrderAction
     {
         $charge = $this->charge($order, $at);
         $held = $order->status === Order::STATUS_HELD;
+        $stoppedAtCounter = in_array($charge, ['cancelled', 'declined'], true)
+            && Order::query()->whereKey($order->id)->withReleasedAttendedClaim()->exists();
         $digits = preg_replace('/\\D/', '', $phone ?? '');
         $sessionState = match (true) {
             $session === null => 'missing',
@@ -84,7 +86,7 @@ final class PresentQrPendingOrderAction
         };
 
         return $this->mapOrder($order) + [
-            'route' => $held ? 'counter' : 'machine',
+            'route' => $held || $stoppedAtCounter ? 'counter' : 'machine',
             'session' => $sessionState,
             'charge' => $charge,
             'age_seconds' => $order->opened_at === null ? 0 : max(0, (int) $order->opened_at->diffInSeconds($at)),

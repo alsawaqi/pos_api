@@ -171,7 +171,11 @@ class QrStatusController
                 return $attendedHolder ? 'awaiting_counter' : 'station_ready';
             }
 
-            $safeToClaim = Order::query()->whereKey($order->id)->withoutLiveClaim()->exists();
+            if (Order::query()->whereKey($order->id)->withReleasedAttendedClaim()->exists()) {
+                return 'awaiting_counter';
+            }
+
+            $safeToClaim = Order::query()->whereKey($order->id)->availableToPaymentStation()->exists();
 
             return $safeToClaim ? 'awaiting_station' : 'recovery_required';
         }

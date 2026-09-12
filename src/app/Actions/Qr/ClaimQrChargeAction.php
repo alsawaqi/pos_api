@@ -140,7 +140,7 @@ final class ClaimQrChargeAction
     {
         return Order::query()
             ->whereKey($order->getKey())
-            ->withoutLiveClaim($at)
+            ->availableToPaymentStation($at)
             ->exists();
     }
 

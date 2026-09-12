@@ -87,6 +87,6 @@ final class ListStationQrAwaitingOrdersAction
         return $orders
             ->where('company_id', $companyId)
             ->where('branch_id', $branchId)
-            ->withoutLiveClaim();
+            ->availableToPaymentStation();
     }
 }

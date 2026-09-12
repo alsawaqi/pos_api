@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Support\Money;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
@@ -156,6 +157,39 @@ class Order extends Model
                         self::CHARGE_OUTCOME_DECLINED,
                         self::CHARGE_OUTCOME_CANCELLED,
                     ]);
+            });
+    }
+
+    /** A stopped attended checkout is not an instruction to pay at a station. */
+    public function scopeWithReleasedAttendedClaim(Builder $query): Builder
+    {
+        return $query->whereNotNull('charge_claimed_at')
+            ->whereIn('charge_outcome', [self::CHARGE_OUTCOME_CANCELLED, self::CHARGE_OUTCOME_DECLINED])
+            ->whereExists(function ($holder): void {
+                $holder->selectRaw('1')->from('pos_devices as checkout_holder')
+                    ->whereColumn('checkout_holder.id', 'pos_orders.charge_device_id')
+                    ->whereColumn('checkout_holder.company_id', 'pos_orders.company_id')
+                    ->whereColumn('checkout_holder.branch_id', 'pos_orders.branch_id')
+                    ->whereIn('checkout_holder.device_type', QrChargeRecoveryGuard::ATTENDED_DEVICE_TYPES);
+            });
+    }
+
+    /** Keep station retries, but never silently route a stopped till checkout. */
+    public function scopeAvailableToPaymentStation(Builder $query, ?CarbonInterface $at = null): Builder
+    {
+        return $query->withoutLiveClaim($at)
+            ->where(function (Builder $route): void {
+                $route->where(function (Builder $fresh): void {
+                    $fresh->whereNull('charge_claimed_at')->whereNull('charge_outcome');
+                })->orWhereExists(function ($holder): void {
+                    // A missing, reassigned or non-station holder is not proof
+                    // that the station owns the retry route. Fail closed.
+                    $holder->selectRaw('1')->from('pos_devices as station_holder')
+                        ->whereColumn('station_holder.id', 'pos_orders.charge_device_id')
+                        ->whereColumn('station_holder.company_id', 'pos_orders.company_id')
+                        ->whereColumn('station_holder.branch_id', 'pos_orders.branch_id')
+                        ->where('station_holder.device_type', Device::TYPE_PAYMENT_STATION);
+                });
             });
     }
 

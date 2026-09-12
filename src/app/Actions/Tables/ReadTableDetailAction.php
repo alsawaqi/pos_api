@@ -153,6 +153,9 @@ final class ReadTableDetailAction
             $bill = $order === null ? null : Arr::except($this->present->mapOrder($order), [
                 'customer_id', 'plate_number', 'delivery',
             ]) + ['charge' => $this->present->charge($order, now())];
+            if ($order !== null && StaffTableCheckoutAction::shape($order) && $primary !== null) {
+                $bill['checkout_policy'] = StaffTableCheckoutAction::POLICY;
+            }
 
             $detail = [
                 'table' => ['id' => (int) $table->id, 'label' => (string) $table->label,

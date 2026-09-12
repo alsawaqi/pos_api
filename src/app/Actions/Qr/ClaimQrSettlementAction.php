@@ -7,6 +7,7 @@ namespace App\Actions\Qr;
 use App\Actions\Device\GeofenceGuard;
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
+use App\Actions\Tables\StaffTableCheckoutAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -43,6 +44,7 @@ final class ClaimQrSettlementAction
         private readonly EnsureTableSessionForQrSessionAction $seatings,
         private readonly AppendTableSessionEventAction $journal,
         private readonly EnsureLegacyTableBillBaselineAction $baseline,
+        private readonly StaffTableCheckoutAction $staffCheckout,
     ) {}
 
     /**
@@ -63,6 +65,9 @@ final class ClaimQrSettlementAction
         }
 
         $orderUuid = trim((string) $payload['order_uuid']);
+        if (($staffOrder = $this->staffCheckout->find($device, $orderUuid)) !== null) {
+            return $this->staffCheckout->claim($device, $staffOrder, $payload);
+        }
         $gps = is_array($payload['gps'] ?? null)
             ? ['lat' => (float) $payload['gps']['lat'], 'lng' => (float) $payload['gps']['lng']]
             : null;

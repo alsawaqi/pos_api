@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\StaffTableCheckoutAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -28,11 +29,19 @@ final class ReopenDineInQrPaymentAction
         private readonly QrChargeRecoveryGuard $recovery,
         private readonly EnsureTableSessionForQrSessionAction $seatings,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly StaffTableCheckoutAction $staffCheckout,
     ) {}
 
     /** @return array{order_uuid: string, status: string, session_status: string} */
     public function handle(Device $device, string $orderUuid): array
     {
+        if (($staffOrder = $this->staffCheckout->find($device, $orderUuid)) !== null) {
+            try {
+                return $this->staffCheckout->reopen($device, $staffOrder);
+            } catch (QrChargeException $exception) {
+                throw new QrDineInException($exception->codeName, $exception->httpStatus, $exception->getMessage());
+            }
+        }
         if (! $this->recovery->isAttendedDevice($device)) {
             throw new QrDineInException(
                 'device_not_attended',

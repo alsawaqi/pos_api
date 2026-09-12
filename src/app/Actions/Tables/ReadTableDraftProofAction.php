@@ -79,6 +79,11 @@ final class ReadTableDraftProofAction
             }
             $snapshot = $this->frozen->snapshot($order);
             $bill = $this->frozen->present($snapshot);
+            if ($recovery && StaffTableCheckoutAction::shape($order)) {
+                // Old servers lack staff checkout. Clients must not retire a
+                // staff-only draft merely because the old proof accepted it.
+                $bill['checkout_policy'] = StaffTableCheckoutAction::POLICY;
+            }
             if ($snapshot['discounts'] !== [] || $snapshot['comps'] !== [] || $bill['discount_total_baisas'] !== 0
                 || $bill['comp_total_baisas'] !== 0 || $bill['items'] === [] || count($bill['items']) > 1000) {
                 throw $this->ineligible();

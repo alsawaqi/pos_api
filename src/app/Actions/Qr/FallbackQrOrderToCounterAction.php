@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\StaffTableCheckoutAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -18,6 +19,7 @@ final class FallbackQrOrderToCounterAction
     public function __construct(
         private readonly QrChargeRecoveryGuard $recoveryGuard,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly StaffTableCheckoutAction $staffCheckout,
     ) {}
 
     /**
@@ -25,6 +27,10 @@ final class FallbackQrOrderToCounterAction
      */
     public function handle(Device $device, string $orderUuid): array
     {
+        if (($staffOrder = $this->staffCheckout->find($device, $orderUuid)) !== null) {
+            return $this->staffCheckout->fallback($device, $staffOrder);
+        }
+
         return DB::transaction(function () use ($device, $orderUuid): array {
             $now = now();
             $order = Order::query()

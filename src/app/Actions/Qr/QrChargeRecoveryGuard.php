@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\StaffTableCheckoutAction;
 use App\Models\Device;
 use App\Models\Order;
 use Carbon\CarbonInterface;
@@ -37,7 +38,7 @@ final class QrChargeRecoveryGuard
 
     public function isAmbiguousCounterRecovery(Order $order, CarbonInterface $at): bool
     {
-        $hasQrProvenance = $order->qr_session_id !== null
+        $hasQrProvenance = StaffTableCheckoutAction::shape($order) || $order->qr_session_id !== null
             || ($order->source === Order::SOURCE_QR_WEB
                 && $order->order_type === 'dine_in'
                 && $order->table_id !== null);

@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceDispositionController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenPrintController;
 use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
+use App\Http\Controllers\Api\V1\Device\DeviceOrderAttentionController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceProductionsController;
@@ -212,6 +213,9 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/qr/pending-orders/{uuid}/items', [DeviceQrPendingOrdersController::class, 'appendItems'])
             ->middleware('throttle:qr-table-device-write')
             ->name('device.qr.pending-orders.items');
+        Route::get('device/order-attention', DeviceOrderAttentionController::class)
+            ->middleware('throttle:qr-table-device-read')
+            ->name('device.order-attention');
         Route::get('device/qr/pending-orders', [DeviceQrPendingOrdersController::class, 'index'])
             ->middleware('throttle:qr-table-device-read')
             ->name('device.qr.pending-orders');

@@ -421,12 +421,61 @@ final class CombineLegacyTableBillTest extends TestCase
             $type === 'payment_station' ? 'device_not_attended' : 'table_not_found');
     }
 
-    public function test_preview_cannot_be_confirmed_by_another_device_but_a_handheld_can_get_its_own_preview(): void
+    public function test_other_device_cannot_preview_or_confirm_but_handheld_can_combine_its_own_bill(): void
     {
         $input = $this->input();
         $this->device = $this->seatingDevice('handheld');
+        $this->refused(fn () => $this->combine($input), 'combine_source_device_required');
+        $this->refused(fn () => $this->input(), 'combine_source_device_required');
+        $this->source->update(['device_id' => $this->device->id, 'source' => 'handheld']);
         $this->refused(fn () => $this->combine($input), 'combine_preview_stale');
         $this->assertSame('combined', $this->combine()['outcome']);
+    }
+
+    public static function ownershipChanges(): array
+    {
+        return ['new owner' => ['device_id', 999, 'combine_source_device_required'],
+            'lost owner' => ['device_id', null, 'combine_source_device_required'],
+            'transfer source history' => ['transferred_from_device_id', 999, 'combine_payment_or_transfer'],
+            'transfer timestamp history' => ['transferred_at', '2026-09-12 10:00:00', 'combine_payment_or_transfer']];
+    }
+
+    #[DataProvider('ownershipChanges')]
+    public function test_ownership_and_transfer_history_are_rechecked_without_writes(string $field, mixed $value, string $code): void
+    {
+        $input = $this->input();
+        $this->source->update([$field => $value]);
+        $this->refused(fn () => $this->combine($input), $code);
+        $this->refused(fn () => $this->input(), $code);
+    }
+
+    public function test_expired_unapplied_intent_returns_exact_release_proof_but_committed_intent_replays(): void
+    {
+        $input = $this->input();
+        $path = '/api/v1/device/tables/'.$this->source->table_id.'/combine';
+        $this->travel(6)->minutes();
+        $before = $this->rows();
+        $this->withToken($this->device->device_token)->postJson($path, $input)->assertStatus(409)
+            ->assertJsonPath('errors.0.code', 'combine_preview_stale')
+            ->assertJsonPath('combine_final_no_write', Arr::except($input, ['pin']) + ['table_id' => $this->source->table_id]);
+        $this->assertSame($before, $this->rows());
+        $input = $this->input();
+        $result = $this->combine($input);
+        $this->travel(6)->minutes();
+        $this->withToken($this->device->device_token)->postJson($path, $input)->assertOk()
+            ->assertJsonPath('data.result', $result)->assertJsonMissingPath('combine_final_no_write');
+    }
+
+    public function test_invalid_pin_or_unexpired_stale_preview_never_releases_a_pending_intent(): void
+    {
+        $input = $this->input();
+        $path = '/api/v1/device/tables/'.$this->source->table_id.'/combine';
+        $this->source->update(['note' => 'Changed']);
+        $this->withToken($this->device->device_token)->postJson($path, $input)->assertStatus(409)
+            ->assertJsonMissingPath('combine_final_no_write');
+        $this->travel(6)->minutes();
+        $this->withToken($this->device->device_token)->postJson($path, array_replace($input, ['pin' => '1111']))
+            ->assertStatus(401)->assertJsonMissingPath('combine_final_no_write');
     }
 
     public function test_wrong_target_and_expired_or_inactive_manager_are_refused(): void

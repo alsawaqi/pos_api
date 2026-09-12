@@ -50,6 +50,7 @@ final class CombineLegacyTableBillAction
 
             return ['table_id' => $tableId, 'table_label' => $state['table']->label,
                 'source' => $source, 'target' => $target,
+                'combine_policy' => 'local_owner_v1', 'table_session_uuid' => $state['seat']->uuid,
                 'combined_grand_total_baisas' => $source['grand_total_baisas'] + $target['grand_total_baisas'],
                 'preview_token' => $expires.'.'.$this->signature($current, $state, $expires),
                 'expires_at' => now()->setTimestamp($expires)->toIso8601String(),
@@ -94,11 +95,19 @@ final class CombineLegacyTableBillAction
 
                 return $previous->payload['result'] + ['event_id' => (int) $previous->id];
             }
+            // A lost reply is replayed ABOVE before considering expiry. Once
+            // this exact token has expired, neither a delayed original request
+            // nor another retry can start a combine. Clients may then release
+            // their durable intent without discarding the original local bill.
+            $parts = explode('.', $input['preview_token']);
+            if (count($parts) === 2 && ctype_digit($parts[0]) && (int) $parts[0] <= now()->timestamp) {
+                throw new QrDineInException('combine_preview_stale', 409,
+                    'The preview changed or expired. Review both bills again.', finalNoWrite: true);
+            }
             $state = $this->state($device, $tableId, $input['source_order_uuid']);
             if ($state['target']->uuid !== $input['target_order_uuid']) {
                 throw $this->refusal('combine_preview_stale', 'The table bill changed. Review both bills again.');
             }
-            $parts = explode('.', $input['preview_token']);
             if (count($parts) !== 2 || ! ctype_digit($parts[0]) || (int) $parts[0] <= now()->timestamp
                 || ! hash_equals($this->signature($device, $state, (int) $parts[0]), $parts[1])) {
                 throw $this->refusal('combine_preview_stale', 'The preview changed or expired. Review both bills again.');
@@ -161,6 +170,9 @@ final class CombineLegacyTableBillAction
         if ($source === null || $target === null) {
             throw new QrDineInException('order_not_found', 404, 'Both bills must exist in this branch.');
         }
+        if ((int) $source->device_id !== (int) $device->id) {
+            throw $this->refusal('combine_source_device_required', 'Use the device holding the original local bill.');
+        }
         if ($source->id === $target->id || $source->table_id !== $table->id || $target->table_id !== $table->id
             || $target->table_session_id !== $seat->id || $source->order_type !== 'dine_in' || $target->order_type !== 'dine_in'
             || ! in_array($source->source, ['main_pos', 'handheld'], true) || $target->source !== Order::SOURCE_QR_WEB
@@ -176,7 +188,8 @@ final class CombineLegacyTableBillAction
         }
         foreach ([$source, $target] as $order) {
             foreach (['charge_device_id', 'charge_amount_baisas', 'charge_roundup_amount_baisas', 'charge_claimed_at',
-                'charge_deadline_at', 'charge_outcome', 'transferred_to_device_id', 'delivery_provider_id'] as $field) {
+                'charge_deadline_at', 'charge_outcome', 'transferred_to_device_id', 'transferred_from_device_id',
+                'transferred_at', 'delivery_provider_id'] as $field) {
                 if ($order->$field !== null) {
                     throw $this->refusal('combine_payment_or_transfer', 'Resolve payment or transfer evidence before combining.');
                 }

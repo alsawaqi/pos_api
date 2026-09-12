@@ -31,6 +31,13 @@ final class DeviceTableCombineController
             $response = QrApiResponse::success(['status' => 'processed', 'result' => $result]);
         } catch (QrDineInException $exception) {
             $response = QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
+            if ($exception->finalNoWrite) {
+                $body = $response->getData(true);
+                $body['combine_final_no_write'] = $request->only([
+                    'source_order_uuid', 'target_order_uuid', 'client_request_id', 'preview_token', 'reason',
+                ]) + ['table_id' => (int) $tableId];
+                $response->setData($body);
+            }
         }
 
         return $response->header('Cache-Control', 'private, no-store');

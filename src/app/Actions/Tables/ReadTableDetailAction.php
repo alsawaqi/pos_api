@@ -13,6 +13,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
+use Closure;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -29,9 +30,15 @@ final class ReadTableDetailAction
     /** @return array<string, mixed> */
     public function handle(Device $device, int $tableId): array
     {
+        return $this->inspect($device, $tableId, static fn (Device $current, array $detail): array => $detail);
+    }
+
+    /** Extend a read within the SAME tenant-checked, consistent snapshot. */
+    public function inspect(Device $device, int $tableId, Closure $read): array
+    {
         $this->assertAttended($device);
 
-        return $this->snapshot->handle(function () use ($device, $tableId): array {
+        return $this->snapshot->handle(function () use ($device, $tableId, $read): array {
             $current = Device::withTrashed()->find($device->id);
             if ($current === null || (int) $current->company_id !== (int) $device->company_id
                 || (int) $current->branch_id !== (int) $device->branch_id) {
@@ -134,7 +141,7 @@ final class ReadTableDetailAction
                 'customer_id', 'plate_number', 'delivery',
             ]) + ['charge' => $this->present->charge($order, now())];
 
-            return [
+            $detail = [
                 'table' => ['id' => (int) $table->id, 'label' => (string) $table->label,
                     'floor_id' => (int) $table->floor_id, 'status' => (string) $table->status,
                     'archived' => $table->trashed() || $table->floor_deleted_at !== null],
@@ -161,6 +168,8 @@ final class ReadTableDetailAction
                 'bill' => $bill,
                 'rounds' => $rounds->map(fn (QrOrderRound $round): array => $this->round($round))->all(),
             ];
+
+            return $read($current, $detail);
         });
     }
 

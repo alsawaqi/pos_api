@@ -49,7 +49,13 @@ class QrStatusController
             ] : null,
         ];
 
-        // Quick is deliberately returned through the exact shipped shape.
+        // Presentation only: never use this hint to admit or retry a payment.
+        // Keep the public order projection and existing lifecycle states intact.
+        if ($order?->status === Order::STATUS_AWAITING_PAYMENT) {
+            $data['payment_display'] = $this->paymentDisplay($order);
+        }
+
+        // Quick retains its shipped order shape, with the additive display hint.
         if (! $session->isDineIn()) {
             return QrApiResponse::success($data, [
                 'money_unit' => 'baisas',
@@ -148,6 +154,45 @@ class QrStatusController
         return QrApiResponse::success($data, [
             'money_unit' => 'baisas',
         ]);
+    }
+
+    private function paymentDisplay(Order $order): string
+    {
+        $holder = Device::query()->whereKey($order->charge_device_id)
+            ->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)
+            ->where('status', 'active')->first();
+        $attended = $holder !== null
+            && in_array($holder->device_type, QrChargeRecoveryGuard::ATTENDED_DEVICE_TYPES, true);
+        $station = $holder?->device_type === Device::TYPE_PAYMENT_STATION;
+        $complete = $order->charge_claimed_at !== null && $order->charge_deadline_at !== null
+            && $order->charge_amount_baisas !== null && $order->charge_roundup_amount_baisas !== null;
+
+        // withLiveClaim includes approved/uncertain evidence. Neither is a tap
+        // instruction, even if its deadline is still in the future.
+        if ($complete && $order->charge_outcome === null
+            && $order->charge_deadline_at->isFuture() && ! $order->charge_claimed_at->isFuture()) {
+            if ($attended) {
+                return 'staff_processing';
+            }
+            if ($station) {
+                return 'station_processing';
+            }
+        }
+
+        if ($complete && in_array($order->charge_outcome, [Order::CHARGE_OUTCOME_CANCELLED, Order::CHARGE_OUTCOME_DECLINED], true)) {
+            if ($attended) {
+                return 'awaiting_counter';
+            }
+            if ($station) {
+                return 'awaiting_station';
+            }
+        }
+
+        $neverClaimed = $order->charge_device_id === null && $order->charge_claimed_at === null
+            && $order->charge_deadline_at === null && $order->charge_outcome === null
+            && $order->charge_amount_baisas === null && $order->charge_roundup_amount_baisas === null;
+
+        return $neverClaimed ? 'awaiting_station' : 'recovery_required';
     }
 
     private function paymentState(?Order $order): ?string

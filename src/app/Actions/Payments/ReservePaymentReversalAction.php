@@ -123,11 +123,16 @@ final class ReservePaymentReversalAction
 
     public function assertDevice(Device $device): void
     {
-        if (! in_array($device->device_type, ['fixed_pos', 'handheld'], true) || ! $device->isAssigned() || $device->status !== 'active') {
-            throw new ReversalException('device_not_attended');
-        }
+        $this->assertAttended($device);
         if ($device->card_tenders_blocked_reason !== null) {
             throw new ReversalException('softpos_blocked');
+        }
+    }
+
+    public function assertAttended(Device $device): void
+    {
+        if (! in_array($device->device_type, ['fixed_pos', 'handheld'], true) || ! $device->isAssigned() || $device->status !== 'active') {
+            throw new ReversalException('device_not_attended');
         }
     }
 

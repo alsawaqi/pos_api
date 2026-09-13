@@ -45,8 +45,15 @@ final class PaymentReversalsController
         return $this->respond(fn () => $action->handle($uuid, $payload, (int) $request->user()->id));
     }
 
-    public function index(Request $request): JsonResponse
+    public function index(Request $request, ReservePaymentReversalAction $guard): JsonResponse
     {
+        // A blocked attended device still needs recovery; only new reserves
+        // require an unblocked card terminal.
+        try {
+            $guard->assertAttended($request->user());
+        } catch (ReversalException $exception) {
+            return QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
+        }
         $statuses = explode(',', (string) $request->query('status', 'pending,uncertain'));
         if (array_diff($statuses, ['pending', 'uncertain']) !== []) {
             return QrApiResponse::failure('invalid_reversal_status', 'Only pending and uncertain reversals are available here.', 422);

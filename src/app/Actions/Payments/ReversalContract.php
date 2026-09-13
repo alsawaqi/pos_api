@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Payments;
 
 use App\Models\PaymentReversal;
+use App\Models\PosStaff;
 use Illuminate\Support\Facades\DB;
 
 final class ReversalContract
@@ -12,8 +13,11 @@ final class ReversalContract
     public static function present(PaymentReversal $reversal): array
     {
         $order = DB::table('pos_orders')->where('id', $reversal->order_id)->first();
+        $payment = DB::table('pos_payments')->where('id', $reversal->payment_id)->first();
 
         return [
+            ...ReversalReceiptProjection::from($order, $payment),
+            'approver_name' => PosStaff::query()->whereKey($reversal->approved_by_staff_id)->value('name'),
             'reversal_uuid' => $reversal->uuid, 'kind' => $reversal->kind, 'status' => $reversal->status,
             'amount_baisas' => $reversal->amount_baisas, 'currency' => $reversal->currency_code,
             'softpos' => [

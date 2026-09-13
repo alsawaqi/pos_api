@@ -48,6 +48,7 @@ final class PaymentReversalOptionsAction
             }
             $balance = $this->reserve->balance($payment);
             $payments[] = [
+                ...ReversalReceiptProjection::from($order, $payment),
                 'payment_uuid' => $payment->uuid, 'amount_baisas' => Money::toBaisas($payment->amount),
                 'can_void' => $reason === null && ! $hasOpenReversal && $balance > 0 && $this->reserve->canVoidToday($payment),
                 'can_refund' => $reason === null && ! $hasOpenVoid && $balance > 0

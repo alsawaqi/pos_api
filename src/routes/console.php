@@ -8,6 +8,8 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
+Schedule::command('pos:reversals-sweep')->everyFiveMinutes()->withoutOverlapping()->onOneServer();
+
 Schedule::command('sync:sweep-stranded-events')
     ->everyMinute()
     ->name('sweep-stranded-sync-events')

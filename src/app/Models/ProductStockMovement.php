@@ -36,6 +36,8 @@ class ProductStockMovement extends Model
 
     public const TYPE_SALE_CONSUMPTION = 'sale_consumption';
 
+    public const TYPE_REFUND_RETURN = 'refund_return';
+
     // P-G1 kitchen production: a finished batch lands its pieces in the
     // branch shelf stock (positive, branch side). Merchant-side enum case:
     // ProductStockMovementType::Produced.

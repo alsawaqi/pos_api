@@ -1584,6 +1584,21 @@ return new class extends Migration
             DB::statement("CREATE UNIQUE INDEX pos_reversals_one_pending ON pos_payment_reversals (payment_id) WHERE status = 'pending'");
         }
 
+        Schema::table('pos_payment_reversals', function (Blueprint $table): void {
+            $table->boolean('refund_needs_transaction_id')->default(false);
+            $table->boolean('void_needs_session_id')->default(false);
+        });
+        Schema::create('pos_payment_reversal_results', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('reversal_id')->constrained('pos_payment_reversals')->restrictOnDelete();
+            $table->foreignId('device_id')->constrained('pos_devices')->restrictOnDelete();
+            $table->string('client_request_id', 64);
+            $table->string('request_fingerprint', 64);
+            $table->jsonb('response_json');
+            $table->timestamp('created_at');
+            $table->unique(['device_id', 'client_request_id'], 'pos_reversal_results_device_request_unique');
+        });
+
         Schema::create('pos_payment_reversal_lines', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('reversal_id')->constrained('pos_payment_reversals')->restrictOnDelete();
@@ -1600,6 +1615,7 @@ return new class extends Migration
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_payment_reversal_results');
         Schema::dropIfExists('pos_payment_reversal_lines');
         Schema::dropIfExists('pos_payment_reversals');
         Schema::dropIfExists('pos_bank_softpos_profiles');

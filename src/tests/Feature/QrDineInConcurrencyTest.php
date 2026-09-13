@@ -9,6 +9,8 @@ use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
 use App\Models\Order;
+use App\Models\Payment;
+use App\Models\PosStaff;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table as PosTable;
@@ -18,6 +20,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -868,6 +871,67 @@ final class QrDineInConcurrencyTest extends TestCase
             $this->assertDatabaseCount('pos_payments', 1);
             $this->assertDatabaseHas('pos_payments', ['softpos_mismatch' => true]);
             $this->assertDatabaseHas('pos_devices', ['id' => $device->id, 'card_tenders_blocked_reason' => 'softpos_mismatch']);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
+
+    public function test_pay002_ten_concurrent_reversal_reserves_create_one_pending(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-pay002-reserves-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $device = Device::factory()->withSoftPos()->paired('pay002-reserve-race')->create([
+                'company_id' => 100, 'branch_id' => 10, 'device_type' => 'fixed_pos',
+            ]);
+            PosStaff::create([
+                'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+                'name' => 'Manager', 'position' => 'manager', 'status' => 'active',
+                'pin_hash' => Hash::make('123456'),
+            ]);
+            $order = $this->quickCounterOrder();
+            $order->update(['status' => 'paid']);
+            $payment = Payment::create([
+                'uuid' => (string) Str::uuid(), 'order_id' => $order->id, 'device_id' => $device->id,
+                'method' => 'card', 'status' => 'success', 'amount' => 1, 'captured_at' => now(),
+                'bank_id' => $device->bank_id, 'softpos_provider' => 'mosambee_dhofar',
+                'softpos_transaction_id' => 'ORIGINAL',
+            ]);
+            $requests = [];
+            for ($worker = 0; $worker < 10; $worker++) {
+                $requests[] = [
+                    'url' => '/api/v1/device/payments/'.$payment->uuid.'/reversals',
+                    'token' => $device->device_token, 'observe_table_id' => null,
+                    'payload' => ['kind' => 'refund', 'manager_pin' => '123456',
+                        'client_request_id' => (string) Str::uuid(), 'reason_code' => 'RETURN',
+                        'custom_amount_baisas' => 1000],
+                ];
+            }
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $this->assertCount(10, $results);
+            $accepted = 0;
+            foreach ($results as $result) {
+                $this->assertNull($result['error'], (string) $result['error']);
+                $body = $this->decodeBody($result['body']);
+                if ($result['status'] === 200) {
+                    $accepted++;
+                    $this->assertSame('pending', data_get($body, 'data.status'));
+                } else {
+                    $this->assertSame(409, $result['status'], $result['body']);
+                    $this->assertSame('reversal_in_progress', data_get($body, 'errors.0.code'));
+                }
+            }
+            $this->assertSame(1, $accepted);
+            DB::purge('sqlite');
+            $this->assertDatabaseCount('pos_payment_reversals', 1);
+            $this->assertDatabaseHas('pos_payment_reversals', ['payment_id' => $payment->id, 'status' => 'pending']);
+            $this->assertDatabaseCount('pos_payments', 1);
+            $this->assertDatabaseCount('pos_payment_reversal_results', 0);
+            fwrite(STDOUT, "\nPAY002_TEN_RESERVES: 1 pending, 9 reversal_in_progress, 0 ledger writes\n");
         } finally {
             $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
         }

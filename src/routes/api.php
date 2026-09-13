@@ -49,6 +49,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSessionController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
+use App\Http\Controllers\Api\V1\Device\PaymentReversalsController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use App\Http\Controllers\Api\V1\PublicQr\QrBindController;
 use App\Http\Controllers\Api\V1\PublicQr\QrCheckoutController;
@@ -124,6 +125,10 @@ Route::prefix('v1')->group(function (): void {
 
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
+        Route::post('device/payments/{paymentUuid}/reversals', [PaymentReversalsController::class, 'reserve'])->middleware('throttle:pos-login');
+        Route::post('device/payments/reversals/{uuid}/result', [PaymentReversalsController::class, 'result']);
+        Route::get('device/payments/reversals', [PaymentReversalsController::class, 'index']);
+        Route::get('device/orders/{uuid}/payments', [PaymentReversalsController::class, 'payments']);
         // POS staff PIN login on a paired device (§11.1). Extra-throttled
         // (throttle:pos-login) as the PIN brute-force surface.
         Route::post('auth/pos/login', StaffPosLoginController::class)

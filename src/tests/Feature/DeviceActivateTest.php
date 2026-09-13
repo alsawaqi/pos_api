@@ -21,7 +21,7 @@ class DeviceActivateTest extends TestCase
 
     public function test_activates_with_a_valid_code(): void
     {
-        $device = Device::factory()->create([
+        $device = Device::factory()->withSoftPos()->create([
             'kiosk_id' => 'KIOSK-ACT',
             'terminal_id' => 'TERM-ACT',
             'terminal_pin' => '4821',

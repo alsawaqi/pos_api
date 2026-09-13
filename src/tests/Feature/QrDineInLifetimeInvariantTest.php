@@ -1764,6 +1764,7 @@ final class QrDineInLifetimeInvariantTest extends TestCase
         $this->deviceSequence++;
 
         return Device::factory()
+            ->withSoftPos()
             ->paired('qr2-life-'.$this->deviceSequence.'-'.$label)
             ->create([
                 'company_id' => 100,

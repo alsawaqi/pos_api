@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1\Auth;
 
 use App\Actions\Device\ActivateDeviceAction;
+use App\Actions\Device\ResolveDeviceSoftPos;
 use App\Http\Requests\Api\V1\Auth\ActivateDeviceRequest;
 use Illuminate\Http\JsonResponse;
 use RuntimeException;
@@ -41,8 +42,7 @@ class DeviceActivateController
                     'company_id' => (int) $device->company_id,
                     'branch_id' => (int) $device->branch_id,
                     'kiosk_id' => $device->kiosk_id,
-                    'terminal_id' => $device->terminal_id,
-                    'terminal_pin' => $device->terminal_pin,
+                    ...app(ResolveDeviceSoftPos::class)->clientContract($device, $request->header('X-Mithqal-SoftPos-Capable') === '1'),
                     'name' => $device->name,
                 ],
             ],

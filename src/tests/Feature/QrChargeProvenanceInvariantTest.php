@@ -1355,7 +1355,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
     {
         $this->deviceSequence++;
 
-        return Device::factory()->paired('invariant-'.$this->deviceSequence.'-'.$label)->create([
+        return Device::factory()->withSoftPos()->paired('invariant-'.$this->deviceSequence.'-'.$label)->create([
             'company_id' => 100,
             'branch_id' => $branchId,
             'device_type' => $type,

@@ -188,6 +188,11 @@ final class ClaimQrChargeAction
             );
         }
 
+        $currentDevice = Device::query()->whereKey($device->id)->lockForUpdate()->firstOrFail();
+        if ($currentDevice->card_tenders_blocked_reason !== null) {
+            throw new QrChargeException('softpos_blocked', 409, 'Refresh the card terminal configuration before taking another card payment.');
+        }
+
         $session = $this->assertBoundSession($session, $device);
         if ($session->status !== QrSession::STATUS_ORDERED) {
             throw new QrChargeException(

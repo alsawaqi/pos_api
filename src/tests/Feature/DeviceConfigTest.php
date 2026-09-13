@@ -359,7 +359,7 @@ class DeviceConfigTest extends TestCase
     public function test_meta_terminal_pin_is_returned_on_full_and_delta_config(): void
     {
         $this->seedCatalogue();
-        Device::factory()->paired('mdev_cfg')->create([
+        Device::factory()->withSoftPos()->paired('mdev_cfg')->create([
             'company_id' => 100,
             'branch_id' => 10,
             'terminal_id' => 'TERM-PIN',

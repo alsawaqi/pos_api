@@ -6,6 +6,7 @@ namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\AllocateOrderNumberAction;
 use App\Actions\Device\GeofenceGuard;
+use App\Actions\Device\SnapshotCardSoftPos;
 use App\Actions\Device\Sync\AfterSyncEventCommitHandler;
 use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
@@ -204,6 +205,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             }
 
             $paymentIds = [];
+            $softposMismatch = false;
             $tenderedBaisas = 0;
             // Card-paid portion of this sale — drives the acquirer (bank)
             // commission slice, which is charged on card money only.
@@ -225,6 +227,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 }
 
                 $status = $tender['status'] ?? Payment::STATUS_SUCCESS;
+                $softpos = app(SnapshotCardSoftPos::class)->handle($device, $tender);
+                $softposMismatch = $softposMismatch || ($softpos['softpos_mismatch'] ?? false);
                 $payment = Payment::create([
                     'uuid' => (string) Str::uuid(),
                     'order_id' => $order->id,
@@ -244,7 +248,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                     'bank_id' => $device->bank_id,
                     'bank_response' => is_array($tender['bank_response'] ?? null) ? $tender['bank_response'] : null,
                     'captured_at' => $capturedAt,
-                ]);
+                ] + $softpos);
 
                 $paymentIds[] = (int) $payment->id;
                 $tenderedBaisas += (int) $tender['amount_baisas'];
@@ -413,6 +417,9 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 'temp_reference' => $order->temp_reference,
             ];
 
+            if ($softposMismatch) {
+                $result['softpos_mismatch'] = true;
+            }
             if ($roundupResult !== null) {
                 $result['roundup_donation_id'] = $roundupResult['roundup_donation_id'];
                 $result['roundup_donation_uuid'] = $roundupResult['roundup_donation_uuid'];
@@ -561,6 +568,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 : null,
         ]);
 
+        $softpos = app(SnapshotCardSoftPos::class)->handle($device, $evidence);
         $payment = Payment::create([
             'uuid' => (string) Str::uuid(),
             'order_id' => $order->getKey(),
@@ -576,7 +584,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             'bank_id' => $device->bank_id,
             'bank_response' => $bankResponse,
             'captured_at' => $capturedAt,
-        ]);
+        ] + $softpos);
 
         return $this->withLateRoundup(
             result: [
@@ -608,6 +616,9 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
         Order $order,
         Payment $payment,
     ): array {
+        if ($payment->softpos_mismatch) {
+            $result['softpos_mismatch'] = true;
+        }
         $roundupBaisas = (int) ($order->charge_roundup_amount_baisas ?? 0);
         $isPendingOrphan = data_get($payment->bank_response, 'qr_late_auth_orphan') === true
             && $payment->status === Payment::STATUS_PENDING_RECONCILIATION

@@ -56,6 +56,10 @@ class Payment extends Model
     {
         return [
             'amount' => 'decimal:3',
+            'softpos_mismatch' => 'boolean',
+            'softpos_receipt_at' => 'datetime',
+            'refunded_total' => 'decimal:3',
+            'voided_at' => 'datetime',
             'change_given' => 'decimal:3',
             'pending_reconciliation' => 'boolean',
             'bank_response' => 'array',

@@ -6,6 +6,7 @@ namespace Database\Factories;
 
 use App\Models\Device;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /**
@@ -33,6 +34,21 @@ class DeviceFactory extends Factory
             'kiosk_id' => 'KIOSK-'.strtoupper(Str::random(8)),
             'device_token' => null,
         ];
+    }
+
+    /** Explicit prerequisite for tests exercising a configured legacy card terminal. */
+    public function withSoftPos(): static
+    {
+        return $this->afterCreating(function (Device $device): void {
+            $bankId = DB::table('banks')->insertGetId(['name' => 'Synthetic Dhofar acquirer']);
+            DB::table('pos_bank_softpos_profiles')->insert([
+                'bank_id' => $bankId, 'softpos_provider' => 'mosambee_dhofar',
+                'softpos_package' => 'com.mosambee.dhofar.softpos', 'currency_code' => '0512',
+                'refund_needs_transaction_id' => true, 'void_needs_session_id' => false,
+                'is_active' => true,
+            ]);
+            $device->forceFill(['bank_id' => $bankId])->save();
+        });
     }
 
     public function unassigned(): static

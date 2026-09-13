@@ -822,6 +822,57 @@ final class QrDineInConcurrencyTest extends TestCase
         }
     }
 
+    public function test_pay002_two_mismatching_tenders_create_one_payment(): void
+    {
+        $this->assertConcurrencySupport();
+        $databasePath = $this->allocateDatabase('pos-api-pay002-tenders-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $device = $this->attendedTill('synthetic-pay002-concurrent');
+            DB::table('banks')->insert(['id' => 901, 'name' => 'Synthetic bank']);
+            DB::table('pos_bank_softpos_profiles')->insert([
+                'bank_id' => 901, 'softpos_provider' => 'mosambee_dhofar',
+                'softpos_package' => 'com.mosambee.dhofar.softpos',
+            ]);
+            $device->forceFill(['bank_id' => 901])->save();
+            $order = $this->quickCounterOrder();
+            $requests = [];
+            for ($worker = 0; $worker < 2; $worker++) {
+                $requests[] = [
+                    'url' => '/api/v1/device/sync/push', 'token' => $device->device_token, 'observe_table_id' => null,
+                    'payload' => ['events' => [[
+                        'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay',
+                        'client_timestamp' => now()->toIso8601String(),
+                        'payload' => ['order_uuid' => $order->uuid, 'payments' => [[
+                            'method' => 'card', 'amount_baisas' => 1000, 'softpos_provider' => 'mosambee_muscat',
+                        ]]],
+                    ]]],
+                ];
+            }
+            DB::disconnect('sqlite');
+            $results = $this->runConcurrentRequests($databasePath, $requests);
+            $processed = 0;
+            foreach ($results as $result) {
+                $this->assertNull($result['error']);
+                $this->assertSame(200, $result['status'], $result['body']);
+                $body = $this->decodeBody($result['body']);
+                if (data_get($body, 'data.results.0.status') === 'processed') {
+                    $processed++;
+                    $this->assertTrue(data_get($body, 'data.results.0.result.softpos_mismatch'));
+                }
+            }
+            $this->assertSame(1, $processed);
+            DB::purge('sqlite');
+            $this->assertDatabaseCount('pos_payments', 1);
+            $this->assertDatabaseHas('pos_payments', ['softpos_mismatch' => true]);
+            $this->assertDatabaseHas('pos_devices', ['id' => $device->id, 'card_tenders_blocked_reason' => 'softpos_mismatch']);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
+
     private function quickCounterOrder(): Order
     {
         $order = Order::query()->create([

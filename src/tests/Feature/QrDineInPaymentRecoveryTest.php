@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Actions\Qr\ListStationQrAwaitingOrdersAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
@@ -93,6 +94,57 @@ final class QrDineInPaymentRecoveryTest extends TestCase
                 'status' => 'active',
             ]);
         }
+    }
+
+    public function test_dine_in_back_is_atomic_replayable_and_can_immediately_reserve_again(): void
+    {
+        foreach (['fixed_pos', 'handheld'] as $type) {
+            $station = $this->device('payment_station');
+            $holder = $this->device($type);
+            $table = $this->table(10, 'BACK-'.$type);
+            $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE, 'back-'.$type);
+            $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+            $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
+            $claim = $this->claimSettlement($holder, $order)->assertOk()->json('data');
+            $payload = array_intersect_key($claim, array_flip(['order_uuid', 'charge_claimed_at', 'charge_deadline_at']));
+            $this->postAs($holder, '/api/v1/device/qr/cancel-settlement', $payload)
+                ->assertOk()->assertJsonPath('data.status', 'open');
+            $this->assertSame('open', $order->fresh()->status);
+            $this->assertSame('active', $session->fresh()->status);
+            $this->assertSame('open', $order->fresh()->tableSession()->sole()->status);
+            foreach (self::CHARGE_FIELDS as $field) {
+                $this->assertNull($order->fresh()->getRawOriginal($field));
+            }
+            $this->assertSame('4.750', $order->fresh()->grand_total);
+            $this->assertSame([], app(ListStationQrAwaitingOrdersAction::class)->handle($station));
+            $this->postAs($holder, '/api/v1/device/qr/cancel-settlement', $payload)->assertOk();
+            $this->travel(1)->seconds();
+            $this->claimSettlement($holder, $order)->assertOk()->assertJsonPath('data.already_claimed_by_this_device', false);
+            $before = $order->fresh()->getRawOriginal();
+            $this->postAs($holder, '/api/v1/device/qr/cancel-settlement', $payload)->assertConflict();
+            $this->assertSame($before, $order->fresh()->getRawOriginal());
+            $this->assertDatabaseCount('pos_payments', 0);
+        }
+    }
+
+    public function test_dine_in_back_preserves_other_holder_and_uncertain_evidence(): void
+    {
+        $station = $this->device('payment_station');
+        $holder = $this->device('handheld');
+        $table = $this->table(10, 'BACK-GUARDS');
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE, 'back-guards');
+        $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
+        $claim = $this->claimSettlement($holder, $order)->assertOk()->json('data');
+        $payload = array_intersect_key($claim, array_flip(['order_uuid', 'charge_claimed_at', 'charge_deadline_at']));
+        $before = $order->fresh()->getRawOriginal();
+        $this->postAs($this->device('fixed_pos'), '/api/v1/device/qr/cancel-settlement', $payload)->assertConflict();
+        $this->assertSame($before, $order->fresh()->getRawOriginal());
+        $order->update(['charge_outcome' => 'uncertain']);
+        $before = $order->fresh()->getRawOriginal();
+        $this->postAs($holder, '/api/v1/device/qr/cancel-settlement', $payload)->assertConflict();
+        $this->assertSame($before, $order->fresh()->getRawOriginal());
+        $this->assertSame('billing', $order->fresh()->tableSession()->sole()->status);
     }
 
     public function test_finish_without_an_accepted_round_refuses_stably_and_persists_pending_rejection(): void

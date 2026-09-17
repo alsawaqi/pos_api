@@ -26,10 +26,17 @@ final class ListOrderAttentionAction
             ->where('branch_id', $device->branch_id)
             ->where('source', Order::SOURCE_QR_WEB)
             ->where('order_type', 'quick')->whereNull('table_id')
-            ->where('status', Order::STATUS_HELD);
-        foreach (PresentQrPendingOrderAction::CHARGE_FIELDS as $field) {
-            $quick->whereNull($field);
-        }
+            ->where(function ($query): void {
+                $query->where(function ($counter): void {
+                    $counter->where('status', Order::STATUS_HELD);
+                    foreach (PresentQrPendingOrderAction::CHARGE_FIELDS as $field) {
+                        $counter->whereNull($field);
+                    }
+                })->orWhere(function ($review): void {
+                    $review->whereIn('status', [Order::STATUS_HELD, Order::STATUS_AWAITING_PAYMENT])
+                        ->where('qr_recovery_request->action', 'review');
+                });
+            });
         // Unlike the inbox's display limit, this snapshot must not silently
         // omit arrivals. No items, money, phone or credential material is read.
         $quickKeys = $quick->orderBy('id')->pluck('uuid')

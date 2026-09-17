@@ -171,6 +171,7 @@ class DeviceTransfersController
             'source' => $order->source,
             'table_id' => $order->table_id !== null ? (int) $order->table_id : null,
             'joined_table_ids' => $joinedTableIds,
+            'source' => $order->source,
             'customer_id' => $order->customer_id !== null ? (int) $order->customer_id : null,
             'staff_id' => $order->staff_id !== null ? (int) $order->staff_id : null,
             'plate_number' => $order->plate_number,

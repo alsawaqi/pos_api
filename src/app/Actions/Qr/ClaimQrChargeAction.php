@@ -67,13 +67,16 @@ final class ClaimQrChargeAction
                 );
             }
 
+            if ($order->transferred_to_device_id !== null && (int) $order->transferred_to_device_id !== (int) $authenticatedDevice->id) {
+                throw new QrChargeException('order_not_bound_to_device_session', 409, 'This order was sent to another device.');
+            }
             $session = $this->lockSession($order);
             $claimIsLive = $this->hasLiveClaim($order, $now);
             if ($claimIsLive) {
                 if ($order->charge_outcome === null
                     && $order->charge_device_id !== null
                     && (int) $order->charge_device_id === (int) $authenticatedDevice->getKey()) {
-                    $this->assertStationAdmission($session, $authenticatedDevice);
+                    $this->assertStationAdmission($session, $authenticatedDevice, $order);
 
                     return $this->present($order, true);
                 }
@@ -92,7 +95,7 @@ final class ClaimQrChargeAction
                     'The order is not available for a new charge claim.',
                 );
             }
-            $this->assertStationAdmission($session, $authenticatedDevice);
+            $this->assertStationAdmission($session, $authenticatedDevice, $order);
 
             $this->enforceClaimGeofence($authenticatedDevice, $gps);
 
@@ -112,6 +115,7 @@ final class ClaimQrChargeAction
                 'charge_claimed_at' => $now,
                 'charge_deadline_at' => $now->copy()->addSeconds($claimSeconds),
                 'charge_outcome' => null,
+                'qr_recovery_request' => null,
             ]);
 
             return $this->present($order->refresh(), false);
@@ -178,7 +182,7 @@ final class ClaimQrChargeAction
         return $session;
     }
 
-    private function assertStationAdmission(?QrSession $session, Device $device): void
+    private function assertStationAdmission(?QrSession $session, Device $device, Order $order): void
     {
         if (! $device->isPaymentStation()) {
             throw new QrChargeException(
@@ -193,6 +197,10 @@ final class ClaimQrChargeAction
             throw new QrChargeException('softpos_blocked', 409, 'Refresh the card terminal configuration before taking another card payment.');
         }
 
+        if ($order->source === Order::SOURCE_QR_WEB && $order->order_type === 'quick'
+            && (int) $order->transferred_to_device_id === (int) $device->id) {
+            return;
+        }
         $session = $this->assertBoundSession($session, $device);
         if ($session->status !== QrSession::STATUS_ORDERED) {
             throw new QrChargeException(

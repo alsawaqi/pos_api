@@ -35,6 +35,13 @@ class QrBindController
             'session_uuid' => $session->uuid,
             'status' => $session->status,
             'expires_at' => $session->expires_at?->toIso8601String(),
+        ], [
+            // An opaque comparison key, not authorization to read an order.
+            'recovery_scope' => hash_hmac(
+                'sha256',
+                $session->company_id.':'.$session->branch_id,
+                (string) config('app.key'),
+            ),
         ]);
     }
 }

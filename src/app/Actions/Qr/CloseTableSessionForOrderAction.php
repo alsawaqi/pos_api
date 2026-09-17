@@ -7,6 +7,7 @@ namespace App\Actions\Qr;
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Order;
 use App\Models\QrOrderRound;
+use App\Models\QrSession;
 use App\Models\TableSession;
 use Carbon\CarbonInterface;
 use RuntimeException;
@@ -85,6 +86,20 @@ final class CloseTableSessionForOrderAction
                 $closed[] = $row;
             }
         }
+        // A QR credential can be attached before its first customer round.
+        // At that point order.qr_session_id is still null: close credentials
+        // through this exact seating family, never through the physical table.
+        QrSession::query()
+            ->where('company_id', (int) $lockedOrder->company_id)
+            ->where('branch_id', (int) $lockedOrder->branch_id)
+            ->whereIn('table_session_id', collect([$seating])->concat($joined)->pluck('id')->all())
+            ->whereIn('status', QrSession::EXPIRABLE_STATUSES)
+            ->update([
+                'status' => QrSession::STATUS_CLOSED,
+                'closed_at' => $at,
+                'updated_at' => $at,
+            ]);
+
         foreach ($closed as $row) {
             $this->journal->handle($row, 'closed', [
                 'order_uuid' => (string) $lockedOrder->uuid,

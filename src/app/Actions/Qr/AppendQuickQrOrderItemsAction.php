@@ -27,11 +27,11 @@ final class AppendQuickQrOrderItemsAction
     /** @param array{client_request_id: string, lines: list<array<string, mixed>>} $payload
      * @return array<string, mixed>
      */
-    public function handle(Device $device, string $uuid, array $payload): array
+    public function handle(Device $device, string $uuid, array $payload, bool $workspace = false): array
     {
         $this->present->assertAttended($device);
 
-        return DB::transaction(function () use ($device, $uuid, $payload): array {
+        return DB::transaction(function () use ($device, $uuid, $payload, $workspace): array {
             // Serialize with revocation and payment on device -> order; stock
             // locks are acquired later, in the shared stock admission action.
             $lockedDevice = Device::query()->whereKey($device->id)->lockForUpdate()->first();
@@ -66,9 +66,12 @@ final class AppendQuickQrOrderItemsAction
 
                 // Read-only acknowledgement after a lost response, even if
                 // payment has since started or finished. It grants no edit.
-                return $this->result($order, $existing, true);
+                return $this->result($order, $existing, true, $workspace);
             }
 
+            if ($order->transferred_to_device_id !== null) {
+                throw new QrChargeException('order_not_editable', 409, 'The order has been transferred.');
+            }
             $charge = $this->present->charge($order, now());
             if ($charge !== 'none') {
                 throw new QrChargeException(
@@ -118,7 +121,7 @@ final class AppendQuickQrOrderItemsAction
                 'grand_total' => Money::toOmr(Money::toBaisas($order->grand_total) + $price->grandTotalBaisas),
             ]);
 
-            return $this->result($order, $round, false);
+            return $this->result($order, $round, false, $workspace);
         }, 5);
     }
 
@@ -139,7 +142,7 @@ final class AppendQuickQrOrderItemsAction
     }
 
     /** @return array<string, mixed> */
-    private function result(Order $order, QrOrderRound $round, bool $replayed): array
+    private function result(Order $order, QrOrderRound $round, bool $replayed, bool $workspace): array
     {
         $order->load(['items' => fn ($q) => $q->orderBy('id'), 'items.addons', 'comps' => fn ($q) => $q->orderBy('id')]);
         $session = $order->qr_session_id === null ? null : QrSession::query()
@@ -149,7 +152,7 @@ final class AppendQuickQrOrderItemsAction
             ->whereKey($order->customer_id)->where('company_id', $order->company_id)->value('phone');
 
         return [
-            'order' => $this->present->handle($order, $session, $phone, now()),
+            'order' => $this->present->handle($order, $session, $phone, now(), $workspace),
             'addition' => [
                 'id' => (int) $round->id, 'round_no' => (int) $round->round_no,
                 'subtotal_baisas' => (int) $round->subtotal_baisas,

@@ -104,6 +104,9 @@ final class ClaimQrSettlementAction
                 );
             }
 
+            if ($order->transferred_to_device_id !== null) {
+                throw new QrChargeException('order_not_editable', 409, 'Receive the explicit transfer on its target device first.');
+            }
             $session = $this->lockSettlementSession($order, $device);
 
             // A lost claim response is safe to replay only to the same live

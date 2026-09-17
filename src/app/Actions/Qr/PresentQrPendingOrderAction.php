@@ -70,7 +70,7 @@ final class PresentQrPendingOrderAction
     }
 
     /** @return array<string, mixed> */
-    public function handle(Order $order, ?QrSession $session, ?string $phone, CarbonInterface $at): array
+    public function handle(Order $order, ?QrSession $session, ?string $phone, CarbonInterface $at, bool $workspace = false): array
     {
         $charge = $this->charge($order, $at);
         $held = $order->status === Order::STATUS_HELD;
@@ -83,17 +83,20 @@ final class PresentQrPendingOrderAction
             default => 'live',
         };
 
-        return $this->mapOrder($order) + [
+        return $this->mapOrder($order) + ($workspace ? [
+            'edit_revision' => QuickQrWorkspaceAction::revision($order),
+            'transferred_to_device_id' => $order->transferred_to_device_id,
+        ] : []) + [
             'route' => $held ? 'counter' : 'machine',
             'session' => $sessionState,
             'charge' => $charge,
             'age_seconds' => $order->opened_at === null ? 0 : max(0, (int) $order->opened_at->diffInSeconds($at)),
             'phone_tail' => strlen($digits) >= 4 ? substr($digits, -4) : null,
             'actions' => [
-                'settle' => $held && $charge === 'none',
-                'to_counter' => ($order->status === Order::STATUS_AWAITING_PAYMENT
+                'settle' => $held && $charge === 'none' && $order->transferred_to_device_id === null && Money::toBaisas($order->grand_total) > 0,
+                'to_counter' => $order->transferred_to_device_id === null && (($order->status === Order::STATUS_AWAITING_PAYMENT
                         && in_array($charge, ['none', 'declined', 'cancelled'], true))
-                    || ($held && in_array($charge, ['declined', 'cancelled'], true)),
+                    || ($held && in_array($charge, ['declined', 'cancelled'], true))),
             ],
             'refusal_code' => match ($charge) {
                 'live_claim' => 'charge_already_claimed',

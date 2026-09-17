@@ -41,6 +41,9 @@ final class MoveQuickQrOrderToCounterAction
                 ->where('company_id', $device->company_id)
                 ->where('branch_id', $device->branch_id)
                 ->lockForUpdate()->first();
+            if ($order->transferred_to_device_id !== null) {
+                throw new QrChargeException('order_not_editable', 409, 'This order is addressed to another device.');
+            }
             $at = now();
             if (! in_array($order->status, [Order::STATUS_HELD, Order::STATUS_AWAITING_PAYMENT], true)) {
                 throw new QrChargeException('order_not_awaiting_payment', 409, 'The order is not awaiting payment.');

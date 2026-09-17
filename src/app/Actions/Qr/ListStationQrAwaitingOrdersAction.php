@@ -50,13 +50,13 @@ final class ListStationQrAwaitingOrdersAction
                     $orders,
                     $companyId,
                     $branchId,
-                )->withCount('items')->oldest('id'),
+                )->withCount(['items' => fn (Builder $items): Builder => $items->where('qty', '>', 0)])->oldest('id'),
             ])
             ->oldest('id')
             ->get();
 
-        return $sessions
-            ->flatMap(fn (QrSession $session) => $session->orders->map(
+        $rows = $sessions
+            ->flatMap(fn (QrSession $session) => $session->orders->filter(fn (Order $order): bool => $order->transferred_to_device_id === null || (int) $order->transferred_to_device_id === (int) $device->id)->map(
                 static function (Order $order) use ($session): array {
                     $row = [
                         'session_uuid' => (string) $session->uuid,
@@ -77,6 +77,20 @@ final class ListStationQrAwaitingOrdersAction
             ))
             ->values()
             ->all();
+        $direct = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
+            ->where('source', Order::SOURCE_QR_WEB)->where('order_type', 'quick')
+            ->where('transferred_to_device_id', $device->id)->withoutLiveClaim()->withCount(['items' => fn (Builder $items): Builder => $items->where('qty', '>', 0)])->get();
+        foreach ($direct as $order) {
+            if (in_array($order->uuid, array_column($rows, 'order_uuid'), true)) {
+                continue;
+            }
+            $rows[] = ['session_uuid' => 'transfer-'.$order->uuid, 'order_uuid' => $order->uuid,
+                'receipt_number' => $order->receipt_number, 'temp_reference' => $order->temp_reference,
+                'status' => $order->status, 'amount_baisas' => Money::toBaisas($order->grand_total),
+                'item_count' => $order->items_count, 'opened_at' => $order->opened_at?->toIso8601String()];
+        }
+
+        return $rows;
     }
 
     private function awaitingOrders(

@@ -22,7 +22,7 @@ final class DeviceQrPendingOrdersController
         /** @var Device $device */
         $device = $request->user();
         try {
-            $result = $append->handle($device, $uuid, $request->validated());
+            $result = $append->handle($device, $uuid, $request->validated(), $request->boolean('workspace'));
         } catch (QrChargeException $exception) {
             return QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
         } catch (QrCatalogueException $exception) {
@@ -50,7 +50,7 @@ final class DeviceQrPendingOrdersController
         /** @var Device $device */
         $device = $request->user();
         try {
-            $orders = $list->handle($device);
+            $orders = $list->handle($device, $request->boolean('workspace'));
         } catch (QrChargeException $exception) {
             return QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
         }

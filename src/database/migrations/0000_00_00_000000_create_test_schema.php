@@ -636,6 +636,7 @@ return new class extends Migration
             $table->timestamp('charge_claimed_at')->nullable();
             $table->timestamp('charge_deadline_at')->nullable();
             $table->string('charge_outcome', 16)->nullable();
+            $table->json('qr_recovery_request')->nullable();
             // Device-to-device order transfer (mirrors pos_admin's
             // 2026_07_31_010000 migration). A held order addressed to
             // transferred_to_device_id waits in that device's inbox until it

@@ -301,6 +301,7 @@ final class QrPublicCustomerPrivacyTest extends TestCase
             'public.qr.bind',
             'public.qr.checkout',
             'public.qr.menu',
+            'public.qr.payment-recovery',
             'public.qr.quote',
             'public.qr.status',
             'public.qr.table-bind',

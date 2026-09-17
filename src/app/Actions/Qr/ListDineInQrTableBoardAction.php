@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\ListTableBoardAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -79,6 +80,7 @@ final class ListDineInQrTableBoardAction
                 QrSession::STATUS_ACTIVE,
                 QrSession::STATUS_ORDERED,
                 QrSession::STATUS_EXPIRED,
+                QrSession::STATUS_CLOSED,
             ])
             ->orderByDesc('id')
             ->get()
@@ -106,10 +108,11 @@ final class ListDineInQrTableBoardAction
             $tableSessions = $sessions->get((int) $table->id, collect());
             /** @var QrSession|null $session */
             $session = $order?->qr_session_id === null
-                ? $tableSessions->first()
+                ? ($tableSessions->first(fn (QrSession $candidate): bool => in_array($candidate->status, QrSession::EXPIRABLE_STATUSES, true)) ?? $tableSessions->first())
                 : $tableSessions->firstWhere('id', (int) $order->qr_session_id);
             $session ??= $tableSessions->first();
-            if ($session === null && $order === null) {
+            // A cleared latest generation must not resurrect an older expired card.
+            if ($order === null && ($session === null || $session->status === QrSession::STATUS_CLOSED)) {
                 continue;
             }
 
@@ -186,6 +189,51 @@ final class ListDineInQrTableBoardAction
             ];
         }
 
-        return $rows;
+        // Staff and QR ordering share a seating. Project that same occupancy
+        // for the station, including joined tables and staff-only bills.
+        $byTable = collect($rows)->keyBy('table_id');
+        foreach (app(ListTableBoardAction::class)->handle($device) as $table) {
+            $seating = $table['seating'];
+            $bill = $table['bill'];
+            if ($seating === null && $bill === null) {
+                continue;
+            }
+            $row = $byTable->get($table['table_id'], [
+                'table_id' => $table['table_id'],
+                'table_label' => $table['table_label'],
+                'table_status' => $table['table_status'],
+                'table_deleted' => false,
+                'session_uuid' => null,
+                'session_status' => null,
+                'expires_at' => null,
+                'orphaned' => $seating === null,
+                'accepted_round_count' => 0,
+                'rounds' => [],
+                'pending_rounds' => [],
+                'order' => null,
+            ]);
+            $row['empty_seating_uuid'] = $bill === null && $seating !== null
+                && $seating['joined_table_ids'] === [] && $seating['pending_rounds'] === []
+                ? $seating['uuid'] : null;
+            $row['occupied'] = true;
+            $row['staff_occupied'] = $seating !== null
+                && ($bill === null || $bill['source'] !== Order::SOURCE_QR_WEB)
+                && $seating['credential_status'] === null;
+            if ($row['staff_occupied']) {
+                $row['orphaned'] = false;
+            }
+            if ($bill !== null) {
+                $row['order'] = [
+                    'uuid' => $bill['order_uuid'],
+                    'status' => $bill['status'],
+                    'receipt_number' => $bill['receipt_number'],
+                    'temp_reference' => $bill['temp_reference'],
+                    'accepted_total_baisas' => $bill['grand_total_baisas'],
+                ];
+            }
+            $byTable->put($table['table_id'], $row);
+        }
+
+        return $byTable->values()->all();
     }
 }

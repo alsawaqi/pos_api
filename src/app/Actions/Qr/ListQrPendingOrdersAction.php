@@ -14,7 +14,7 @@ final class ListQrPendingOrdersAction
     public function __construct(private readonly PresentQrPendingOrderAction $present) {}
 
     /** @return list<array<string, mixed>> */
-    public function handle(Device $device): array
+    public function handle(Device $device, bool $workspace = false): array
     {
         $this->present->assertAttended($device);
         $at = now();
@@ -44,6 +44,7 @@ final class ListQrPendingOrdersAction
             $sessions->get($order->qr_session_id),
             $phones->get($order->customer_id),
             $at,
+            $workspace,
         ))->all();
     }
 }

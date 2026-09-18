@@ -20,6 +20,8 @@ final class BindQrSessionAction
         return DB::transaction(function () use ($token, $clientSecret): ?QrSession {
             $session = QrSession::query()
                 ->where('token', $token)
+                ->whereNull('table_id')
+                ->whereNull('table_session_id')
                 ->lockForUpdate()
                 ->first();
 

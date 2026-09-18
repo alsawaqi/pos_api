@@ -45,11 +45,13 @@ final class ClearEmptyTableSessionAction
             $unattachedLive = $credentials->contains(fn ($s) => in_array($s->status, QrSession::EXPIRABLE_STATUSES, true)
                 && (int) $s->table_session_id !== (int) $seating->id);
             $hasOrders = Order::query()->where('company_id', $device->company_id)
-                ->where('branch_id', $device->branch_id)->where(function ($q) use ($seating, $tableId): void {
-                    $q->where('table_session_id', $seating->id)->orWhere(function ($q) use ($tableId): void {
+                ->where('branch_id', $device->branch_id)->where(function ($q) use ($seating, $tableId, $sessionIds): void {
+                    $q->where('table_session_id', $seating->id)->orWhere(function ($q) use ($tableId, $sessionIds): void {
                         $q->whereIn('status', ListTableBoardAction::UNPAID_STATUSES)
-                            ->where(function ($q) use ($tableId): void {
-                                $q->where('table_id', $tableId)->orWhereIn('id', DB::table('pos_order_tables')->select('order_id')->where('table_id', $tableId));
+                            ->where(function ($q) use ($tableId, $sessionIds): void {
+                                $q->where('table_id', $tableId)
+                                    ->orWhereIn('id', DB::table('pos_order_tables')->select('order_id')->where('table_id', $tableId))
+                                    ->orWhereIn('qr_session_id', $sessionIds);
                             });
                     });
                 })->exists();

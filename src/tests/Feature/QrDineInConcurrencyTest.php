@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Actions\Qr\EnsureTableSessionForQrSessionAction;
+use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
@@ -45,6 +46,30 @@ final class QrDineInConcurrencyTest extends TestCase
     private const OPEN_TABLE_URL = '/api/v1/device/qr/open-table';
 
     private const OPEN_WORKER_COUNT = 10;
+
+    public function test_running_fixture_keeps_opening_round_backed_by_bill_items(): void
+    {
+        $databasePath = $this->allocateDatabase('pos-api-balanced-fixture-');
+        $originalDefault = config('database.default');
+        $originalSqlite = config('database.connections.sqlite');
+        try {
+            $this->migrateDisposableDatabase($databasePath);
+            $station = $this->paymentStation('mdev_balanced_fixture');
+            $table = $this->activeTable('Balanced opening round');
+            [$session, $order] = $this->runningDineInOrder($station, $table);
+            $this->assertSame(1, $order->items()->count());
+            $this->assertSame(4750, (int) round((float) $order->items()->sum('line_total') * 1000));
+            $round = QrOrderRound::where('order_id', $order->id)->sole();
+            $this->assertSame($order->items()->sole()->id, $round->priced_lines[0]['order_item_id']);
+            DB::transaction(function () use ($session, $order, $station): void {
+                app(EnsureTableSessionForQrSessionAction::class)->handle($session, $order, $station);
+                app(EnsureLegacyTableBillBaselineAction::class)->handle($order->fresh());
+            });
+            $this->assertSame('4.750', $order->fresh()->grand_total);
+        } finally {
+            $this->restoreDatabaseConfigAndDeleteFiles($databasePath, $originalDefault, $originalSqlite);
+        }
+    }
 
     public function test_ten_simultaneous_open_table_requests_create_exactly_one_live_session(): void
     {
@@ -1430,13 +1455,24 @@ final class QrDineInConcurrencyTest extends TestCase
             'opened_at' => $now,
             'receipt_number' => 'QR-RUNNING',
         ]);
+        // This opening item is a frozen historical snapshot, independent of
+        // the later live catalogue product seeded by individual race cases.
+        $openingItemId = DB::table('pos_order_items')->insertGetId([
+            'order_id' => $order->id, 'product_id' => null,
+            'product_name_snapshot' => 'Opening coffee', 'qty' => '1.000',
+            'unit_price_snapshot' => '4.750', 'line_discount' => '0.000',
+            'line_total' => '4.750', 'created_at' => $now, 'updated_at' => $now,
+        ]);
         QrOrderRound::query()->create([
             'qr_session_id' => $session->id,
             'order_id' => $order->id,
             'round_no' => 1,
             'status' => QrOrderRound::STATUS_ACCEPTED,
             'client_request_id' => 'concurrent-first-round',
-            'priced_lines' => [['line_total_baisas' => 4750]],
+            'priced_lines' => [[
+                'order_item_id' => $openingItemId, 'product_id' => null, 'product_name' => 'Opening coffee',
+                'qty' => 1, 'addons' => [], 'unit_price_baisas' => 4750, 'line_total_baisas' => 4750,
+            ]],
             'subtotal_baisas' => 4750,
             'tax_baisas' => 0,
             'total_baisas' => 4750,

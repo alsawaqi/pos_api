@@ -10,6 +10,7 @@ use App\Http\Requests\Api\V1\Device\ClaimQrSettlementRequest;
 use App\Models\Device;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
+use PDOException;
 
 /** POST /api/v1/device/qr/claim-settlement. */
 final class DeviceQrClaimSettlementController
@@ -25,6 +26,10 @@ final class DeviceQrClaimSettlementController
 
         try {
             $result = $this->claim->handle($device, $request->validated());
+        } catch (PDOException $exception) {
+            report($exception);
+
+            return QrApiResponse::failure('settlement_retry_required', 'Could not reserve this bill. Refresh and retry the same request.', 503);
         } catch (QrChargeException $exception) {
             return QrApiResponse::failure(
                 $exception->codeName,

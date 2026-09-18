@@ -31,6 +31,7 @@ use App\Models\SyncEvent;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use PDOException;
 use Throwable;
 
 /**
@@ -149,7 +150,7 @@ class SyncEventDispatcher
                 ]);
 
                 return $result;
-            });
+            }, 5);
         } catch (Throwable $e) {
             // The handler effect and attempted processed stamp have both
             // rolled back. Re-lock before recording the durable rejection:
@@ -172,7 +173,9 @@ class SyncEventDispatcher
                     $lockedEvent->update([
                         'ack_status' => SyncEvent::STATUS_FAILED,
                         'processed_at' => now(),
-                        'result_json' => ['error' => $e->getMessage()],
+                        'result_json' => ['error' => $e instanceof PDOException
+                            ? 'Could not save this update. Retry the same request.'
+                            : $e->getMessage()],
                     ]);
                 }
 

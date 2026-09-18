@@ -12,6 +12,7 @@ use App\Models\Table;
 use App\Models\TableSession;
 use Carbon\CarbonInterface;
 use Closure;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -107,7 +108,11 @@ final class ResolveStaffSeatingAction
         for ($attempt = 0; ; $attempt++) {
             try {
                 return DB::transaction(function () use ($device, $payload, $operation, $kind): array {
-                    $lockedDevice = Device::query()->whereKey($device->id)->lockForUpdate()->first();
+                    // PostgreSQL FK checks take KEY SHARE on these parent
+                    // rows. NO KEY UPDATE still serializes staff graph edits
+                    // but cannot invert a QR writer's order -> journal locks.
+                    $graphLock = DB::connection()->getDriverName() === 'pgsql' ? 'for no key update' : true;
+                    $lockedDevice = Device::query()->whereKey($device->id)->lock($graphLock)->first();
                     if ($lockedDevice === null || $lockedDevice->status !== 'active' || ! $lockedDevice->isAssigned()
                         || (int) $lockedDevice->company_id !== (int) $device->company_id
                         || (int) $lockedDevice->branch_id !== (int) $device->branch_id) {
@@ -123,7 +128,7 @@ final class ResolveStaffSeatingAction
                         ->where('company_id', $companyId)
                         ->whereIn('floor_id', DB::table('pos_floors')->select('id')
                             ->where('company_id', $companyId)->where('branch_id', $branchId))
-                        ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+                        ->orderBy('id')->lock($graphLock)->get()->keyBy('id');
                     $requested = [(int) $payload['table_id']];
                     foreach (['from_table_id', 'to_table_id'] as $field) {
                         if (isset($payload[$field])) {
@@ -147,17 +152,34 @@ final class ResolveStaffSeatingAction
                         throw new QrDineInException('staff_not_found', 404, 'The staff member was not found.');
                     }
 
-                    $orders = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
+                    // Order -> credential -> seating -> journal is shared
+                    // with QR settlement. Lock live bills plus this request's
+                    // historical identity, never every paid bill in a branch.
+                    $linkedOrders = TableSession::query()->select('order_id')
+                        ->where('company_id', $companyId)->where('branch_id', $branchId)
+                        ->where(function (Builder $query) use ($payload): void {
+                            $query->whereIn('status', TableSession::LIVE_STATUSES)
+                                ->orWhere('client_request_id', $payload['seating_key'])
+                                ->orWhere('uuid', $payload['seating_key']);
+                        });
+                    $orderScope = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
                         ->where('order_type', 'dine_in')->whereNotNull('table_id')
-                        ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+                        ->where(function (Builder $query) use ($payload, $linkedOrders): void {
+                            $query->whereIn('status', ListTableBoardAction::UNPAID_STATUSES)
+                                ->orWhereIn('id', $linkedOrders)
+                                ->orWhere('uuid', $payload['seating_key']);
+                            if (isset($payload['order_uuid'])) {
+                                $query->orWhere('uuid', $payload['order_uuid']);
+                            }
+                        });
+                    $orders = (clone $orderScope)->orderBy('id')->lockForUpdate()->get()->keyBy('id');
                     $sessions = QrSession::query()->where('company_id', $companyId)->where('branch_id', $branchId)
                         ->whereNotNull('table_id')->orderBy('id')->lockForUpdate()->get()->keyBy('id');
 
                     // A first QR round may create its order while we wait for
                     // the credential. Restart BEFORE taking seating/sequence
                     // locks rather than adding a session -> order lock edge.
-                    $orderIds = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
-                        ->where('order_type', 'dine_in')->whereNotNull('table_id')->pluck('id');
+                    $orderIds = (clone $orderScope)->pluck('id');
                     if ($orderIds->diff($orders->keys())->isNotEmpty()) {
                         throw new RuntimeException(self::SNAPSHOT_CHANGED);
                     }

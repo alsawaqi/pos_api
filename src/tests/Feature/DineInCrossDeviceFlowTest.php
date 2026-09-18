@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Actions\Orders\VoidOrderCoreAction;
 use App\Actions\Qr\BindQrTableSessionAction;
 use App\Actions\Qr\ClearDineInQrTableAction;
+use App\Actions\Qr\ConfirmDineInQrRoundAction;
 use App\Actions\Qr\FinishDineInQrOrderAction;
 use App\Actions\Qr\ListDineInQrTableBoardAction;
 use App\Actions\Qr\OpenDineInTableAction;
@@ -18,6 +19,7 @@ use App\Models\Order;
 use App\Models\QrSession;
 use App\Models\TableSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\TableSessionFixtures;
@@ -173,5 +175,39 @@ final class DineInCrossDeviceFlowTest extends TestCase
         $this->assertSame(1, Order::count());
         $this->assertSame('2.000', $result['order']->grand_total);
         $this->report('station first then staff then customer', ['device' => $type, 'one_shared_bill' => true]);
+    }
+
+    #[DataProvider('devices')]
+    public function test_f07_staff_first_card_scan_requires_own_identity_and_joins_the_same_bill(string $type): void
+    {
+        $f = $this->flow($type);
+        DB::table('pos_branch_settings')->insert([
+            'company_id' => 100, 'branch_id' => 10, 'key' => 'qr_table_card_enabled', 'value' => '"on"',
+        ]);
+        $bound = $this->postJson('/api/v1/public/qr/table-bind', [
+            'table_token' => $f['table']->qr_token, 'client_secret' => 'f07-synthetic-customer',
+        ])->assertOk();
+        $this->withHeaders([
+            'X-QR-Session' => $bound->json('data.session_uuid'),
+            'X-QR-Client-Secret' => 'f07-synthetic-customer',
+        ])->getJson('/api/v1/public/qr/status')->assertOk()
+            ->assertJsonPath('data.dine_in.credential.identity_required', true)
+            ->assertJsonPath('data.dine_in.rounds.0.entered_by', 'staff');
+        $payload = [
+            'client_request_id' => 'f07-customer-round',
+            'lines' => [['product_id' => $f['product']->id, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
+        ];
+        $this->postJson('/api/v1/public/qr/table-round', $payload)->assertUnprocessable();
+        $round = $this->postJson('/api/v1/public/qr/table-round', $payload + ['phone' => '99990001'])
+            ->assertCreated()->assertJsonPath('data.order.uuid', $f['order']->uuid)
+            ->assertJsonPath('data.round.status', 'pending_confirmation');
+        $this->assertSame(1, Order::count());
+        $this->assertSame($f['seating']->id, $f['order']->fresh()->table_session_id);
+        app(ConfirmDineInQrRoundAction::class)->handle($f['staff'], (int) $round->json('data.round.id'));
+        $this->getJson('/api/v1/public/qr/status')->assertOk()
+            ->assertJsonPath('data.dine_in.credential.identity_required', false)
+            ->assertJsonPath('data.order.uuid', $f['order']->uuid)
+            ->assertJsonPath('data.dine_in.running_total_baisas', 2000);
+        $this->assertSame(0, $f['order']->payments()->count());
     }
 }

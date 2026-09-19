@@ -292,4 +292,28 @@ final class CompCancellationClampTest extends TestCase
         $this->assertSame('closed', DB::table('pos_table_sessions')->where('uuid', $seat['uuid'])->value('status'));
         $this->assertSame(1, count($this->clampEvents()));
     }
+
+    public function test_obs17_only_percentage_discounts_become_stale_after_a_round(): void
+    {
+        $device = $this->seatingDevice();
+        foreach (['fixed', 'percent', 'rule_fixed', 'rule_percent'] as $mode) {
+            $product = $this->product('1.000', '0', 'OBS17 '.$mode);
+            $seat = $this->openWithRound($device, [[$product, 3]]);
+            if (str_starts_with($mode, 'rule_')) {
+                $rule = Discount::query()->create(['uuid' => Str::uuid(), 'company_id' => 100, 'name' => $mode,
+                    'scope' => 'order', 'amount_type' => substr($mode, 5), 'amount' => $mode === 'rule_fixed' ? '0.100' : 10,
+                    'status' => 'active', 'auto_apply' => false]);
+                $intent = ['kind' => 'discount', 'mode' => 'rule', 'discount_id' => $rule->id];
+            } else {
+                $intent = ['kind' => 'discount', 'mode' => $mode, 'label' => 'OBS17',
+                    $mode === 'fixed' ? 'amount_baisas' : 'percent_bp' => $mode === 'fixed' ? 100 : 1000];
+            }
+            $this->adjust($device, $seat, $intent)->assertOk();
+            $before = $this->header($seat['order'])['discount_total'];
+            $this->round($device, $seat, [[$product, 1]]);
+            $this->as($device, 'GET', 'tables/'.$seat['table'].'/detail')->assertOk()
+                ->assertJsonPath('data.bill.adjustment_state.discount.stale', str_contains($mode, 'percent'));
+            $this->assertSame($before, $this->header($seat['order'])['discount_total']);
+        }
+    }
 }

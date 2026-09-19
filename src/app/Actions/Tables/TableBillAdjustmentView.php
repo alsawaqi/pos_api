@@ -36,7 +36,8 @@ final class TableBillAdjustmentView
                 continue;
             }
             $state[$kind] = Arr::only($event->payload, ['mode', 'percent_bp', 'basis_baisas', 'comp_reason_id', 'order_item_id', 'qty'])
-                + ['amount_baisas' => $a[$amountKey], 'stale' => ($event->payload['basis_baisas'] ?? null) !== $a['total'] - $a['tax']];
+                + ['amount_baisas' => $a[$amountKey], 'stale' => ($kind === 'comp' || isset($event->payload['percent_bp']))
+                    && ($event->payload['basis_baisas'] ?? null) !== $a['total'] - $a['tax']];
             if ($kind === 'discount') {
                 $row = app(RefreshQrOrderTotalsAction::class)->manualRows($order)->where('amount', '>', 0)->orderByDesc('id')->first();
                 $state[$kind] += ['name' => $row?->name_snapshot, 'reason' => $row?->reason];

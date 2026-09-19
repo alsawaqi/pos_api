@@ -128,7 +128,7 @@ final class AdjustTableBillAction
                         throw self::refusal('comp_cap_exceeded', 'Choose an active complimentary reason for this merchant.');
                     }
                     $target = $adjustment['target'];
-                    $amount = $this->lineNet($order, (int) $target['order_item_id'], (int) $target['qty']);
+                    $amount = self::lineNet($order, (int) $target['order_item_id'], (int) $target['qty']);
                     if ($reason->max_amount !== null && $amount > Money::toBaisas($reason->max_amount)) {
                         throw self::refusal('comp_cap_exceeded', 'The selected quantity exceeds this complimentary reason limit.');
                     }
@@ -186,7 +186,7 @@ final class AdjustTableBillAction
         throw self::refusal('discount_rule_not_applicable', 'This discount rule is not available for this branch now.');
     }
 
-    private function lineNet(Order $order, int $id, int $qty): int
+    public static function lineNet(Order $order, int $id, int $qty, bool $capToRemaining = false): int
     {
         $matches = [];
         foreach (QrOrderRound::query()->where('order_id', $order->id)->where('status', QrOrderRound::STATUS_ACCEPTED)->get() as $round) {
@@ -196,11 +196,22 @@ final class AdjustTableBillAction
                 }
             }
         }
-        if (count($matches) !== 1 || $qty > (int) $matches[0]['qty'] - (int) ($matches[0]['cancelled_qty'] ?? 0)) {
+        if ($capToRemaining && $matches === []) {
+            return 0;
+        }
+        if (count($matches) !== 1 || $qty < 1) {
             throw self::refusal('adjustment_exceeds_bill', 'The selected bill line or quantity is no longer available.');
         }
         $line = $matches[0];
         $remaining = (int) $line['qty'] - (int) ($line['cancelled_qty'] ?? 0);
+        if ($capToRemaining) {
+            $qty = min($qty, max(0, $remaining));
+            if ($qty === 0) {
+                return 0;
+            }
+        } elseif ($qty > $remaining) {
+            throw self::refusal('adjustment_exceeds_bill', 'The selected bill line or quantity is no longer available.');
+        }
         $discount = intdiv((int) ($line['line_discount_baisas'] ?? 0) * $remaining, (int) $line['qty']);
 
         return (int) $line['unit_price_baisas'] * $qty - intdiv($discount * $qty, $remaining);

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\AdjustTableBillAction;
+use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Models\Order;
 use App\Models\OrderComp;
 use App\Models\OrderDiscount;
@@ -89,9 +91,38 @@ final class RefreshQrOrderTotalsAction
         $row->save();
     }
 
+    /** Cancelled items cannot subsidise the other lines through an old comp. */
+    private function capCompToRemainingLine(Order $order, int $amount): int
+    {
+        if ($amount <= 0 || $order->table_session_id === null) {
+            return $amount;
+        }
+        $source = OrderComp::query()->where('order_id', $order->id)->where('amount', '>', 0)->orderByDesc('id')->firstOrFail();
+        // Legacy whole-bill comps keep their existing treatment. T6.5 always
+        // records a concrete line and quantity on its positive audit row.
+        if ($source->order_item_id === null || $source->qty === null) {
+            return $amount;
+        }
+        $cap = AdjustTableBillAction::lineNet($order, (int) $source->order_item_id, (int) $source->qty, capToRemaining: true);
+        if ($amount <= $cap) {
+            return $amount;
+        }
+        $difference = $amount - $cap;
+        $this->reverseComp($order, $difference);
+        app(AppendTableSessionEventAction::class)->forOrder($order, 'adjusted', [
+            'action' => 'bill_adjusted', 'kind' => 'comp', 'mode' => 'clamp',
+            'source_comp_id' => (int) $source->id, 'order_item_id' => (int) $source->order_item_id,
+            'comp_reason_id' => (int) $source->comp_reason_id, 'qty' => (int) $source->qty,
+            'amount_baisas' => -$difference, 'remaining_amount_baisas' => $cap,
+        ]);
+
+        return $cap;
+    }
+
     public function handle(Order $order): void
     {
         $a = $this->amounts($order);
+        $a['comp'] = $this->capCompToRemainingLine($order, $a['comp']);
         $excess = $a['manual'] + $a['comp'] - max(0, $a['total'] - $a['tax'] - 1);
         if ($excess > 0) {
             $discount = min($a['manual'], $excess);

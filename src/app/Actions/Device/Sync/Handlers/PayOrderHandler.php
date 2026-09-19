@@ -668,7 +668,10 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
      */
     private function earnRuleIds(Order $order, array $payload): array
     {
-        if ($order->qr_session_id !== null) {
+        if ($order->table_session_id !== null && $order->customer_id === null) {
+            return [];
+        }
+        if ($order->qr_session_id !== null || $order->table_session_id !== null) {
             return LoyaltyRule::query()
                 ->where('company_id', (int) $order->company_id)
                 ->where('status', 'active')

@@ -38,6 +38,7 @@ final class ResolveStaffSeatingAction
         return $common + match ($operation) {
             // The combine action validates its own explicit preview/PIN input.
             'combine', 'draft_recovery', 'staff_checkout' => [],
+            'adjust' => TableAdjustmentIntent::rules(),
             'open' => [
                 'opened_at' => ['required', 'date'],
                 'joined_table_ids' => ['sometimes', 'array', 'max:100'],

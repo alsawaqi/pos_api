@@ -450,6 +450,8 @@ final class QrSharedBillIdentityTest extends TestCase
         ], $actual);
         $this->assertSame(['allowed' => true, 'refusal_code' => null], $status['data']['dine_in']['finish_and_pay']);
         $this->assertSame(1000, $status['data']['dine_in']['running_total_baisas']);
+        $this->assertSame(1000, $status['data']['dine_in']['bill_totals']['grand_total_baisas']);
+        $this->assertSame(0, $status['data']['dine_in']['bill_totals']['manual_discount_baisas']);
         $this->assertNull($status['data']['dine_in']['payment_state']);
     }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Actions\Tables\TableBillAdjustmentView;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderComp;
@@ -134,6 +135,7 @@ final class PresentQrPendingOrderAction
                 'reference' => $order->delivery_reference,
             ] : null,
             'opened_at' => $order->opened_at?->toIso8601String(),
+            ...TableBillAdjustmentView::deviceFields($order),
             'subtotal_baisas' => Money::toBaisas($order->subtotal),
             'discount_total_baisas' => Money::toBaisas($order->discount_total),
             'comp_total_baisas' => Money::toBaisas($order->comp_total ?? 0),

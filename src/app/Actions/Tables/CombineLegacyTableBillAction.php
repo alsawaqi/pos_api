@@ -220,6 +220,8 @@ final class CombineLegacyTableBillAction
             })->whereNotIn('id', [$source->id, $target->id])->exists()) {
             throw $this->refusal('combine_coverage_conflict', 'Joined tables or additional bills need separate manager review.');
         }
+        TableBillAdjustmentView::refuseUnsupported($source);
+        TableBillAdjustmentView::refuseUnsupported($target);
         $sourceSnapshot = $this->frozen->snapshot($source);
         $targetSnapshot = $this->frozen->snapshot($target);
         $this->frozen->assertImportable($sourceSnapshot);

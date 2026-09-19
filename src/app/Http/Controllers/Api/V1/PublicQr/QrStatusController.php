@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1\PublicQr;
 
 use App\Actions\Qr\DineInRoundMode;
 use App\Actions\Qr\QrChargeRecoveryGuard;
+use App\Actions\Tables\TableBillAdjustmentView;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -127,6 +128,8 @@ class QrStatusController
                 'submitted_at' => $round->submitted_at?->toIso8601String(),
                 'resolved_at' => $round->resolved_at?->toIso8601String(),
             ])->values()->all(),
+            'bill_totals' => $visibleOrder instanceof Order
+                ? TableBillAdjustmentView::publicTotals($visibleOrder) : null,
             'running_total_baisas' => $visibleOrder instanceof Order
                 ? Money::toBaisas($visibleOrder->grand_total)
                 : 0,

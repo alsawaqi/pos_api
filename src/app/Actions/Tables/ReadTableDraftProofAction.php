@@ -77,6 +77,7 @@ final class ReadTableDraftProofAction
                 || collect($detail['rounds'])->contains('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)) {
                 throw $this->ineligible();
             }
+            TableBillAdjustmentView::refuseUnsupported($order);
             $snapshot = $this->frozen->snapshot($order);
             $bill = $this->frozen->present($snapshot);
             if ($recovery && StaffTableCheckoutAction::shape($order)) {

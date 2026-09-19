@@ -48,6 +48,8 @@ class QrStatusStaffSeatingTest extends TestCase
         $status = $this->getJson('/api/v1/public/qr/status')->assertOk()
             ->assertJsonPath('data.order', null)
             ->assertJsonPath('data.dine_in.running_total_baisas', 2000)
+            ->assertJsonPath('data.dine_in.bill_totals.grand_total_baisas', 2000)
+            ->assertJsonPath('data.dine_in.bill_totals.manual_discount_baisas', 0)
             ->assertJsonPath('data.dine_in.seating.opened_by', 'staff')
             ->assertJsonPath('data.dine_in.seating.temp_reference', $seating->temp_reference)
             ->assertJsonPath('data.dine_in.credential.identity_required', true)
@@ -68,6 +70,8 @@ class QrStatusStaffSeatingTest extends TestCase
         $after = $this->getJson('/api/v1/public/qr/status')->assertOk()
             ->assertJsonPath('data.order.uuid', $bill->uuid)
             ->assertJsonPath('data.dine_in.running_total_baisas', 2000)
+            ->assertJsonPath('data.dine_in.bill_totals.grand_total_baisas', 2000)
+            ->assertJsonPath('data.dine_in.bill_totals.manual_discount_baisas', 0)
             ->assertJsonPath('data.dine_in.credential.identity_required', true)
             ->assertJsonPath('data.dine_in.rounds.3.entered_by', 'customer');
         $this->assertSame(4, $round->json('data.round.round_no'));

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1\Device;
 
 use App\Actions\Qr\QrDineInException;
+use App\Actions\Tables\AdjustTableBillAction;
 use App\Actions\Tables\AppendStaffRoundAction;
 use App\Actions\Tables\CancelStaffLineAction;
 use App\Actions\Tables\CloseStaffTableSessionAction;
@@ -26,6 +27,7 @@ final class DeviceTableSessionController
         private readonly JoinTableSessionAction $join,
         private readonly CloseStaffTableSessionAction $close,
         private readonly CancelStaffLineAction $cancel_line,
+        private readonly AdjustTableBillAction $adjust,
     ) {}
 
     public function __invoke(StaffTableSessionRequest $request): JsonResponse

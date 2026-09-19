@@ -422,6 +422,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             ->assertJsonPath('data.dine_in.rounds.0.status', QrOrderRound::STATUS_PENDING_CONFIRMATION)
             ->assertJsonPath('data.dine_in.rounds.0.total_baisas', 4500)
             ->assertJsonPath('data.dine_in.running_total_baisas', 0)
+            ->assertJsonPath('data.dine_in.bill_totals.grand_total_baisas', 0)
+            ->assertJsonPath('data.dine_in.bill_totals.manual_discount_baisas', 0)
             ->assertJsonPath('data.dine_in.payment_state', null)
             ->assertJsonPath('data.dine_in.round_submission.allowed', true)
             ->assertJsonPath('data.dine_in.round_submission.refusal_code', null)
@@ -577,6 +579,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.dine_in.rounds.0.status', QrOrderRound::STATUS_ACCEPTED)
             ->assertJsonPath('data.dine_in.running_total_baisas', 4500)
+            ->assertJsonPath('data.dine_in.bill_totals.grand_total_baisas', 4500)
+            ->assertJsonPath('data.dine_in.bill_totals.manual_discount_baisas', 0)
             ->assertJsonPath('data.order.grand_total_baisas', 4500)
             ->assertJsonPath('data.dine_in.finish_and_pay.allowed', true);
         $this->assertPrivatePayloadDidNotLeak($status);
@@ -650,6 +654,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             ->assertJsonPath('data.dine_in.rounds.1.status', QrOrderRound::STATUS_REJECTED)
             ->assertJsonPath('data.dine_in.rounds.2.status', QrOrderRound::STATUS_REJECTED)
             ->assertJsonPath('data.dine_in.running_total_baisas', 0)
+            ->assertJsonPath('data.dine_in.bill_totals.grand_total_baisas', 0)
+            ->assertJsonPath('data.dine_in.bill_totals.manual_discount_baisas', 0)
             ->assertJsonPath('data.dine_in.finish_and_pay.allowed', false);
         $this->assertPrivatePayloadDidNotLeak($second);
         $this->assertPrivatePayloadDidNotLeak($third);

@@ -58,8 +58,7 @@ final class EnsureLegacyTableBillBaselineAction
             }
             $accepted = $rounds->where('status', QrOrderRound::STATUS_ACCEPTED);
             if ((int) $accepted->sum('subtotal_baisas') !== Money::toBaisas($order->subtotal)
-                || (int) $accepted->sum('tax_baisas') !== Money::toBaisas($order->tax_total)
-                || (int) $accepted->sum('total_baisas') !== Money::toBaisas($order->grand_total)
+                || ! $this->totals->matchesHeader($order)
                 || array_sum(array_map(static fn (array $item): int => Money::toBaisas($item['line_total']), $snapshot['items']))
                     !== Money::toBaisas($order->subtotal)) {
                 throw $this->refusal();
@@ -90,6 +89,7 @@ final class EnsureLegacyTableBillBaselineAction
 
             return null;
         }
+        TableBillAdjustmentView::refuseUnsupported($order);
         $seat = TableSession::query()->whereKey($order->table_session_id)->where('order_id', $order->id)
             ->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)
             ->where('table_id', $order->table_id)->first();
@@ -275,10 +275,10 @@ final class EnsureLegacyTableBillBaselineAction
                 $total += (int) $round->total_baisas;
             }
         }
-        if (array_diff_key($items, $seen) !== [] || $subtotal !== Money::toBaisas($order->subtotal)
-            || $tax !== Money::toBaisas($order->tax_total) || $total !== Money::toBaisas($order->grand_total)
-            || $subtotal + $tax - $total !== Money::toBaisas($order->discount_total)
-            || Money::toBaisas($order->comp_total) !== 0) {
+        $amounts = $this->totals->amounts($order);
+        if (array_diff_key($items, $seen) !== [] || $subtotal !== $amounts['subtotal']
+            || $tax !== $amounts['tax'] || $total !== $amounts['total']
+            || ! $this->totals->matchesHeader($order, $amounts)) {
             throw $this->refusal();
         }
     }

@@ -207,7 +207,9 @@ final class DineInCrossDeviceFlowTest extends TestCase
         $this->getJson('/api/v1/public/qr/status')->assertOk()
             ->assertJsonPath('data.dine_in.credential.identity_required', false)
             ->assertJsonPath('data.order.uuid', $f['order']->uuid)
-            ->assertJsonPath('data.dine_in.running_total_baisas', 2000);
+            ->assertJsonPath('data.dine_in.running_total_baisas', 2000)
+            ->assertJsonPath('data.dine_in.bill_totals.grand_total_baisas', 2000)
+            ->assertJsonPath('data.dine_in.bill_totals.manual_discount_baisas', 0);
         $this->assertSame(0, $f['order']->payments()->count());
     }
 }

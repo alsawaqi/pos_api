@@ -257,7 +257,7 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/tables/open', DeviceTableSessionController::class)
             ->defaults('table_operation', 'open')
             ->middleware('throttle:qr-table-device-write')->name('device.tables.open');
-        foreach (['round', 'move', 'join', 'close', 'cancel_line'] as $tableOperation) {
+        foreach (['round', 'move', 'join', 'close', 'cancel_line', 'adjust'] as $tableOperation) {
             Route::post('device/tables/{uuid}/'.str_replace('_', '-', $tableOperation), DeviceTableSessionController::class)
                 ->defaults('table_operation', $tableOperation)
                 ->middleware('throttle:qr-table-device-write')->name('device.tables.'.$tableOperation);

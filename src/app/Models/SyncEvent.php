@@ -97,6 +97,7 @@ class SyncEvent extends Model
         'table.session.join',
         'table.session.close',
         'table.session.cancel_line',
+        'table.session.adjust',
         // Reserved no-op: ingested + ACKed but has NO domain handler, so it
         // settles as 'received'. Lets the ingestion pipe be exercised in
         // isolation and stays a stable placeholder as handlers are added

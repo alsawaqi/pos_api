@@ -152,7 +152,8 @@ final class ReadTableDetailAction
                 'comps' => fn ($q) => $q->orderBy('id')]);
             $bill = $order === null ? null : Arr::except($this->present->mapOrder($order), [
                 'customer_id', 'plate_number', 'delivery',
-            ]) + ['charge' => $this->present->charge($order, now())];
+            ]) + ['charge' => $this->present->charge($order, now())]
+                + TableBillAdjustmentView::detailFields($order);
             if ($order !== null && StaffTableCheckoutAction::shape($order) && $primary !== null) {
                 $bill['checkout_policy'] = StaffTableCheckoutAction::POLICY;
             }

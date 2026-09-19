@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Models\OrderComp;
 use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
+use App\Models\QrOrderRound;
 use App\Support\Money;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -110,12 +111,13 @@ class DeviceOrdersController
                 'items.addons',
                 'comps' => fn ($q) => $q->orderBy('id'),
             ])
+            ->when($request->boolean('include_table_rounds'), fn ($q) => $q->with(['tableSession', 'qrRounds']))
             ->orderByDesc('opened_at')
             ->orderByDesc('id')
             ->paginate(perPage: $perPage, page: $page);
 
         return response()->json([
-            'data' => ['orders' => collect($paginator->items())->map(fn (Order $o): array => $this->mapOrder($o))->all()],
+            'data' => ['orders' => collect($paginator->items())->map(fn (Order $o): array => $this->mapOrder($o, $request->boolean('include_table_rounds')))->all()],
             'meta' => [
                 'money_unit' => 'baisas',
                 'current_page' => $paginator->currentPage(),
@@ -143,7 +145,7 @@ class DeviceOrdersController
     /**
      * @return array<string, mixed>
      */
-    private function mapOrder(Order $order): array
+    private function mapOrder(Order $order, bool $roundEvidence = false): array
     {
         $itemIds = $order->items
             ->map(fn (OrderItem $item): int => (int) $item->id)
@@ -151,6 +153,32 @@ class DeviceOrdersController
             ->all();
 
         return [
+            ...($roundEvidence && $order->order_type === 'dine_in' && $order->tableSession !== null ? [
+                'table_round_evidence' => [
+                    'complete' => true,
+                    'order_uuid' => $order->uuid,
+                    'table_session_uuid' => $order->tableSession->uuid,
+                    'table_id' => (int) $order->tableSession->table_id,
+                    'seating_status' => $order->tableSession->status,
+                    'merged' => $order->tableSession->merged_into_id !== null,
+                    'rounds' => $order->qrRounds->map(static fn (QrOrderRound $round): array => [
+                        'id' => (int) $round->id,
+                        'client_request_id' => $round->client_request_id,
+                        'round_no' => (int) $round->round_no,
+                        'entered_by' => $round->qr_session_id === null ? 'staff' : 'customer',
+                        'status' => $round->status,
+                        'needs_review' => (bool) $round->needs_review,
+                        'same_seating' => (int) $round->table_session_id === (int) $order->table_session_id && $round->origin_table_session_id === null,
+                        'lines' => array_map(static fn (array $line): array => [
+                            'order_item_id' => $line['order_item_id'] ?? null,
+                            'product_id' => $line['product_id'] ?? null,
+                            'qty' => $line['qty'] ?? null,
+                            'notes' => $line['notes'] ?? '',
+                            'addon_ids' => array_column($line['addons'] ?? [], 'add_on_id'),
+                        ], $round->priced_lines ?? []),
+                    ])->all(),
+                ],
+            ] : []),
             'id' => (int) $order->id,
             'uuid' => $order->uuid,
             'order_type' => $order->order_type,

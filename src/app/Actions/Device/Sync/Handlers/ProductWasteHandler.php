@@ -170,6 +170,16 @@ class ProductWasteHandler implements SyncEventHandler
         if ($requestId === null && ! str_starts_with((string) ($payload['note'] ?? ''), 'cancelled after preparation — table ')) {
             return null;
         }
+        // The table journal and sync ACK can both prove the same cancellation.
+        // Lock the common journal first whenever it exists, even if the sync
+        // receipt below supplies the proof, so provenance cannot split its cap.
+        $records = $requestId === null ? collect() : TableSessionEvent::query()
+            ->where('company_id', $device->company_id)->where('branch_id', $device->branch_id)
+            ->where('device_id', $device->id)->where('event_type', 'round_resolved')
+            ->where('payload->action', 'line_cancelled')
+            ->where('payload->client_request_id', $requestId)->lockForUpdate()->get()
+            ->filter(fn (TableSessionEvent $c): bool => ($c->payload['prepared'] ?? false) === true
+                && (int) ($c->payload['product_id'] ?? 0) === (int) $line['product_id']);
         $query = SyncEvent::query()->where('device_id', $device->id)
             ->where('event_type', 'table.session.cancel_line')->where('ack_status', SyncEvent::STATUS_PROCESSED);
         if ($requestId !== null) {
@@ -179,7 +189,7 @@ class ProductWasteHandler implements SyncEventHandler
         }
         // Cancellation row lock serializes distinct waste events. Consumption
         // is append-only in their processed results, in the same transaction.
-        $matches = $query->lockForUpdate()->get()->filter(function (SyncEvent $cancel) use ($line, $payload, $device): bool {
+        $matches = $query->lockForUpdate()->get()->filter(function (SyncEvent $cancel) use ($line, $payload, $device, $requestId): bool {
             $p = (array) $cancel->payload_json;
             $tableMatches = ! isset($p['table_id']) || Table::query()->whereKey($p['table_id'])
                 ->where('company_id', $device->company_id)
@@ -188,7 +198,7 @@ class ProductWasteHandler implements SyncEventHandler
 
             return $tableMatches && ($p['prepared'] ?? false) === true
                 && (int) ($p['product_id'] ?? 0) === (int) $line['product_id']
-                && ($p['staff_id'] ?? null) === ($payload['staff_id'] ?? null)
+                && ($requestId !== null || ($p['staff_id'] ?? null) === ($payload['staff_id'] ?? null))
                 && in_array($cancel->result_json['outcome'] ?? null, ['cancelled', 'replayed', 'bill_terminal', 'nothing_to_cancel'], true);
         });
         $cancel = $matches->count() === 1 ? $matches->first() : null;
@@ -196,13 +206,8 @@ class ProductWasteHandler implements SyncEventHandler
             $authority = ['source' => 'sync', 'id' => $cancel->id,
                 'request_id' => $cancel->client_event_id, 'qty' => (float) $cancel->payload_json['qty']];
             $at = $cancel->client_timestamp;
+            $legacyStaffId = $cancel->payload_json['staff_id'] ?? null;
         } elseif ($requestId !== null && $matches->isEmpty()) {
-            $records = TableSessionEvent::query()->where('company_id', $device->company_id)
-                ->where('branch_id', $device->branch_id)->where('device_id', $device->id)
-                ->where('event_type', 'round_resolved')->where('payload->action', 'line_cancelled')
-                ->where('payload->client_request_id', $requestId)->lockForUpdate()->get()
-                ->filter(fn (TableSessionEvent $c): bool => ($c->payload['prepared'] ?? false) === true
-                    && (int) ($c->payload['product_id'] ?? 0) === (int) $line['product_id']);
             if ($records->count() !== 1) {
                 return null;
             }
@@ -210,6 +215,7 @@ class ProductWasteHandler implements SyncEventHandler
             $authority = ['source' => 'table', 'id' => $cancel->id,
                 'request_id' => $requestId, 'qty' => (float) ($cancel->payload['cancelled_qty'] ?? 0)];
             $at = null;
+            $legacyStaffId = null;
         } else {
             return null;
         }
@@ -218,14 +224,15 @@ class ProductWasteHandler implements SyncEventHandler
             ->where('ack_status', SyncEvent::STATUS_PROCESSED)->whereKeyNot($event->id)->get() as $previous) {
             $proof = $previous->result_json['table_cancellation_waste'] ?? null;
             $old = (array) $previous->payload_json;
-            $same = is_array($proof) && ($proof['source'] ?? null) === $authority['source']
-                && ($proof['id'] ?? null) === $authority['id'];
+            // The cancellation request is the allowance identity; proof source
+            // and the staff member recording the loss are audit details only.
+            $same = is_array($proof) && ($proof['request_id'] ?? null) === $authority['request_id'];
             // Account for successful bookings made before this consumption stamp.
             if ($proof === null && count($old['lines'] ?? []) === 1
-                && (int) ($old['lines'][0]['product_id'] ?? 0) === (int) $line['product_id']
-                && ($old['staff_id'] ?? null) === ($payload['staff_id'] ?? null)) {
+                && (int) ($old['lines'][0]['product_id'] ?? 0) === (int) $line['product_id']) {
                 $same = ($old['table_cancellation_request_id'] ?? null) === $authority['request_id']
                     || (! isset($old['table_cancellation_request_id']) && $at !== null
+                        && ($old['staff_id'] ?? null) === $legacyStaffId
                         && $previous->client_timestamp?->equalTo($at)
                         && str_starts_with((string) ($old['note'] ?? ''), 'cancelled after preparation — table '));
             }

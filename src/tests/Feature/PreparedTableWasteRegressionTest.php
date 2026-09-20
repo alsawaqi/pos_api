@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\Device;
+use App\Models\Floor;
 use App\Models\SyncEvent;
+use App\Models\Table;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -130,5 +132,89 @@ class PreparedTableWasteRegressionTest extends TestCase
         }
         $this->assertDatabaseCount('pos_product_stock_movements', 0);
         $this->assertSame(-2.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
+    }
+
+    public function test_fix5_each_cancellation_authorizes_only_its_own_quantity_once(): void
+    {
+        $device = $this->device();
+        foreach (['explicit', 'legacy'] as $index => $kind) {
+            $product = $index + 1;
+            $this->seedProduct($product, 'unit', '0.200');
+            $this->seedShelf($product, '-2.000');
+            $at = now()->startOfSecond();
+            $id = (string) Str::uuid();
+            SyncEvent::create(['client_event_id' => $id, 'device_id' => $device->id,
+                'event_type' => 'table.session.cancel_line', 'client_timestamp' => $at,
+                'server_received_at' => $at, 'processed_at' => $at, 'ack_status' => 'processed',
+                'payload_json' => ['client_request_id' => $id, 'product_id' => $product,
+                    'qty' => 1, 'prepared' => true, 'staff_id' => 7],
+                'result_json' => ['outcome' => 'nothing_to_cancel', 'cancelled_qty' => 0]]);
+            $payload = ['lines' => [['product_id' => $product, 'qty' => 2, 'reason' => 'other']],
+                'staff_id' => 7, 'note' => 'cancelled after preparation — table 1'];
+            if ($kind === 'explicit') {
+                $payload['table_cancellation_request_id'] = $id;
+            }
+            $tooMuch = $this->wasteEvent($payload);
+            $tooMuch['client_timestamp'] = $at->toIso8601String();
+            $this->push([$tooMuch])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+            $payload['lines'][0]['qty'] = 1;
+            $first = $this->wasteEvent($payload);
+            $first['client_timestamp'] = $at->toIso8601String();
+            $this->push([$first])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+            $this->push([$first])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+            $second = $first;
+            $second['client_event_id'] = (string) Str::uuid();
+            $this->push([$second])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+            $this->assertSame(1, DB::table('pos_product_stock_movements')->where('product_id', $product)->count());
+            $this->assertSame(-3.0, (float) DB::table('pos_branch_product')->where('product_id', $product)->value('stock_qty'));
+        }
+    }
+
+    public function test_fix5_null_stock_keeps_untracked_semantics_and_records_physical_waste(): void
+    {
+        $device = $this->device();
+        $this->seedProduct(1, 'unit', '0.200');
+        $this->seedShelf(1, '0.000');
+        DB::table('pos_branch_product')->where('product_id', 1)->update(['stock_qty' => null]);
+        $id = (string) Str::uuid();
+        SyncEvent::create(['client_event_id' => $id, 'device_id' => $device->id,
+            'event_type' => 'table.session.cancel_line', 'client_timestamp' => now(),
+            'server_received_at' => now(), 'processed_at' => now(), 'ack_status' => 'processed',
+            'payload_json' => ['product_id' => 1, 'qty' => 1, 'prepared' => true, 'staff_id' => 7],
+            'result_json' => ['outcome' => 'bill_terminal', 'cancelled_qty' => 0]]);
+        $this->push([$this->wasteEvent(['lines' => [['product_id' => 1, 'qty' => 1, 'reason' => 'other']],
+            'staff_id' => 7, 'note' => 'Prepared loss', 'table_cancellation_request_id' => $id])])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+        $this->assertNull(DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
+        $this->assertDatabaseHas('pos_product_stock_movements', ['product_id' => 1, 'quantity' => '-1.000', 'movement_type' => 'waste']);
+    }
+
+    public function test_fix5_other_tenant_table_and_unprepared_cancellation_cannot_authorize_waste(): void
+    {
+        $device = $this->device();
+        $this->seedProduct(1, 'unit', '0.200');
+        $this->seedShelf(1, '-2.000');
+        foreach (['branch', 'company', 'unprepared'] as $kind) {
+            $floor = Floor::create([
+                'uuid' => (string) Str::uuid(), 'company_id' => $kind === 'company' ? 999 : 100,
+                'branch_id' => $kind === 'branch' ? 999 : 10, 'name' => 'Fixture floor',
+                'status' => 'active', 'display_order' => 1,
+            ]);
+            $table = Table::create([
+                'uuid' => (string) Str::uuid(), 'label' => 'Fixture table',
+                'company_id' => $kind === 'company' ? 999 : 100, 'floor_id' => $floor->id,
+                'seats' => 4, 'shape' => 'square', 'qr_token' => hash('sha256', $kind),
+                'status' => 'active', 'display_order' => 1,
+            ]);
+            $id = (string) Str::uuid();
+            SyncEvent::create(['client_event_id' => $id, 'device_id' => $device->id,
+                'event_type' => 'table.session.cancel_line', 'client_timestamp' => now(),
+                'server_received_at' => now(), 'processed_at' => now(), 'ack_status' => 'processed',
+                'payload_json' => ['table_id' => $table->id, 'product_id' => 1, 'qty' => 1,
+                    'prepared' => $kind !== 'unprepared', 'staff_id' => 7],
+                'result_json' => ['outcome' => 'bill_terminal', 'cancelled_qty' => 0]]);
+            $this->push([$this->wasteEvent(['lines' => [['product_id' => 1, 'qty' => 1, 'reason' => 'other']],
+                'staff_id' => 7, 'note' => 'Prepared loss', 'table_cancellation_request_id' => $id])])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+        }
+        $this->assertDatabaseCount('pos_product_stock_movements', 0);
     }
 }

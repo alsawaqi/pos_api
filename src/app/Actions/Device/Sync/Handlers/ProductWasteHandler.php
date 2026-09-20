@@ -8,9 +8,11 @@ use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\BranchProduct;
 use App\Models\Device;
+use App\Models\Floor;
 use App\Models\Product;
 use App\Models\ProductStockMovement;
 use App\Models\SyncEvent;
+use App\Models\Table;
 use App\Models\TableSessionEvent;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -92,9 +94,9 @@ class ProductWasteHandler implements SyncEventHandler
             $resolved[] = ['product' => $product, 'qty' => round((float) $line['qty'], 3), 'reason' => $reason];
         }
 
-        $preparedTableWaste = $this->isPreparedTableWaste($event, $device, $payload, $wastedAt);
-
-        return DB::transaction(function () use ($resolved, $companyId, $branchId, $staffId, $note, $wastedAt, $preparedTableWaste): array {
+        return DB::transaction(function () use ($event, $device, $payload, $resolved, $companyId, $branchId, $staffId, $note, $wastedAt): array {
+            $authority = $this->preparedTableWasteAuthority($event, $device, $payload, $wastedAt);
+            $preparedTableWaste = $authority !== null;
             $wastedLines = 0;
             $totalQty = 0.0;
 
@@ -133,14 +135,17 @@ class ProductWasteHandler implements SyncEventHandler
                     'created_at' => now(),
                 ]);
 
-                $row->stock_qty = $available - $qty;
-                $row->save();
+                if ($row->stock_qty !== null) {
+                    $row->stock_qty = $available - $qty;
+                    $row->save();
+                }
 
                 $wastedLines++;
                 $totalQty += $qty;
             }
 
             return [
+                ...($authority === null ? [] : ['table_cancellation_waste' => $authority]),
                 'wasted_lines' => $wastedLines,
                 'total_qty' => number_format($totalQty, 3, '.', ''),
             ];
@@ -155,15 +160,15 @@ class ProductWasteHandler implements SyncEventHandler
      *
      * @param  array<string, mixed>  $payload
      */
-    private function isPreparedTableWaste(SyncEvent $event, Device $device, array $payload, Carbon $wastedAt): bool
+    private function preparedTableWasteAuthority(SyncEvent $event, Device $device, array $payload, Carbon $wastedAt): ?array
     {
         if (count($payload['lines']) !== 1 || $payload['lines'][0]['reason'] !== 'other') {
-            return false;
+            return null;
         }
         $line = $payload['lines'][0];
         $requestId = $payload['table_cancellation_request_id'] ?? null;
         if ($requestId === null && ! str_starts_with((string) ($payload['note'] ?? ''), 'cancelled after preparation — table ')) {
-            return false;
+            return null;
         }
         $query = SyncEvent::query()->where('device_id', $device->id)
             ->where('event_type', 'table.session.cancel_line')->where('ack_status', SyncEvent::STATUS_PROCESSED);
@@ -172,33 +177,68 @@ class ProductWasteHandler implements SyncEventHandler
         } else {
             $query->where('client_timestamp', $event->client_timestamp ?? $wastedAt);
         }
-        $matches = $query->get()->filter(function (SyncEvent $cancel) use ($line, $payload): bool {
+        // Cancellation row lock serializes distinct waste events. Consumption
+        // is append-only in their processed results, in the same transaction.
+        $matches = $query->lockForUpdate()->get()->filter(function (SyncEvent $cancel) use ($line, $payload, $device): bool {
             $p = (array) $cancel->payload_json;
+            $tableMatches = ! isset($p['table_id']) || Table::query()->whereKey($p['table_id'])
+                ->where('company_id', $device->company_id)
+                ->whereIn('floor_id', Floor::query()->select('id')->where('company_id', $device->company_id)
+                    ->where('branch_id', $device->branch_id))->exists();
 
-            return ($p['prepared'] ?? false) === true
+            return $tableMatches && ($p['prepared'] ?? false) === true
                 && (int) ($p['product_id'] ?? 0) === (int) $line['product_id']
-                && (float) ($p['qty'] ?? 0) >= (float) $line['qty']
                 && ($p['staff_id'] ?? null) === ($payload['staff_id'] ?? null)
                 && in_array($cancel->result_json['outcome'] ?? null, ['cancelled', 'replayed', 'bill_terminal', 'nothing_to_cancel'], true);
         });
-        if ($matches->count() === 1) {
-            return true;
+        $cancel = $matches->count() === 1 ? $matches->first() : null;
+        if ($cancel !== null) {
+            $authority = ['source' => 'sync', 'id' => $cancel->id,
+                'request_id' => $cancel->client_event_id, 'qty' => (float) $cancel->payload_json['qty']];
+            $at = $cancel->client_timestamp;
+        } elseif ($requestId !== null && $matches->isEmpty()) {
+            $records = TableSessionEvent::query()->where('company_id', $device->company_id)
+                ->where('branch_id', $device->branch_id)->where('device_id', $device->id)
+                ->where('event_type', 'round_resolved')->where('payload->action', 'line_cancelled')
+                ->where('payload->client_request_id', $requestId)->lockForUpdate()->get()
+                ->filter(fn (TableSessionEvent $c): bool => ($c->payload['prepared'] ?? false) === true
+                    && (int) ($c->payload['product_id'] ?? 0) === (int) $line['product_id']);
+            if ($records->count() !== 1) {
+                return null;
+            }
+            $cancel = $records->first();
+            $authority = ['source' => 'table', 'id' => $cancel->id,
+                'request_id' => $requestId, 'qty' => (float) ($cancel->payload['cancelled_qty'] ?? 0)];
+            $at = null;
+        } else {
+            return null;
         }
-        if ($requestId === null || $matches->isNotEmpty()) {
-            return false;
+        $used = 0.0;
+        foreach (SyncEvent::query()->where('device_id', $device->id)->where('event_type', 'product.waste')
+            ->where('ack_status', SyncEvent::STATUS_PROCESSED)->whereKeyNot($event->id)->get() as $previous) {
+            $proof = $previous->result_json['table_cancellation_waste'] ?? null;
+            $old = (array) $previous->payload_json;
+            $same = is_array($proof) && ($proof['source'] ?? null) === $authority['source']
+                && ($proof['id'] ?? null) === $authority['id'];
+            // Account for successful bookings made before this consumption stamp.
+            if ($proof === null && count($old['lines'] ?? []) === 1
+                && (int) ($old['lines'][0]['product_id'] ?? 0) === (int) $line['product_id']
+                && ($old['staff_id'] ?? null) === ($payload['staff_id'] ?? null)) {
+                $same = ($old['table_cancellation_request_id'] ?? null) === $authority['request_id']
+                    || (! isset($old['table_cancellation_request_id']) && $at !== null
+                        && $previous->client_timestamp?->equalTo($at)
+                        && str_starts_with((string) ($old['note'] ?? ''), 'cancelled after preparation — table '));
+            }
+            if ($same) {
+                $used += (float) ($proof['quantity'] ?? $old['lines'][0]['qty'] ?? 0);
+            }
+        }
+        $qty = round((float) $line['qty'], 3);
+        if ($qty + $used > $authority['qty'] + 1e-9) {
+            throw new RuntimeException('Prepared table waste exceeds the remaining cancellation quantity.');
         }
 
-        // Online shared-table cancellations use the existing lifecycle journal.
-        return TableSessionEvent::query()->where('company_id', $device->company_id)
-            ->where('branch_id', $device->branch_id)->where('device_id', $device->id)
-            ->where('event_type', 'round_resolved')->where('payload->action', 'line_cancelled')
-            ->where('payload->client_request_id', $requestId)->get()->contains(function (TableSessionEvent $cancel) use ($line): bool {
-                $p = (array) $cancel->payload;
-
-                return ($p['prepared'] ?? false) === true
-                    && (int) ($p['product_id'] ?? 0) === (int) $line['product_id']
-                    && (float) ($p['cancelled_qty'] ?? 0) >= (float) $line['qty'];
-            });
+        return $authority + ['quantity' => $qty, 'company_id' => (int) $device->company_id, 'branch_id' => (int) $device->branch_id];
     }
 
     /**

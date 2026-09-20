@@ -11,6 +11,7 @@ use App\Models\Device;
 use App\Models\Product;
 use App\Models\ProductStockMovement;
 use App\Models\SyncEvent;
+use App\Models\TableSessionEvent;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -25,8 +26,8 @@ use RuntimeException;
  * signed-negative 'waste' ProductStockMovement is written (with the WasteReason
  * + a per-unit cost FROZEN at this moment — cost_price when set, else a cooked
  * item's recipe cost) and the branch shelf (pos_branch_product.stock_qty) is
- * decremented. Waste can never drive a shelf negative (the row is locked and the
- * removed quantity is capped by it). The merchant Loss/Waste report surfaces it
+ * decremented. Ordinary waste is capped by shelf stock. A proved prepared-table
+ * cancellation may record physical loss even when the shelf is already negative. The merchant Loss/Waste report surfaces it
  * with no extra wiring.
  *
  * Wastage is LOSS-tracking, NOT an expense — the cost was already booked at
@@ -52,6 +53,7 @@ class ProductWasteHandler implements SyncEventHandler
             'note' => ['sometimes', 'nullable', 'string'],
             'staff_id' => ['sometimes', 'nullable', 'integer'],
             'wasted_at' => ['sometimes', 'nullable', 'string'],
+            'table_cancellation_request_id' => ['sometimes', 'uuid'],
         ]);
         if ($validator->fails()) {
             throw new RuntimeException('invalid product.waste payload: '.implode('; ', $validator->errors()->all()));
@@ -90,7 +92,9 @@ class ProductWasteHandler implements SyncEventHandler
             $resolved[] = ['product' => $product, 'qty' => round((float) $line['qty'], 3), 'reason' => $reason];
         }
 
-        return DB::transaction(function () use ($resolved, $companyId, $branchId, $staffId, $note, $wastedAt): array {
+        $preparedTableWaste = $this->isPreparedTableWaste($event, $device, $payload, $wastedAt);
+
+        return DB::transaction(function () use ($resolved, $companyId, $branchId, $staffId, $note, $wastedAt, $preparedTableWaste): array {
             $wastedLines = 0;
             $totalQty = 0.0;
 
@@ -106,7 +110,7 @@ class ProductWasteHandler implements SyncEventHandler
                     ->first();
                 $available = $row?->stock_qty !== null ? (float) $row->stock_qty : 0.0;
 
-                if ($qty > $available + 1e-9) {
+                if ($row === null || (! $preparedTableWaste && $qty > $available + 1e-9)) {
                     throw new RuntimeException(sprintf(
                         'Cannot waste %s of %s: only %s on the shelf.',
                         rtrim(rtrim(number_format($qty, 3, '.', ''), '0'), '.'),
@@ -141,6 +145,60 @@ class ProductWasteHandler implements SyncEventHandler
                 'total_qty' => number_format($totalQty, 3, '.', ''),
             ];
         });
+    }
+
+    /**
+     * An existing cancellation receipt is the authority, not a free-text note.
+     * Legacy till batches did not carry the request ID: their cancellation and
+     * waste were generated together with the same timestamp. Match the one
+     * processed, same-device cancellation exactly; ambiguity fails closed.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function isPreparedTableWaste(SyncEvent $event, Device $device, array $payload, Carbon $wastedAt): bool
+    {
+        if (count($payload['lines']) !== 1 || $payload['lines'][0]['reason'] !== 'other') {
+            return false;
+        }
+        $line = $payload['lines'][0];
+        $requestId = $payload['table_cancellation_request_id'] ?? null;
+        if ($requestId === null && ! str_starts_with((string) ($payload['note'] ?? ''), 'cancelled after preparation — table ')) {
+            return false;
+        }
+        $query = SyncEvent::query()->where('device_id', $device->id)
+            ->where('event_type', 'table.session.cancel_line')->where('ack_status', SyncEvent::STATUS_PROCESSED);
+        if ($requestId !== null) {
+            $query->where('client_event_id', $requestId);
+        } else {
+            $query->where('client_timestamp', $event->client_timestamp ?? $wastedAt);
+        }
+        $matches = $query->get()->filter(function (SyncEvent $cancel) use ($line, $payload): bool {
+            $p = (array) $cancel->payload_json;
+
+            return ($p['prepared'] ?? false) === true
+                && (int) ($p['product_id'] ?? 0) === (int) $line['product_id']
+                && (float) ($p['qty'] ?? 0) >= (float) $line['qty']
+                && ($p['staff_id'] ?? null) === ($payload['staff_id'] ?? null)
+                && in_array($cancel->result_json['outcome'] ?? null, ['cancelled', 'replayed', 'bill_terminal', 'nothing_to_cancel'], true);
+        });
+        if ($matches->count() === 1) {
+            return true;
+        }
+        if ($requestId === null || $matches->isNotEmpty()) {
+            return false;
+        }
+
+        // Online shared-table cancellations use the existing lifecycle journal.
+        return TableSessionEvent::query()->where('company_id', $device->company_id)
+            ->where('branch_id', $device->branch_id)->where('device_id', $device->id)
+            ->where('event_type', 'round_resolved')->where('payload->action', 'line_cancelled')
+            ->where('payload->client_request_id', $requestId)->get()->contains(function (TableSessionEvent $cancel) use ($line): bool {
+                $p = (array) $cancel->payload;
+
+                return ($p['prepared'] ?? false) === true
+                    && (int) ($p['product_id'] ?? 0) === (int) $line['product_id']
+                    && (float) ($p['cancelled_qty'] ?? 0) >= (float) $line['qty'];
+            });
     }
 
     /**

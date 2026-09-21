@@ -1016,6 +1016,26 @@ final class QrDineInStaffConfirmModeTest extends TestCase
         return $this->withToken((string) $device->device_token)->postJson($url, $payload);
     }
 
+    public function test_f32_customer_round_shared_addons_price_each_line(): void
+    {
+        $this->setRoundMode(DineInRoundMode::KITCHEN_DIRECT);
+        $flow = $this->openAndBindFlow('F32');
+        $payload = $this->roundPayload('f32-round', '90002001', null);
+        $payload['lines'][] = array_replace($payload['lines'][0], ['notes' => 'second customer']);
+        $response = $this->submitRound($flow, $payload)->assertCreated();
+        $round = QrOrderRound::query()->sole();
+        $this->assertCount(2, $round->priced_lines);
+        $this->assertSame($round->priced_lines[0]['line_total_baisas'], $round->priced_lines[1]['line_total_baisas']);
+        $this->assertSame(5750, $round->priced_lines[0]['line_total_baisas']);
+        // Existing fixture: 1.000 per-line discount plus 0.250 order discount.
+        $this->assertSame(2 * ($round->priced_lines[0]['line_total_baisas'] - 1000) - 250, $round->total_baisas);
+        $this->assertSame(9250, $round->total_baisas);
+        $payload['client_request_id'] = 'f32-duplicate';
+        $payload['lines'][0]['addon_ids'][] = $payload['lines'][0]['addon_ids'][0];
+        $this->submitRound($flow, $payload)->assertStatus(422);
+        $this->assertDatabaseCount('pos_qr_order_rounds', 1);
+    }
+
     private function setRoundMode(string $mode): void
     {
         $this->setRoundModeRaw(json_encode($mode, JSON_THROW_ON_ERROR));

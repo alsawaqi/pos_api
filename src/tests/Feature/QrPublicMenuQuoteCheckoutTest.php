@@ -373,6 +373,21 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
         $this->assertSame(QrSession::STATUS_ORDERED, $session->fresh()->status);
     }
 
+    public function test_f32_quote_addons_are_distinct_per_line(): void
+    {
+        $session = $this->activeSession();
+        $product = $this->product(['base_price' => '2.000', 'tax_rate' => '0.00']);
+        $this->addonGroup(50);
+        $this->addon(60, 50, '0.250');
+        DB::table('pos_addon_group_products')->insert(['add_on_group_id' => 50, 'product_id' => $product]);
+        $lines = [$this->line($product, [60]), array_replace($this->line($product, [60]), ['notes' => 'second'])];
+        $this->qrPost($session, '/api/v1/public/qr/quote', ['lines' => $lines])->assertOk()
+            ->assertJsonPath('data.quote.grand_total_baisas', 4500);
+        $lines[0]['addon_ids'] = [60, 60];
+        $this->qrPost($session, '/api/v1/public/qr/quote', ['lines' => $lines])->assertStatus(422);
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
     private function activeSession(): QrSession
     {
         $device = Device::factory()->paired('mdev_qr_http_'.Str::random(24))->create([

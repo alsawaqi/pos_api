@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Rules\DistinctLineAddons;
 use Carbon\CarbonInterface;
 use Closure;
 use Illuminate\Database\Eloquent\Builder;
@@ -53,8 +54,8 @@ final class ResolveStaffSeatingAction
                 'lines' => ['required', 'array', 'min:1', 'max:100'],
                 'lines.*.product_id' => ['required', 'integer', 'min:1'],
                 'lines.*.qty' => ['required', 'integer', 'min:1', 'max:999'],
-                'lines.*.addon_ids' => ['sometimes', 'array', 'max:50'],
-                'lines.*.addon_ids.*' => ['integer', 'min:1', 'distinct'],
+                'lines.*.addon_ids' => ['sometimes', 'array', 'max:50', new DistinctLineAddons],
+                'lines.*.addon_ids.*' => ['integer', 'min:1'],
                 'lines.*.notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
                 'lines.*.unit_price_baisas' => ['missing'],
                 'lines.*.line_total_baisas' => ['missing'],

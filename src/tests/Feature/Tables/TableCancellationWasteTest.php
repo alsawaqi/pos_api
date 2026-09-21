@@ -74,6 +74,22 @@ final class TableCancellationWasteTest extends TestCase
         return [$device, $seat->refresh(), $order, $cancel, $ingredients];
     }
 
+    public function test_f32_staff_round_prices_shared_addon_per_line_and_refuses_within_line_duplicate(): void
+    {
+        [$device, $seat, $order, $cancel] = $this->fixture();
+        $line = ['product_id' => $cancel['product_id'], 'qty' => 1, 'addon_ids' => $cancel['addon_ids']];
+        $payload = ['table_id' => (int) $seat->table_id, 'seating_key' => $seat->client_request_id,
+            'queued_offline' => false, 'staff_id' => 7, 'client_request_id' => (string) Str::uuid(),
+            'submitted_at' => now()->toIso8601String(), 'lines' => [$line, $line + ['notes' => 'second']]];
+        $this->postAs($device, 'tables/'.$seat->uuid.'/round', $payload)->assertOk()
+            ->assertJsonPath('data.outcome', 'appended')->assertJsonPath('data.total_baisas', 2000);
+        $this->assertSame('5.000', $order->fresh()->grand_total);
+        $payload['client_request_id'] = (string) Str::uuid();
+        $payload['lines'][0]['addon_ids'] = array_merge($cancel['addon_ids'], $cancel['addon_ids']);
+        $this->postAs($device, 'tables/'.$seat->uuid.'/round', $payload)->assertStatus(422);
+        $this->assertSame('5.000', $order->fresh()->grand_total);
+    }
+
     private function snapshot(): array
     {
         $rows = [];

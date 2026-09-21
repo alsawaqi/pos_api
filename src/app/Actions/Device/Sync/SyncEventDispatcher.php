@@ -18,6 +18,7 @@ use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
 use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
 use App\Actions\Device\Sync\Handlers\StockCountHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionAdjustHandler;
+use App\Actions\Device\Sync\Handlers\TableSessionCancelBillHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionCancelLineHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionCloseHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionJoinHandler;
@@ -69,6 +70,7 @@ class SyncEventDispatcher
         private readonly TableSessionJoinHandler $tableJoin,
         private readonly TableSessionCloseHandler $tableClose,
         private readonly TableSessionCancelLineHandler $tableCancelLine,
+        private readonly TableSessionCancelBillHandler $tableCancelBill,
         private readonly TableSessionAdjustHandler $tableAdjust,
     ) {}
 
@@ -100,6 +102,7 @@ class SyncEventDispatcher
             'table.session.join' => $this->tableJoin,
             'table.session.close' => $this->tableClose,
             'table.session.cancel_line' => $this->tableCancelLine,
+            'table.session.cancel_bill' => $this->tableCancelBill,
             'table.session.adjust' => $this->tableAdjust,
         ];
     }

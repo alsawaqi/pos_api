@@ -14,6 +14,7 @@ final class QrDineInException extends RuntimeException
         public readonly int $httpStatus,
         string $message,
         public readonly bool $finalNoWrite = false,
+        public readonly array $details = [],
     ) {
         parent::__construct($message);
     }

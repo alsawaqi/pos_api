@@ -46,7 +46,7 @@ final class CloseTableSessionForOrderAction
             ->lockForUpdate()
             ->get();
 
-        if (in_array($reason, [TableSession::CLOSE_PAID, TableSession::CLOSE_VOIDED], true)) {
+        if (in_array($reason, [TableSession::CLOSE_PAID, TableSession::CLOSE_VOIDED, 'cancelled'], true)) {
             $pending = QrOrderRound::query()
                 ->where('order_id', (int) $lockedOrder->id)
                 ->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)

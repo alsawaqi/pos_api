@@ -20,7 +20,7 @@ final class TableSessionEvent extends Model
         'opened', 'attached', 'round_appended', 'round_pending', 'round_resolved',
         'billing', 'reopened', 'closed', 'expired', 'merged', 'moved', 'joined',
         'needs_review', 'customer_order_arrived', 'sent_to_counter',
-        'print_claimed', 'print_result', 'adjusted',
+        'print_claimed', 'print_result', 'adjusted', 'bill_cancelled',
     ];
 
     /** @return array<string, string> */

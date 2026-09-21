@@ -224,11 +224,11 @@ class DeviceSyncPushTest extends TestCase
             'donation.record', 'expense.log', 'restock.request', 'stock.count', 'product.waste',
             'shift.open', 'shift.close', 'slider.display',
             'table.session.open', 'table.session.round', 'table.session.move', 'table.session.join', 'table.session.close',
-            'table.session.cancel_line', 'table.session.adjust',
+            'table.session.cancel_line', 'table.session.cancel_bill', 'table.session.adjust',
             'sync.noop',
         ], SyncEvent::EVENT_TYPES);
         $dispatcher = app(SyncEventDispatcher::class);
-        foreach (['open', 'round', 'move', 'join', 'close', 'cancel_line', 'adjust'] as $operation) {
+        foreach (['open', 'round', 'move', 'join', 'close', 'cancel_line', 'cancel_bill', 'adjust'] as $operation) {
             $this->assertTrue($dispatcher->handles('table.session.'.$operation));
         }
     }

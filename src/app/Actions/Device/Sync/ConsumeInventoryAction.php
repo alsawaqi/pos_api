@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\ProductStockMovement;
 use App\Models\StockMovement;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -131,28 +132,13 @@ class ConsumeInventoryAction
                 );
             }
 
-            foreach ($item->addons as $addon) {
-                // Classic single-ingredient add-on ("extra shot"). Skipped
-                // when the addon carries PD3b consumption lines (create
-                // already nulls the trio then — this guard keeps any old
-                // double-written row from double-counting).
-                $snapshot = $addon->ingredient_snapshot_json;
-                if (is_array($addon->consumption_snapshot_json)) {
-                    $snapshot = null;
-                }
-                if (is_array($snapshot) && isset($snapshot['ingredient_id'])) {
-                    $count += $this->move(
-                        $branchId,
-                        (int) $snapshot['ingredient_id'],
-                        $sign * (float) ($snapshot['qty'] ?? 0) * $itemQty,
-                        (float) ($snapshot['unit_cost'] ?? 0),
-                        StockMovement::TYPE_ADDON_CONSUMPTION,
-                        (int) $order->id,
-                        $staffId,
-                        $at,
-                    );
-                }
+            foreach ($this->addonIngredients($item) as $ingredient) {
+                $count += $this->move($branchId, $ingredient['ingredient_id'],
+                    $sign * $ingredient['qty'] * $itemQty, $ingredient['unit_cost'],
+                    StockMovement::TYPE_ADDON_CONSUMPTION, (int) $order->id, $staffId, $at);
+            }
 
+            foreach ($item->addons as $addon) {
                 // P-G3 — product-as-add-on: consume the FROZEN product by
                 // its type (one selection = 1 x the parent line qty).
                 // cooked/unit: branch shelf moves; made-to-order: the
@@ -170,19 +156,6 @@ class ConsumeInventoryAction
                             $at,
                             'sold as add-on',
                         );
-                    } elseif ($mode === 'ingredient') {
-                        foreach ((array) ($productSnapshot['recipe'] ?? []) as $ingredient) {
-                            $count += $this->move(
-                                $branchId,
-                                (int) $ingredient['ingredient_id'],
-                                $sign * (float) ($ingredient['qty'] ?? 0) * $itemQty,
-                                (float) ($ingredient['unit_cost'] ?? 0),
-                                StockMovement::TYPE_ADDON_CONSUMPTION,
-                                (int) $order->id,
-                                $staffId,
-                                $at,
-                            );
-                        }
                     }
 
                     // PD3b — the linked product's OWN frozen components
@@ -222,7 +195,7 @@ class ConsumeInventoryAction
      * changes. unit_cost prefers the recipe's frozen cost, falling back
      * to the option line's.
      *
-     * @param  \Illuminate\Support\Collection<int|string, mixed>  $componentsByProduct
+     * @param  Collection<int|string, mixed>  $componentsByProduct
      * @return array{0: array<int, array{sale: float, option: float, unit_cost: float}>, 1: array<int, array{component: float, option: float}>}
      */
     private function mergeItemConsumption(mixed $item, $componentsByProduct): array
@@ -294,6 +267,56 @@ class ConsumeInventoryAction
         }
 
         return [$ingredientPlan, $productPlan];
+    }
+
+    /** Frozen ingredients per unit, including clamped option add/remove deltas. No catalogue reads. */
+    public function frozenIngredients(mixed $item): array
+    {
+        $item->loadMissing('addons');
+        [$plan] = $this->mergeItemConsumption($item, collect());
+        $units = [];
+        foreach ((array) $item->recipe_snapshot_json as $line) {
+            $units[(int) $line['ingredient_id']] = (string) ($line['unit'] ?? '');
+        }
+        foreach ($item->addons as $addon) {
+            foreach ((array) $addon->consumption_snapshot_json as $line) {
+                if (isset($line['ingredient_id'])) {
+                    $units[(int) $line['ingredient_id']] ??= (string) ($line['unit'] ?? '');
+                }
+            }
+        }
+        $rows = [];
+        foreach ($plan as $id => $parts) {
+            foreach (['sale', 'option'] as $kind) {
+                $rows[] = ['ingredient_id' => (int) $id, 'qty' => $parts[$kind],
+                    'unit' => $units[$id] ?? '', 'unit_cost' => $parts['unit_cost']];
+            }
+        }
+
+        return array_merge($rows, $this->addonIngredients($item));
+    }
+
+    /** Classic and product add-ons share this resolution with cancellation waste. */
+    private function addonIngredients(mixed $item): array
+    {
+        $rows = [];
+        foreach ($item->addons as $addon) {
+            $snapshot = $addon->ingredient_snapshot_json;
+            if (! is_array($addon->consumption_snapshot_json) && is_array($snapshot) && isset($snapshot['ingredient_id'])) {
+                $rows[] = $snapshot;
+            }
+            $product = $addon->product_snapshot_json;
+            if (is_array($product) && isset($product['product_id']) && ($product['stock_mode'] ?? '') === 'ingredient') {
+                foreach ((array) ($product['recipe'] ?? []) as $ingredient) {
+                    $rows[] = $ingredient;
+                }
+            }
+        }
+
+        return array_map(static fn (array $row): array => [
+            'ingredient_id' => (int) $row['ingredient_id'], 'qty' => (float) ($row['qty'] ?? 0),
+            'unit' => (string) ($row['unit'] ?? ''), 'unit_cost' => (float) ($row['unit_cost'] ?? 0),
+        ], $rows);
     }
 
     private function move(int $branchId, int $ingredientId, float $qty, float $unitCost, string $type, int $orderId, ?int $staffId, Carbon $at): int

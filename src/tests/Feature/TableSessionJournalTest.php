@@ -69,7 +69,7 @@ final class TableSessionJournalTest extends TestCase
         $this->assertSame([
             'opened', 'attached', 'round_appended', 'round_pending', 'round_resolved',
             'billing', 'reopened', 'closed', 'expired', 'merged', 'moved', 'joined',
-            'needs_review', 'customer_order_arrived', 'sent_to_counter', 'print_claimed', 'print_result', 'adjusted',
+            'needs_review', 'customer_order_arrived', 'sent_to_counter', 'print_claimed', 'print_result', 'adjusted', 'bill_cancelled',
         ], TableSessionEvent::EVENT_TYPES);
         $event = DB::transaction(fn () => $this->journal->handle($this->seating, 'opened'));
         $stored = TableSessionEvent::query()->sole();

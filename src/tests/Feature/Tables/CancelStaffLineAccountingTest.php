@@ -68,11 +68,12 @@ final class CancelStaffLineAccountingTest extends TestCase
         ]], $first['rounds']);
         $expectedJournal = [
             'table_session_uuid' => $seating->uuid, 'order_uuid' => $order->uuid,
+            'waste' => ['booked' => false, 'cost_baisas' => 0, 'ingredients' => []],
             'cancelled_qty' => 1, 'unlinked_line_count' => 0, 'grand_total_baisas' => 3778,
             'rounds' => $first['rounds'], 'action' => 'line_cancelled', 'client_request_id' => 'step-1',
             'product_id' => (int) $a->id, 'addon_ids' => [], 'notes_normalised' => '',
             'qty' => 1, 'prepared' => false, 'reason' => 'Cashier correction',
-            'authorized_by' => 'Manager',
+            'authorized_by' => 'Manager', 'staff_id' => null, 'whole_bill' => false,
         ];
         $journal = TableSessionEvent::query()->sole();
         $this->assertSame('round_resolved', $journal->event_type);

@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace App\Actions\Tables;
 
+use App\Actions\Qr\PresentQrPendingOrderAction;
 use App\Actions\Qr\RefreshQrOrderTotalsAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderDiscount;
 use App\Models\OrderItem;
 use App\Models\QrOrderRound;
+use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use App\Support\Money;
 use Carbon\CarbonInterface;
@@ -23,6 +25,8 @@ final class CancelStaffLineAction
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly AppendTableSessionEventAction $journal,
         private readonly EnsureLegacyTableBillBaselineAction $baseline,
+        private readonly PresentQrPendingOrderAction $present,
+        private readonly BookTableCancellationWasteAction $waste,
     ) {}
 
     /** @param array<string, mixed> $payload
@@ -51,135 +55,157 @@ final class CancelStaffLineAction
                 ->where('payload->client_request_id', $payload['client_request_id'])->first();
             if ($replay !== null) {
                 return $result('replayed') + array_intersect_key($replay->payload, array_flip([
-                    'cancelled_qty', 'unlinked_line_count', 'grand_total_baisas', 'rounds',
+                    'cancelled_qty', 'unlinked_line_count', 'grand_total_baisas', 'rounds', 'waste',
                 ]));
             }
-            if ($order === null || $order->status !== Order::STATUS_OPEN) {
+            if ($order === null || in_array($order->status, [Order::STATUS_PAID, Order::STATUS_VOID], true)) {
                 return $result('bill_terminal') + ['cancelled_qty' => 0, 'unlinked_line_count' => 0,
                     'grand_total_baisas' => $order === null ? 0 : Money::toBaisas($order->grand_total), 'rounds' => []];
             }
-            $this->baseline->handle($order);
-            $rounds = QrOrderRound::query()->where('order_id', $order->id)
-                ->where('status', QrOrderRound::STATUS_ACCEPTED)->orderByDesc('round_no')->orderByDesc('id')
-                ->lockForUpdate()->get();
-            $remaining = (int) $payload['qty'];
-            $unlinked = 0;
-            $changes = [];
-            foreach ($rounds as $round) {
-                $lines = $round->priced_lines ?? [];
-                $subtotal = (int) $round->subtotal_baisas;
-                $tax = (int) $round->tax_baisas;
-                $total = (int) $round->total_baisas;
-                $lineDiscount = 0;
-                foreach ($lines as $line) {
-                    if (! isset($line['held_reason'])) {
-                        $lineDiscount += (int) ($line['line_discount_baisas'] ?? 0) - (int) ($line['cancelled_discount_baisas'] ?? 0);
-                    }
+            $this->assertCancellable($order, $primary);
+            $values = $this->cancelLocked($device, $primary, $order, $payload);
+
+            return $result($values['outcome']) + $values;
+        });
+    }
+
+    public function assertCancellable(Order $order, TableSession $seat): void
+    {
+        if ($order->status !== Order::STATUS_OPEN || $seat->status !== TableSession::STATUS_OPEN
+            || $seat->billing_at !== null || $this->present->charge($order, now()) !== 'none') {
+            throw AdjustTableBillAction::refusal('bill_reserved', 'Reopen the bill and resolve its payment result before cancelling it.');
+        }
+    }
+
+    /** Caller holds the table graph, order, credential and seating locks. */
+    public function cancelLocked(Device $device, TableSession $primary, Order $order, array $payload): array
+    {
+        $this->baseline->handle($order);
+        $cancelledItems = [];
+        $rounds = QrOrderRound::query()->where('order_id', $order->id)
+            ->where('status', QrOrderRound::STATUS_ACCEPTED)->orderByDesc('round_no')->orderByDesc('id')
+            ->lockForUpdate()->get();
+        $remaining = (int) $payload['qty'];
+        $unlinked = 0;
+        $changes = [];
+        foreach ($rounds as $round) {
+            $lines = $round->priced_lines ?? [];
+            $subtotal = (int) $round->subtotal_baisas;
+            $tax = (int) $round->tax_baisas;
+            $total = (int) $round->total_baisas;
+            $lineDiscount = 0;
+            foreach ($lines as $line) {
+                if (! isset($line['held_reason'])) {
+                    $lineDiscount += (int) ($line['line_discount_baisas'] ?? 0) - (int) ($line['cancelled_discount_baisas'] ?? 0);
                 }
-                $discount = $subtotal + $tax - $total;
-                $orderDiscount = $discount - $lineDiscount;
-                $deltaSubtotal = 0;
-                $deltaDiscount = 0;
-                $roundChanges = [];
-                $indices = array_keys($lines);
-                usort($indices, static fn ($a, $b): int => ($lines[$b]['line_index'] ?? $b) <=> ($lines[$a]['line_index'] ?? $a));
-                foreach ($indices as $index) {
-                    $line = &$lines[$index];
-                    if (isset($line['held_reason']) || ! $this->matches($line, $payload)) {
-                        unset($line);
-
-                        continue;
-                    }
-                    $q = (int) $line['qty'];
-                    $c = (int) ($line['cancelled_qty'] ?? 0);
-                    if ($q - $c <= 0) {
-                        unset($line);
-
-                        continue;
-                    }
-                    if (! isset($line['order_item_id'])) {
-                        $unlinked++;
-                        unset($line);
-
-                        continue;
-                    }
-                    if ($remaining === 0) {
-                        unset($line);
-
-                        continue;
-                    }
-                    $item = OrderItem::query()->whereKey($line['order_item_id'])->where('order_id', $order->id)->lockForUpdate()->first();
-                    if ($item === null) {
-                        throw new RuntimeException('A linked cancellation line must belong to its bill.');
-                    }
-                    $k = min($q - $c, $remaining);
-                    $unit = (int) $line['unit_price_baisas'];
-                    $originalDiscount = (int) ($line['line_discount_baisas'] ?? 0);
-                    $oldDiscount = intdiv($originalDiscount * ($q - $c), $q);
-                    $newDiscount = intdiv($originalDiscount * ($q - $c - $k), $q);
-                    $reduction = $oldDiscount - $newDiscount;
-                    $line['cancelled_qty'] = $c + $k;
-                    $line['cancelled_discount_baisas'] = (int) ($line['cancelled_discount_baisas'] ?? 0) + $reduction;
-                    $line['cancellations'][] = ['client_request_id' => $payload['client_request_id'],
-                        'qty' => $k, 'discount_baisas' => $reduction, 'at' => $payload['cancelled_at']];
-                    $attributes = ['qty' => $q - $c - $k, 'line_total' => Money::toOmr($unit * ($q - $c - $k)),
-                        'line_discount' => Money::toOmr($newDiscount)];
-                    if ($q === $c + $k) {
-                        $attributes['status'] = OrderItem::STATUS_VOID;
-                    }
-                    $item->update($attributes);
-                    $this->lineAudit($order, (int) $item->id, $reduction, $payload['client_request_id']);
-                    $deltaSubtotal += $unit * $k;
-                    $deltaDiscount += $reduction;
-                    $remaining -= $k;
-                    $roundChanges[] = ['round_id' => (int) $round->id, 'line_index' => (int) ($line['line_index'] ?? $index),
-                        'qty' => $k, 'unit_price_baisas' => $unit, 'discount_baisas' => $reduction];
+            }
+            $discount = $subtotal + $tax - $total;
+            $orderDiscount = $discount - $lineDiscount;
+            $deltaSubtotal = 0;
+            $deltaDiscount = 0;
+            $roundChanges = [];
+            $indices = array_keys($lines);
+            usort($indices, static fn ($a, $b): int => ($lines[$b]['line_index'] ?? $b) <=> ($lines[$a]['line_index'] ?? $a));
+            foreach ($indices as $index) {
+                $line = &$lines[$index];
+                if (isset($line['held_reason']) || ! $this->matches($line, $payload)) {
                     unset($line);
-                }
-                if ($roundChanges === []) {
+
                     continue;
                 }
-                $nextSubtotal = $subtotal - $deltaSubtotal;
-                $nextLineDiscount = $lineDiscount - $deltaDiscount;
-                $base = $subtotal - $lineDiscount;
-                $nextBase = $nextSubtotal - $nextLineDiscount;
-                $nextOrderDiscount = $base === 0 ? 0 : min($nextBase, intdiv($orderDiscount * $nextBase, $base));
-                $taxedBase = $subtotal - $discount;
-                $nextTaxedBase = $nextBase - $nextOrderDiscount;
-                $nextTax = $taxedBase === 0 ? 0 : (int) round($tax * $nextTaxedBase / $taxedBase);
-                $nextTotal = $nextTaxedBase + $nextTax;
-                if (min($nextSubtotal, $nextTax, $nextTotal, $nextOrderDiscount) < 0) {
-                    throw new RuntimeException('Cancellation cannot produce negative frozen totals.');
-                }
-                $round->update(['priced_lines' => $lines, 'subtotal_baisas' => $nextSubtotal,
-                    'tax_baisas' => $nextTax, 'total_baisas' => $nextTotal]);
-                if ($orderDiscount > $nextOrderDiscount) {
-                    $this->audit($order, ['order_item_id' => null, 'discount_id' => null, 'offer_id' => null,
-                        'name_snapshot' => 'Line cancellation adjustment', 'amount_type_snapshot' => 'cancel_line'],
-                        $orderDiscount - $nextOrderDiscount, $payload['client_request_id']);
-                }
-                foreach ($roundChanges as $change) {
-                    $changes[] = $change + ['subtotal_baisas' => $nextSubtotal, 'tax_baisas' => $nextTax, 'total_baisas' => $nextTotal];
-                }
-            }
-            $cancelled = (int) $payload['qty'] - $remaining;
-            if ($cancelled === 0) {
-                return $result('nothing_to_cancel') + ['cancelled_qty' => 0, 'unlinked_line_count' => $unlinked,
-                    'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => []];
-            }
-            $this->totals->handle($order);
-            $values = ['cancelled_qty' => $cancelled, 'unlinked_line_count' => $unlinked,
-                'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => $changes];
-            $this->journal->handle($primary, 'round_resolved', $values + [
-                'action' => 'line_cancelled', 'client_request_id' => $payload['client_request_id'],
-                'product_id' => (int) $payload['product_id'], 'addon_ids' => $this->addonSet($payload['addon_ids'] ?? []),
-                'notes_normalised' => $this->notes($payload['notes'] ?? null), 'qty' => (int) $payload['qty'],
-                'prepared' => (bool) $payload['prepared'], 'reason' => $payload['reason'] ?? null,
-                'authorized_by' => $payload['authorized_by'] ?? null, 'order_uuid' => $order->uuid,
-            ], (int) $device->id);
+                $q = (int) $line['qty'];
+                $c = (int) ($line['cancelled_qty'] ?? 0);
+                if ($q - $c <= 0) {
+                    unset($line);
 
-            return $result('cancelled') + $values;
-        });
+                    continue;
+                }
+                if (! isset($line['order_item_id'])) {
+                    $unlinked++;
+                    unset($line);
+
+                    continue;
+                }
+                if ($remaining === 0) {
+                    unset($line);
+
+                    continue;
+                }
+                $item = OrderItem::query()->whereKey($line['order_item_id'])->where('order_id', $order->id)->lockForUpdate()->first();
+                if ($item === null) {
+                    throw new RuntimeException('A linked cancellation line must belong to its bill.');
+                }
+                $k = min($q - $c, $remaining);
+                $cancelledItems[] = [$item, $k];
+                $unit = (int) $line['unit_price_baisas'];
+                $originalDiscount = (int) ($line['line_discount_baisas'] ?? 0);
+                $oldDiscount = intdiv($originalDiscount * ($q - $c), $q);
+                $newDiscount = intdiv($originalDiscount * ($q - $c - $k), $q);
+                $reduction = $oldDiscount - $newDiscount;
+                $line['cancelled_qty'] = $c + $k;
+                $line['cancelled_discount_baisas'] = (int) ($line['cancelled_discount_baisas'] ?? 0) + $reduction;
+                $line['cancellations'][] = ['client_request_id' => $payload['client_request_id'],
+                    'qty' => $k, 'discount_baisas' => $reduction, 'at' => $payload['cancelled_at']];
+                $attributes = ['qty' => $q - $c - $k, 'line_total' => Money::toOmr($unit * ($q - $c - $k)),
+                    'line_discount' => Money::toOmr($newDiscount)];
+                if ($q === $c + $k) {
+                    $attributes['status'] = OrderItem::STATUS_VOID;
+                }
+                $item->update($attributes);
+                $this->lineAudit($order, (int) $item->id, $reduction, $payload['client_request_id']);
+                $deltaSubtotal += $unit * $k;
+                $deltaDiscount += $reduction;
+                $remaining -= $k;
+                $roundChanges[] = ['round_id' => (int) $round->id, 'line_index' => (int) ($line['line_index'] ?? $index),
+                    'qty' => $k, 'unit_price_baisas' => $unit, 'discount_baisas' => $reduction];
+                unset($line);
+            }
+            if ($roundChanges === []) {
+                continue;
+            }
+            $nextSubtotal = $subtotal - $deltaSubtotal;
+            $nextLineDiscount = $lineDiscount - $deltaDiscount;
+            $base = $subtotal - $lineDiscount;
+            $nextBase = $nextSubtotal - $nextLineDiscount;
+            $nextOrderDiscount = $base === 0 ? 0 : min($nextBase, intdiv($orderDiscount * $nextBase, $base));
+            $taxedBase = $subtotal - $discount;
+            $nextTaxedBase = $nextBase - $nextOrderDiscount;
+            $nextTax = $taxedBase === 0 ? 0 : (int) round($tax * $nextTaxedBase / $taxedBase);
+            $nextTotal = $nextTaxedBase + $nextTax;
+            if (min($nextSubtotal, $nextTax, $nextTotal, $nextOrderDiscount) < 0) {
+                throw new RuntimeException('Cancellation cannot produce negative frozen totals.');
+            }
+            $round->update(['priced_lines' => $lines, 'subtotal_baisas' => $nextSubtotal,
+                'tax_baisas' => $nextTax, 'total_baisas' => $nextTotal]);
+            if ($orderDiscount > $nextOrderDiscount) {
+                $this->audit($order, ['order_item_id' => null, 'discount_id' => null, 'offer_id' => null,
+                    'name_snapshot' => 'Line cancellation adjustment', 'amount_type_snapshot' => 'cancel_line'],
+                    $orderDiscount - $nextOrderDiscount, $payload['client_request_id']);
+            }
+            foreach ($roundChanges as $change) {
+                $changes[] = $change + ['subtotal_baisas' => $nextSubtotal, 'tax_baisas' => $nextTax, 'total_baisas' => $nextTotal];
+            }
+        }
+        $cancelled = (int) $payload['qty'] - $remaining;
+        if ($cancelled === 0) {
+            return ['outcome' => 'nothing_to_cancel'] + ['cancelled_qty' => 0, 'unlinked_line_count' => $unlinked,
+                'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => []];
+        }
+        $this->totals->handle($order);
+        $waste = $this->waste->plan($cancelledItems, (bool) $payload['prepared']);
+        $afterPersist = $this->waste->book($order, $primary, $payload, $waste);
+        $values = ['waste' => $waste, 'cancelled_qty' => $cancelled, 'unlinked_line_count' => $unlinked,
+            'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => $changes];
+        $this->journal->handle($primary, 'round_resolved', $values + [
+            'action' => 'line_cancelled', 'client_request_id' => $payload['client_request_id'],
+            'product_id' => (int) $payload['product_id'], 'addon_ids' => $this->addonSet($payload['addon_ids'] ?? []),
+            'notes_normalised' => $this->notes($payload['notes'] ?? null), 'qty' => (int) $payload['qty'],
+            'prepared' => (bool) $payload['prepared'], 'reason' => $payload['reason'] ?? null,
+            'authorized_by' => $payload['authorized_by'] ?? null, 'order_uuid' => $order->uuid,
+            'staff_id' => $payload['staff_id'] ?? null, 'whole_bill' => $payload['whole_bill'] ?? false,
+        ], (int) $device->id, afterPersist: $afterPersist);
+
+        return ['outcome' => 'cancelled'] + $values;
     }
 
     private function matches(array $line, array $payload): bool
@@ -189,7 +215,7 @@ final class CancelStaffLineAction
             && $this->notes($line['notes'] ?? null) === $this->notes($payload['notes'] ?? null);
     }
 
-    private function addonSet(array $ids): array
+    public function addonSet(array $ids): array
     {
         $ids = array_values(array_unique(array_map('intval', $ids)));
         sort($ids);
@@ -197,7 +223,7 @@ final class CancelStaffLineAction
         return $ids;
     }
 
-    private function notes(?string $notes): string
+    public function notes(?string $notes): string
     {
         return mb_strtolower(trim((string) preg_replace('/\s+/u', ' ', $notes ?? '')));
     }

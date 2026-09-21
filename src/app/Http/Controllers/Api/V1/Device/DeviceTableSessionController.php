@@ -8,6 +8,7 @@ use App\Actions\Qr\QrDineInException;
 use App\Actions\Tables\AdjustTableBillAction;
 use App\Actions\Tables\AppendStaffRoundAction;
 use App\Actions\Tables\CancelStaffLineAction;
+use App\Actions\Tables\CancelTableBillAction;
 use App\Actions\Tables\CloseStaffTableSessionAction;
 use App\Actions\Tables\JoinTableSessionAction;
 use App\Actions\Tables\MoveTableSessionAction;
@@ -27,6 +28,7 @@ final class DeviceTableSessionController
         private readonly JoinTableSessionAction $join,
         private readonly CloseStaffTableSessionAction $close,
         private readonly CancelStaffLineAction $cancel_line,
+        private readonly CancelTableBillAction $cancel_bill,
         private readonly AdjustTableBillAction $adjust,
     ) {}
 
@@ -45,7 +47,12 @@ final class DeviceTableSessionController
                 ? $this->open->handle($request->user(), $payload, $clientAt, $receivedAt)
                 : $this->{$operation}->handle($request->user(), $payload, $clientAt, $receivedAt, $uuid);
         } catch (QrDineInException $exception) {
-            return QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
+            $response = QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
+            if ($exception->details !== []) {
+                $response->setData(array_replace($response->getData(true), ['data' => $exception->details]));
+            }
+
+            return $response;
         }
 
         return QrApiResponse::success($result);

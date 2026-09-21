@@ -69,6 +69,18 @@ class QrStatusController
         $visibleOrder = $order ?? ($seating?->order_id === null ? null : Order::query()
             ->whereKey($seating->order_id)->where('table_session_id', $seating->id)
             ->where('company_id', $session->company_id)->where('branch_id', $session->branch_id)->first());
+        // A phone that only viewed the staff bill still needs its terminal
+        // cancellation screen. This projection grants no adoption/payment right.
+        if ($order === null && $visibleOrder?->status === Order::STATUS_VOID) {
+            $data['order'] = [
+                'uuid' => $visibleOrder->uuid, 'status' => Order::STATUS_VOID,
+                'receipt_number' => $visibleOrder->receipt_number, 'temp_reference' => $visibleOrder->temp_reference,
+                'subtotal_baisas' => Money::toBaisas($visibleOrder->subtotal),
+                'discount_total_baisas' => Money::toBaisas($visibleOrder->discount_total),
+                'tax_total_baisas' => Money::toBaisas($visibleOrder->tax_total),
+                'grand_total_baisas' => Money::toBaisas($visibleOrder->grand_total),
+            ];
+        }
         $rounds = QrOrderRound::query()
             ->when($visibleOrder !== null,
                 static fn ($query) => $query->where('order_id', $visibleOrder->id),

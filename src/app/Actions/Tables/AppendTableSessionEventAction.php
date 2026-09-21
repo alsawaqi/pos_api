@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use Carbon\CarbonInterface;
+use Closure;
 use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -25,7 +26,7 @@ final class AppendTableSessionEventAction
 {
     public const PGSQL_ADVISORY_LOCK_KEY = 814200206;
 
-    /** @var WeakMap<Connection, list<array{event: TableSessionEvent, depth: int, flushed_depth: int|null}>> */
+    /** @var WeakMap<Connection, list<array{event: TableSessionEvent, depth: int, flushed_depth: int|null, after_persist: Closure|null}>> */
     private WeakMap $entries;
 
     public function __construct()
@@ -40,6 +41,7 @@ final class AppendTableSessionEventAction
         array $payload = [],
         ?int $deviceId = null,
         ?CarbonInterface $at = null,
+        ?Closure $afterPersist = null,
     ): TableSessionEvent {
         if (! in_array($eventType, TableSessionEvent::EVENT_TYPES, true)) {
             throw new InvalidArgumentException('Unknown table-session journal event.');
@@ -70,7 +72,7 @@ final class AppendTableSessionEventAction
             'created_at' => $at ?? now(),
         ]);
         $entries = $this->entries[$connection] ?? [];
-        $entries[] = ['event' => $event, 'depth' => $connection->transactionLevel(), 'flushed_depth' => null];
+        $entries[] = ['event' => $event, 'depth' => $connection->transactionLevel(), 'flushed_depth' => null, 'after_persist' => $afterPersist];
         $this->entries[$connection] = $entries;
 
         return $event;
@@ -120,6 +122,9 @@ final class AppendTableSessionEventAction
             }
 
             $entry['event']->save();
+            if ($entry['after_persist'] !== null) {
+                ($entry['after_persist'])($entry['event']);
+            }
             $entries[$index]['flushed_depth'] = $connection->transactionLevel();
             $written[] = $entry['event'];
             $this->entries[$connection] = $entries;

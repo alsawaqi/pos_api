@@ -27,6 +27,7 @@ use App\Actions\Device\Sync\Handlers\TableSessionOpenHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionRoundHandler;
 use App\Actions\Device\Sync\Handlers\TransferOrderHandler;
 use App\Actions\Device\Sync\Handlers\VoidOrderHandler;
+use App\Actions\Qr\QrDineInException;
 use App\Events\DeviceSyncBroadcast;
 use App\Models\Device;
 use App\Models\SyncEvent;
@@ -176,12 +177,16 @@ class SyncEventDispatcher
                     SyncEvent::STATUS_RECEIVED,
                     SyncEvent::STATUS_FAILED,
                 ], true)) {
+                    $refusal = $e instanceof QrDineInException
+                        && in_array($lockedEvent->event_type, ['table.session.cancel_line', 'table.session.cancel_bill'], true)
+                            ? ['refusal_code' => $e->codeName] + $e->details
+                            : [];
                     $lockedEvent->update([
                         'ack_status' => SyncEvent::STATUS_FAILED,
                         'processed_at' => now(),
                         'result_json' => ['error' => $e instanceof PDOException
                             ? 'Could not save this update. Retry the same request.'
-                            : $e->getMessage()],
+                            : $e->getMessage()] + $refusal,
                     ]);
                 }
 

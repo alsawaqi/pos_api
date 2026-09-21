@@ -347,4 +347,50 @@ final class TableCancellationWasteTest extends TestCase
         $this->assertSame(-3.0, (float) DB::table('pos_branch_product')->value('stock_qty'));
         $this->assertSame(-2.0, (float) DB::table('pos_product_stock_movements')->value('quantity'));
     }
+
+    public static function partBRefusals(): array
+    {
+        return [['cancel_bill', 'bill_changed'], ['cancel_bill', 'bill_reserved'], ['cancel_line', 'bill_reserved'], ['cancel_bill', 'bill_has_payment'], ['cancel_bill', 'bill_terminal'], ['cancel_bill', 'nothing_to_cancel'], ['cancel_bill', 'cancel_request_conflict']];
+    }
+
+    #[DataProvider('partBRefusals')]
+    public function test_part_b_sync_refusal_contract(string $kind, string $code): void
+    {
+        [$device, $seat, $order, $cancel] = $this->fixture();
+        $payload = $kind === 'cancel_bill' ? $this->bill($cancel) : $cancel;
+        if ($code === 'bill_changed') {
+            $payload['lines'][0]['qty'] = 2;
+        } elseif ($code === 'bill_has_payment') {
+            Payment::query()->create(['uuid' => Str::uuid(), 'order_id' => $order->id, 'method' => 'cash', 'amount' => 1, 'status' => 'success']);
+        } elseif ($code === 'bill_terminal') {
+            $order->update(['status' => 'void']);
+        } elseif ($code === 'nothing_to_cancel') {
+            DB::table('pos_qr_order_rounds')->where('order_id', $order->id)->update(['status' => 'rejected']);
+        } elseif ($code === 'cancel_request_conflict') {
+            $payload['lines'][0]['client_request_id'] = $payload['client_request_id'];
+        } else {
+            $seat->update(['billing_at' => now()]);
+        }
+        $before = $this->snapshot();
+        $http = $this->postAs($device, 'tables/'.$seat->uuid.'/'.str_replace('_', '-', $kind), $payload)
+            ->assertConflict()->assertJsonPath('errors.0.code', $code);
+        $sync = $this->postAs($device, 'sync/push', ['events' => [[
+            'client_event_id' => $payload['client_request_id'],
+            'event_type' => 'table.session.'.$kind,
+            'client_timestamp' => now()->toIso8601String(),
+            'payload' => $payload,
+        ]]])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+        $this->assertSame($before, $this->snapshot());
+        // Print only synthetic result data. Device token/request headers excluded.
+        fwrite(STDOUT, "\nPART_B_CONTRACT ".json_encode([
+            'kind' => $kind, 'expected_code' => $code,
+            'http_errors' => $http->json('errors'),
+            'http_data' => $http->json('data'),
+            'sync_result' => $sync->json('data.results.0'),
+        ], JSON_UNESCAPED_SLASHES)."\n");
+        $sync->assertJsonPath('data.results.0.result.refusal_code', $code);
+        if ($code === 'bill_changed') {
+            $this->assertSame($http->json('data.groups'), $sync->json('data.results.0.result.groups'));
+        }
+    }
 }

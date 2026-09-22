@@ -185,8 +185,7 @@ final class SubmitDineInQrRoundAction
                 ->where('qr_session_id', $session->id)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)
                 ->exists();
-            $identityAllowed = (! $acceptedRoundExists || $order?->customer_id === null)
-                && ! ($session->handover_from_id !== null && $order?->customer_id !== null);
+            $identityAllowed = TableQrIdentity::allowed($session, $order);
             $phonePresent = array_key_exists('phone', $payload)
                 && is_string($payload['phone'])
                 && trim($payload['phone']) !== '';
@@ -399,7 +398,10 @@ final class SubmitDineInQrRoundAction
                     'credential_origin' => $session->origin,
                     'geofence' => $session->scan_geofence_verdict,
                 ] : $eventPayload, null, $now);
-            $this->journal->handle($seating, 'customer_order_arrived', $eventPayload, null, $now);
+            $this->journal->handle($seating, 'customer_order_arrived', $eventPayload + [
+                'optional_identity' => true,
+                'customer_identity_set' => $order->customer_id !== null,
+            ], null, $now);
 
             return [
                 'round' => $round->fresh(),

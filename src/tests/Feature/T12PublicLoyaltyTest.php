@@ -10,6 +10,7 @@ use App\Models\LoyaltyRule;
 use App\Models\LoyaltyTransaction;
 use App\Models\Order;
 use App\Models\QrSession;
+use App\Models\TableSession;
 use App\Support\Money;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
@@ -94,6 +95,26 @@ final class T12PublicLoyaltyTest extends TestCase
         $this->round($product, ['phone' => '92001235'])->assertUnprocessable()->assertJsonPath('errors.0.code', 'qr_round_identity_already_set');
         $this->assertSame('92001234', Customer::findOrFail($order->fresh()->customer_id)->phone);
         $this->round($product)->assertCreated();
+    }
+
+    public function test_staff_detachment_cannot_reset_an_accepted_phone_identity(): void
+    {
+        [$session, $product, $till] = $this->flow();
+        $this->round($product)->assertCreated();
+        $this->round($product, ['phone' => '92001234'])->assertCreated();
+        $order = Order::sole();
+        $seating = TableSession::findOrFail($order->table_session_id);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($till->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/adjust', [
+            'table_id' => (int) $seating->table_id, 'seating_key' => $seating->uuid,
+            'queued_offline' => false, 'client_request_id' => (string) Str::uuid(),
+            'adjustment' => ['kind' => 'customer', 'mode' => 'detach'],
+        ])->assertOk();
+        $this->assertNull($order->fresh()->customer_id);
+        $this->getJson('/api/v1/public/qr/status')->assertOk()->assertJsonPath('data.dine_in.credential.identity_allowed', false);
+        $this->round($product, ['phone' => '92001235'])->assertUnprocessable()->assertJsonPath('errors.0.code', 'qr_round_identity_already_set');
+        $this->round($product)->assertCreated();
+        $this->assertNull($order->fresh()->customer_id);
     }
 
     public function test_public_accounts_are_merchant_scoped_private_and_earned_matches_own_bill(): void

@@ -82,8 +82,18 @@ final class AdjustTableBillAction
                 if ($mode === 'attach' && $customer === null) {
                     throw self::refusal('customer_not_found', 'The customer was not found for this merchant.');
                 }
+                if ((int) $order->customer_id !== (int) $customer?->id) {
+                    TableLoyaltyDiscount::clear($order);
+                }
                 $order->update(['customer_id' => $customer?->id]);
                 $proof['customer_id'] = $customer === null ? null : (int) $customer->id;
+            } elseif ($kind === 'loyalty') {
+                if ($mode === 'clear') {
+                    TableLoyaltyDiscount::clear($order);
+                    $proof['amount_baisas'] = 0;
+                } else {
+                    $proof += TableLoyaltyDiscount::redeem($order, $adjustment, $net - $a['manual'] - $a['comp']);
+                }
             } elseif ($kind === 'discount') {
                 $amount = 0;
                 $rule = null;
@@ -104,7 +114,7 @@ final class AdjustTableBillAction
                 } elseif ($mode === 'fixed') {
                     $amount = (int) $adjustment['amount_baisas'];
                 }
-                if ($mode !== 'clear' && ($amount < 1 || $amount + $a['comp'] >= $net)) {
+                if ($mode !== 'clear' && ($amount < 1 || $amount + $a['comp'] + $a['loyalty'] >= $net)) {
                     throw self::refusal('adjustment_exceeds_bill', 'The discount must leave a positive amount to pay.');
                 }
                 $this->totals->reverseDiscount($order, $a['manual']);
@@ -132,7 +142,7 @@ final class AdjustTableBillAction
                     if ($reason->max_amount !== null && $amount > Money::toBaisas($reason->max_amount)) {
                         throw self::refusal('comp_cap_exceeded', 'The selected quantity exceeds this complimentary reason limit.');
                     }
-                    if ($amount < 1 || $amount + $a['manual'] >= $net) {
+                    if ($amount < 1 || $amount + $a['manual'] + $a['loyalty'] >= $net) {
                         throw self::refusal('adjustment_exceeds_bill', 'The complimentary amount must leave a positive amount to pay.');
                     }
                     $proof += ['comp_reason_id' => (int) $reason->id, 'order_item_id' => (int) $target['order_item_id'], 'qty' => (int) $target['qty']];

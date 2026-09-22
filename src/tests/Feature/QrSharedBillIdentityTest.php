@@ -281,21 +281,11 @@ final class QrSharedBillIdentityTest extends TestCase
         $this->assertSame(0, Customer::query()->count());
     }
 
-    public function test_staff_bill_is_not_adopted_without_first_round_phone_or_after_freezing(): void
+    public function test_staff_bill_is_not_adopted_after_freezing(): void
     {
         $flow = $this->flow();
         $this->staffRound($flow);
         $bill = Order::query()->sole();
-        $before = $bill->getRawOriginal();
-        try {
-            app(SubmitDineInQrRoundAction::class)->handle((int) $flow['session']->id, [
-                'client_request_id' => 'no-phone', 'lines' => $this->lines($flow),
-            ], '127.0.0.1');
-            $this->fail('Accepted staff rounds cannot satisfy QR identity gating.');
-        } catch (QrDineInException $exception) {
-            $this->assertSame('qr_round_phone_required', $exception->codeName);
-        }
-        $this->assertSame($before, $bill->fresh()->getRawOriginal());
         foreach ([Order::STATUS_HELD, Order::STATUS_AWAITING_PAYMENT] as $status) {
             $bill->update(['status' => $status]);
             $before = $bill->getRawOriginal();

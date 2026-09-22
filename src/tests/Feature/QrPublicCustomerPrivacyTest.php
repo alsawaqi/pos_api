@@ -300,6 +300,7 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         $this->assertSame([
             'public.qr.bind',
             'public.qr.checkout',
+            'public.qr.loyalty',
             'public.qr.menu',
             'public.qr.payment-recovery',
             'public.qr.quote',

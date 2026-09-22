@@ -80,6 +80,7 @@ final class CancelTableBillAction
             // Reverse the manual slots before line arithmetic can clamp them.
             $amounts = $this->totals->amounts($order);
             $this->totals->reverseDiscount($order, $amounts['manual']);
+            TableLoyaltyDiscount::clear($order);
             $this->totals->reverseComp($order, $amounts['comp']);
             $this->totals->handle($order);
             $results = [];

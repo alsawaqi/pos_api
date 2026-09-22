@@ -15,6 +15,7 @@ use App\Actions\Device\Sync\RecordSaleCommissionAction;
 use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
+use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Exceptions\InsufficientLoyaltyBalanceException;
 use App\Models\Branch;
 use App\Models\Device;
@@ -364,6 +365,9 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             $redeemTxn = null;
             $redeemAdjustment = null;
             $redeemWarning = null;
+            if ($order->table_session_id !== null) {
+                $loyaltyRedeem = TableLoyaltyDiscount::current($order);
+            }
             if ($loyaltyRedeem !== null && isset($loyaltyRedeem['rule_id'])) {
                 $ruleId = (int) $loyaltyRedeem['rule_id'];
                 $pointsRequested = (int) ($loyaltyRedeem['points'] ?? 0);

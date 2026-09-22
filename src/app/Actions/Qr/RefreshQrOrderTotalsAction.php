@@ -6,6 +6,7 @@ namespace App\Actions\Qr;
 
 use App\Actions\Tables\AdjustTableBillAction;
 use App\Actions\Tables\AppendTableSessionEventAction;
+use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Order;
 use App\Models\OrderComp;
 use App\Models\OrderDiscount;
@@ -31,6 +32,7 @@ final class RefreshQrOrderTotalsAction
 
         return ['subtotal' => (int) $totals->subtotal_baisas, 'tax' => (int) $totals->tax_baisas,
             'total' => (int) $totals->total_baisas,
+            'loyalty' => TableLoyaltyDiscount::amount($order),
             'manual' => $this->manualRows($order)->get()->sum(fn ($row): int => Money::toBaisas($row->amount)),
             'comp' => OrderComp::query()->where('order_id', $order->id)->get()->sum(fn ($row): int => Money::toBaisas($row->amount))];
     }
@@ -39,6 +41,7 @@ final class RefreshQrOrderTotalsAction
     public function header(array $amounts): array
     {
         ['subtotal' => $s, 'tax' => $t, 'total' => $g, 'manual' => $m, 'comp' => $c] = $amounts;
+        $m += $amounts['loyalty'] ?? 0;
         $roundDiscount = max(0, $s + $t - $g);
         $net = $s - $roundDiscount;
         $base = $net - $m - $c;
@@ -53,7 +56,7 @@ final class RefreshQrOrderTotalsAction
     public function matchesHeader(Order $order, ?array $amounts = null): bool
     {
         $a = $amounts ?? $this->amounts($order);
-        if (min($a) < 0 || max(0, $a['total'] - $a['tax'] - 1) < $a['manual'] + $a['comp']) {
+        if (min($a) < 0 || max(0, $a['total'] - $a['tax'] - 1) < $a['manual'] + $a['comp'] + $a['loyalty']) {
             return false;
         }
         foreach ($this->header($a) as $key => $value) {
@@ -123,7 +126,12 @@ final class RefreshQrOrderTotalsAction
     {
         $a = $this->amounts($order);
         $a['comp'] = $this->capCompToRemainingLine($order, $a['comp']);
-        $excess = $a['manual'] + $a['comp'] - max(0, $a['total'] - $a['tax'] - 1);
+        if ($a['loyalty'] > 0 && $a['loyalty'] + $a['manual'] + $a['comp'] >= $a['total'] - $a['tax']) {
+            // Owner decision: clear whole blocks, never partially clamp a redemption.
+            TableLoyaltyDiscount::clear($order);
+            $a['loyalty'] = 0;
+        }
+        $excess = $a['manual'] + $a['comp'] + $a['loyalty'] - max(0, $a['total'] - $a['tax'] - 1);
         if ($excess > 0) {
             $discount = min($a['manual'], $excess);
             $this->reverseDiscount($order, $discount, 'table_manual_clamp');

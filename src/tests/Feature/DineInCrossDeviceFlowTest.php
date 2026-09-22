@@ -191,13 +191,13 @@ final class DineInCrossDeviceFlowTest extends TestCase
             'X-QR-Session' => $bound->json('data.session_uuid'),
             'X-QR-Client-Secret' => 'f07-synthetic-customer',
         ])->getJson('/api/v1/public/qr/status')->assertOk()
-            ->assertJsonPath('data.dine_in.credential.identity_required', true)
+            ->assertJsonPath('data.dine_in.credential.identity_required', false)
+            ->assertJsonPath('data.dine_in.credential.identity_allowed', true)
             ->assertJsonPath('data.dine_in.rounds.0.entered_by', 'staff');
         $payload = [
             'client_request_id' => 'f07-customer-round',
             'lines' => [['product_id' => $f['product']->id, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
         ];
-        $this->postJson('/api/v1/public/qr/table-round', $payload)->assertUnprocessable();
         $round = $this->postJson('/api/v1/public/qr/table-round', $payload + ['phone' => '99990001'])
             ->assertCreated()->assertJsonPath('data.order.uuid', $f['order']->uuid)
             ->assertJsonPath('data.round.status', 'pending_confirmation');

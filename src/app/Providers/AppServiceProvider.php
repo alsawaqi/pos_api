@@ -208,6 +208,9 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('qr-table-device-read', fn (Request $request) => Limit::perMinute(60)
             ->by('qr-table-device-read:'.(string) $request->user()?->getAuthIdentifier())
             ->response($qrRateLimited));
+        RateLimiter::for('loyalty-redeem', fn (Request $request) => $request->input('adjustment.kind') === 'loyalty'
+            ? Limit::perMinute(10)->by('loyalty-redeem:'.(string) $request->user()?->getAuthIdentifier())->response($qrRateLimited)
+            : Limit::none());
         RateLimiter::for('qr-table-device-write', fn (Request $request) => Limit::perMinute(30)
             ->by('qr-table-device-write:'.(string) $request->user()?->getAuthIdentifier())
             ->response($qrRateLimited));

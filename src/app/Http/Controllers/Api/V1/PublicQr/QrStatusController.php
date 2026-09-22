@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1\PublicQr;
 
 use App\Actions\Qr\DineInRoundMode;
+use App\Actions\Qr\PublicTableLoyalty;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Actions\Tables\TableBillAdjustmentView;
 use App\Models\Device;
@@ -108,14 +109,19 @@ class QrStatusController
             }
         }
 
+        if ($visibleOrder?->status === Order::STATUS_PAID) {
+            $data['loyalty_earned'] = PublicTableLoyalty::earned($visibleOrder);
+        }
         $data['dine_in'] = [
+            'loyalty_available' => PublicTableLoyalty::hasPhone($visibleOrder),
             'table_id' => (int) $session->table_id,
             'credential' => [
                 'origin' => $session->origin,
                 'staff_confirm' => $session->origin === 'table_card'
                     || app(DineInRoundMode::class)->forBranch((int) $session->company_id, (int) $session->branch_id) === DineInRoundMode::STAFF_CONFIRM,
-                'identity_required' => ! QrOrderRound::query()->where('qr_session_id', $session->id)
-                    ->where('status', QrOrderRound::STATUS_ACCEPTED)->exists()
+                'identity_required' => false,
+                'identity_allowed' => ($order?->customer_id === null || ! QrOrderRound::query()->where('qr_session_id', $session->id)
+                    ->where('status', QrOrderRound::STATUS_ACCEPTED)->exists())
                     && ! ($session->handover_from_id !== null && $order?->customer_id !== null),
             ],
             'seating' => [

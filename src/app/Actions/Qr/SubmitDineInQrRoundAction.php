@@ -6,6 +6,7 @@ namespace App\Actions\Qr;
 
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
+use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
@@ -184,18 +185,11 @@ final class SubmitDineInQrRoundAction
                 ->where('qr_session_id', $session->id)
                 ->where('status', QrOrderRound::STATUS_ACCEPTED)
                 ->exists();
-            $identityAllowed = ! $acceptedRoundExists
+            $identityAllowed = (! $acceptedRoundExists || $order?->customer_id === null)
                 && ! ($session->handover_from_id !== null && $order?->customer_id !== null);
             $phonePresent = array_key_exists('phone', $payload)
                 && is_string($payload['phone'])
-                && $payload['phone'] !== '';
-            if ($identityAllowed && ! $phonePresent) {
-                throw new QrDineInException(
-                    'qr_round_phone_required',
-                    422,
-                    'A phone number is required until the first round is accepted.',
-                );
-            }
+                && trim($payload['phone']) !== '';
             if (! $identityAllowed
                 && (array_key_exists('phone', $payload) || array_key_exists('plate_number', $payload))) {
                 throw new QrDineInException(
@@ -232,12 +226,13 @@ final class SubmitDineInQrRoundAction
             $this->stock->handle((int) $session->company_id, (int) $session->branch_id, $loaded->resolvedLines);
 
             $customer = null;
+            $plate = $order?->plate_number;
             $identityDiffers = false;
             if ($identityAllowed) {
-                $phone = trim((string) $payload['phone']);
+                $phone = trim((string) ($payload['phone'] ?? ''));
                 $plate = isset($payload['plate_number'])
                     ? ResolveQrCustomerAction::normalisePlate((string) $payload['plate_number'])
-                    : null;
+                    : $order?->plate_number;
                 $currentPhone = $order?->customer_id === null
                     ? null
                     : Customer::query()->whereKey((int) $order->customer_id)->value('phone');
@@ -245,7 +240,7 @@ final class SubmitDineInQrRoundAction
                     || trim((string) $currentPhone) !== $phone
                     || $order->plate_number !== $plate;
 
-                if ($identityDiffers && ! $this->phoneGuard->allows(
+                if ($phonePresent && $identityDiffers && ! $this->phoneGuard->allows(
                     (string) $session->uuid,
                     (int) $session->branch_id,
                     $ip,
@@ -257,20 +252,24 @@ final class SubmitDineInQrRoundAction
                         'Too many customer identities were submitted.',
                     );
                 }
-                $customer = $this->customers->handle(
+                $customer = $phonePresent ? $this->customers->handle(
                     (int) $session->company_id,
                     $phone,
                     $plate,
-                );
+                ) : null;
             }
 
-            if ($order !== null && $order->qr_session_id === null && $customer !== null) {
+            if ($order !== null && $customer !== null && $order->customer_id !== $customer->customerId && TableLoyaltyDiscount::amount($order) > 0) {
+                TableLoyaltyDiscount::clear($order);
+                $this->refreshTotals->handle($order);
+            }
+            if ($order !== null && $order->qr_session_id === null) {
                 $order->update([
                     'qr_session_id' => $session->id,
                     'source' => Order::SOURCE_QR_WEB,
                     'device_id' => $session->device_id ?? $order->device_id,
-                    'customer_id' => $customer->customerId,
-                    'plate_number' => $customer->plateNumber,
+                    'customer_id' => $customer?->customerId ?? $order->customer_id,
+                    'plate_number' => $plate,
                 ]);
                 $this->journal->handle($seating, 'attached', [
                     'session_uuid' => (string) $session->uuid,
@@ -334,7 +333,7 @@ final class SubmitDineInQrRoundAction
                     'order_type' => 'dine_in',
                     'status' => Order::STATUS_OPEN,
                     'source' => Order::SOURCE_QR_WEB,
-                    'plate_number' => $customer?->plateNumber,
+                    'plate_number' => $plate,
                     'subtotal' => Money::toOmr(0),
                     'discount_total' => Money::toOmr(0),
                     'comp_total' => Money::toOmr(0),
@@ -347,10 +346,10 @@ final class SubmitDineInQrRoundAction
                     'temp_reference' => $reference,
                 ]);
                 $round->update(['order_id' => $order->id]);
-            } elseif ($identityDiffers && $customer !== null) {
+            } elseif ($identityDiffers) {
                 $order->update([
-                    'customer_id' => $customer->customerId,
-                    'plate_number' => $customer->plateNumber,
+                    'customer_id' => $customer?->customerId ?? $order->customer_id,
+                    'plate_number' => $plate,
                 ]);
             }
 

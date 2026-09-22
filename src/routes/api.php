@@ -57,6 +57,7 @@ use App\Http\Controllers\Api\V1\Device\PaymentReversalsController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use App\Http\Controllers\Api\V1\PublicQr\QrBindController;
 use App\Http\Controllers\Api\V1\PublicQr\QrCheckoutController;
+use App\Http\Controllers\Api\V1\PublicQr\QrLoyaltyController;
 use App\Http\Controllers\Api\V1\PublicQr\QrMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrPaymentRecoveryController;
 use App\Http\Controllers\Api\V1\PublicQr\QrQuoteController;
@@ -115,6 +116,9 @@ Route::prefix('v1')->group(function (): void {
     Route::match(['get', 'post'], 'public/qr/payment-recovery', QrPaymentRecoveryController::class)
         ->middleware(['throttle:qr-read', 'qr.session:include-closed'])
         ->name('public.qr.payment-recovery');
+    Route::get('public/qr/loyalty', QrLoyaltyController::class)
+        ->middleware(['throttle:qr-read', 'qr.session'])
+        ->name('public.qr.loyalty');
     Route::get('public/qr/status', QrStatusController::class)
         ->middleware(['throttle:qr-read', 'qr.session:include-closed'])
         ->name('public.qr.status');
@@ -260,7 +264,7 @@ Route::prefix('v1')->group(function (): void {
         foreach (['round', 'move', 'join', 'close', 'cancel_line', 'cancel_bill', 'adjust'] as $tableOperation) {
             Route::post('device/tables/{uuid}/'.str_replace('_', '-', $tableOperation), DeviceTableSessionController::class)
                 ->defaults('table_operation', $tableOperation)
-                ->middleware('throttle:qr-table-device-write')->name('device.tables.'.$tableOperation);
+                ->middleware($tableOperation === 'adjust' ? ['throttle:qr-table-device-write', 'throttle:loyalty-redeem'] : ['throttle:qr-table-device-write'])->name('device.tables.'.$tableOperation);
         }
         Route::post('device/tables/{uuid}/claim-owner', DeviceTableClaimOwnerController::class)
             ->middleware('throttle:qr-table-device-write')->name('device.tables.claim-owner');

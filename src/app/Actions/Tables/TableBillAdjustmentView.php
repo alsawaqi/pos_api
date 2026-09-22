@@ -19,7 +19,9 @@ final class TableBillAdjustmentView
     {
         $rows = app(RefreshQrOrderTotalsAction::class)->manualRows($order)->orderBy('id')->get();
 
-        return ['manual_discount_baisas' => $rows->sum(fn ($row): int => Money::toBaisas($row->amount)),
+        $loyalty = TableLoyaltyDiscount::amount($order);
+
+        return ($loyalty > 0 ? ['loyalty_discount_baisas' => $loyalty] : []) + ['manual_discount_baisas' => $rows->sum(fn ($row): int => Money::toBaisas($row->amount)),
             'discounts' => $rows->map(fn ($row): array => ['name' => $row->name_snapshot,
                 'amount_baisas' => Money::toBaisas($row->amount), 'amount_type' => $row->amount_type_snapshot, 'reason' => $row->reason])->all()];
     }
@@ -46,6 +48,7 @@ final class TableBillAdjustmentView
                 $state[$kind] += ['reason_name' => $row?->reason_name_snapshot, 'note' => $row?->note];
             }
         }
+        $state['loyalty'] = TableLoyaltyDiscount::current($order);
         $customer = $order->customer_id === null ? null : Customer::withTrashed()->whereKey($order->customer_id)
             ->where('company_id', $order->company_id)->first();
 
@@ -55,7 +58,8 @@ final class TableBillAdjustmentView
 
     public static function publicTotals(Order $order): array
     {
-        $result = ['manual_discount_baisas' => self::deviceFields($order)['manual_discount_baisas']];
+        $fields = self::deviceFields($order);
+        $result = Arr::only($fields, ['manual_discount_baisas', 'loyalty_discount_baisas']);
         foreach (['subtotal', 'discount_total', 'comp_total', 'tax_total', 'grand_total'] as $field) {
             $result[$field.'_baisas'] = Money::toBaisas($order->$field ?? 0);
         }
@@ -65,7 +69,8 @@ final class TableBillAdjustmentView
 
     public static function refuseUnsupported(Order $order): void
     {
-        if (app(RefreshQrOrderTotalsAction::class)->manualRows($order)->exists()
+        if (TableLoyaltyDiscount::rows($order)->exists()
+            || app(RefreshQrOrderTotalsAction::class)->manualRows($order)->exists()
             || TableSessionEvent::query()->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)
                 ->where('event_type', 'adjusted')->where('payload->order_uuid', $order->uuid)
                 ->where('payload->kind', 'comp')->exists()) {

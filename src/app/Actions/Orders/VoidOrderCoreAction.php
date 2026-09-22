@@ -9,6 +9,7 @@ use App\Actions\Pos\Loyalty\WriteLoyaltyTransactionAction;
 use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
+use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyTransaction;
@@ -106,6 +107,7 @@ final class VoidOrderCoreAction
                 'void_reason_label' => $voidReason?->name,
                 'note' => $this->appendReason($order->note, $reason ?? $voidReason?->name),
             ]);
+            TableLoyaltyDiscount::clear($order);
             $this->closeDineInSession->handle($order, $voidedAt);
             $this->closeTableSession->handle($order, $voidedAt, TableSession::CLOSE_VOIDED, (int) $device->getKey());
             QrOrderRound::query()

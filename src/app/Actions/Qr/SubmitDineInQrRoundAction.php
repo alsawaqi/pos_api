@@ -393,15 +393,16 @@ final class SubmitDineInQrRoundAction
             }
 
             $eventPayload = ['round_id' => (int) $round->id, 'order_uuid' => (string) $order->uuid];
-            $this->journal->handle($seating, $staffConfirm ? 'round_pending' : 'round_appended',
-                $staffConfirm ? $eventPayload + [
-                    'credential_origin' => $session->origin,
-                    'geofence' => $session->scan_geofence_verdict,
-                ] : $eventPayload, null, $now);
-            $this->journal->handle($seating, 'customer_order_arrived', $eventPayload + [
+            $identityPayload = $eventPayload + [
                 'optional_identity' => true,
                 'customer_identity_set' => $order->customer_id !== null,
-            ], null, $now);
+            ];
+            $this->journal->handle($seating, $staffConfirm ? 'round_pending' : 'round_appended',
+                $staffConfirm ? $identityPayload + [
+                    'credential_origin' => $session->origin,
+                    'geofence' => $session->scan_geofence_verdict,
+                ] : $identityPayload, null, $now);
+            $this->journal->handle($seating, 'customer_order_arrived', $eventPayload, null, $now);
 
             return [
                 'round' => $round->fresh(),

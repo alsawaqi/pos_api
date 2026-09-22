@@ -26,7 +26,7 @@ final class TableQrIdentity
         }
         $proofs = TableSessionEvent::query()
             ->where('company_id', $session->company_id)->where('branch_id', $session->branch_id)
-            ->where('event_type', 'customer_order_arrived')->whereIn('payload->round_id', $rounds->pluck('id'))
+            ->whereIn('event_type', ['round_appended', 'round_pending'])->whereIn('payload->round_id', $rounds->pluck('id'))
             ->get()->pluck('payload')->keyBy('round_id');
         if ($proofs->contains(fn (array $proof): bool => ($proof['customer_identity_set'] ?? false) === true)) {
             return false;

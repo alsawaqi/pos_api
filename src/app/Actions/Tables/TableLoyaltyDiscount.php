@@ -88,8 +88,7 @@ final class TableLoyaltyDiscount
         $amount = $value * $blocks;
         $account = LoyaltyAccount::query()->where('company_id', $order->company_id)->where('customer_id', $customer->id)
             ->where('loyalty_rule_id', $rule->id)->lockForUpdate()->first();
-        $pending = self::current($order);
-        $reserved = ($pending['rule_id'] ?? null) === (int) $rule->id ? $pending[$points ? 'points' : 'stamps'] : 0;
+        $reserved = self::pendingUnits($order, (int) $rule->id, $points ? 'points' : 'stamps');
         if ($units > (int) ($account?->{$points ? 'point_balance' : 'stamp_count'} ?? 0) - $reserved) {
             throw AdjustTableBillAction::refusal('loyalty_insufficient', 'There are not enough available points or stamps for these blocks.');
         }
@@ -130,5 +129,28 @@ final class TableLoyaltyDiscount
         return ['rule_id' => (int) $rule->id, 'blocks' => $blocks, 'points' => $points ? $units : 0,
             'stamps' => $points ? 0 : $units, 'amount_baisas' => $amount, 'discount_row_id' => (int) $row->id,
             'customer_id' => (int) $customer->id, 'shift_id' => $shift === null ? null : (int) $shift->id];
+    }
+
+    /** Read under redeem's customer/account locks, across all branches of this merchant. */
+    private static function pendingUnits(Order $order, int $ruleId, string $unit): int
+    {
+        // Include this bill too: replacement retains the existing availability rule.
+        // Do not lock other bills here; their table-graph locks precede the customer
+        // lock. Reading committed slots avoids reversing that lock order.
+        $bills = Order::query()->where('company_id', $order->company_id)
+            ->where('customer_id', $order->customer_id)->whereNotNull('table_session_id')
+            ->whereNotIn('status', [Order::STATUS_PAID, Order::STATUS_VOID])
+            ->whereIn('id', OrderDiscount::query()->select('order_id')
+                ->whereIn('amount_type_snapshot', self::TYPES)
+                ->groupBy('order_id')->havingRaw('SUM(amount) > 0'))->get();
+        $reserved = 0;
+        foreach ($bills as $bill) {
+            $pending = self::current($bill);
+            if (($pending['rule_id'] ?? null) === $ruleId) {
+                $reserved += $pending[$unit];
+            }
+        }
+
+        return $reserved;
     }
 }

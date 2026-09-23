@@ -14,6 +14,7 @@ use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
 use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\CloseTableSessionForOrderAction;
+use App\Actions\Qr\PublicTableLoyalty;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Exceptions\InsufficientLoyaltyBalanceException;
@@ -414,6 +415,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 // First id kept for back-compat; the full set under _ids.
                 'loyalty_transaction_id' => $loyaltyTxnIds[0] ?? null,
                 'loyalty_transaction_ids' => $loyaltyTxnIds,
+                'loyalty_earned' => PublicTableLoyalty::earned($order),
                 'loyalty_redeem_transaction_id' => $redeemTxn?->id,
                 'loyalty_redeem_adjustment_id' => $redeemAdjustment?->id,
                 'loyalty_redeem_warning' => $redeemWarning,

@@ -245,7 +245,7 @@ class DeviceCustomersTest extends TestCase
         $this->assertSame('+96890001234', $customer['phone']);
         $this->assertSame(3000, $customer['wallet_balance_baisas']);
         $this->assertSame(['12345 A'], $customer['plates']);
-        $this->assertSame([['rule_id' => 7, 'points' => 240, 'stamps' => 3]], $customer['loyalty']);
+        $this->assertSame([['rule_id' => 7, 'points' => 240, 'stamps' => 3, 'available_points' => 240, 'available_stamps' => 3]], $customer['loyalty']);
     }
 
     public function test_show_404s_on_another_companys_customer(): void

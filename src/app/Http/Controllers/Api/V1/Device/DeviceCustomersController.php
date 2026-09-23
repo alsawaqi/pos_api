@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1\Device;
 
+use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Http\Requests\Api\V1\Device\CreateCustomerRequest;
 use App\Models\Customer;
 use App\Models\CustomerVehiclePlate;
@@ -192,7 +193,7 @@ class DeviceCustomersController
         $accounts = LoyaltyAccount::query()->where('customer_id', $customer->id)->get();
 
         return response()->json([
-            'data' => ['customer' => $this->mapCustomer($customer, $plates, $accounts)],
+            'data' => ['customer' => $this->mapCustomer($customer, $plates, $accounts, includeAvailable: false)],
             'errors' => [],
         ]);
     }
@@ -210,7 +211,7 @@ class DeviceCustomersController
      * @param  Collection<int, LoyaltyAccount>|null  $accounts
      * @return array<string, mixed>
      */
-    private function mapCustomer(Customer $customer, ?Collection $plates, ?Collection $accounts = null): array
+    private function mapCustomer(Customer $customer, ?Collection $plates, ?Collection $accounts = null, bool $includeAvailable = true): array
     {
         return [
             'id' => (int) $customer->id,
@@ -228,6 +229,10 @@ class DeviceCustomersController
                     'rule_id' => (int) $a->loyalty_rule_id,
                     'points' => (int) $a->point_balance,
                     'stamps' => (int) $a->stamp_count,
+                    ...($includeAvailable ? [
+                        'available_points' => max(0, (int) $a->point_balance - TableLoyaltyDiscount::pendingUnits((int) $customer->company_id, (int) $customer->id, (int) $a->loyalty_rule_id, 'points')),
+                        'available_stamps' => max(0, (int) $a->stamp_count - TableLoyaltyDiscount::pendingUnits((int) $customer->company_id, (int) $customer->id, (int) $a->loyalty_rule_id, 'stamps')),
+                    ] : []),
                 ])
                 ->values()
                 ->all(),

@@ -88,7 +88,7 @@ final class TableLoyaltyDiscount
         $amount = $value * $blocks;
         $account = LoyaltyAccount::query()->where('company_id', $order->company_id)->where('customer_id', $customer->id)
             ->where('loyalty_rule_id', $rule->id)->lockForUpdate()->first();
-        $reserved = self::pendingUnits($order, (int) $rule->id, $points ? 'points' : 'stamps');
+        $reserved = self::pendingUnits((int) $order->company_id, (int) $order->customer_id, (int) $rule->id, $points ? 'points' : 'stamps');
         if ($units > (int) ($account?->{$points ? 'point_balance' : 'stamp_count'} ?? 0) - $reserved) {
             throw AdjustTableBillAction::refusal('loyalty_insufficient', 'There are not enough available points or stamps for these blocks.');
         }
@@ -132,13 +132,13 @@ final class TableLoyaltyDiscount
     }
 
     /** Read under redeem's customer/account locks, across all branches of this merchant. */
-    private static function pendingUnits(Order $order, int $ruleId, string $unit): int
+    public static function pendingUnits(int $companyId, int $customerId, int $ruleId, string $unit): int
     {
         // Include this bill too: replacement retains the existing availability rule.
         // Do not lock other bills here; their table-graph locks precede the customer
         // lock. Reading committed slots avoids reversing that lock order.
-        $bills = Order::query()->where('company_id', $order->company_id)
-            ->where('customer_id', $order->customer_id)->whereNotNull('table_session_id')
+        $bills = Order::query()->where('company_id', $companyId)
+            ->where('customer_id', $customerId)->whereNotNull('table_session_id')
             ->whereNotIn('status', [Order::STATUS_PAID, Order::STATUS_VOID])
             ->whereIn('id', OrderDiscount::query()->select('order_id')
                 ->whereIn('amount_type_snapshot', self::TYPES)

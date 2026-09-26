@@ -43,8 +43,10 @@ final class ResolveQrCustomerAction
             ]);
 
             if ($created > 0) {
-                // Other tills receive the new plate through the customer delta.
-                $customer->touch();
+                // Table rounds already hold order/table locks. Touch only after
+                // commit, so an attaching device can keep customer-before-table
+                // lock order. The callback finishes before the response/delta.
+                DB::afterCommit(static fn () => $customer->touch());
             }
         }
 

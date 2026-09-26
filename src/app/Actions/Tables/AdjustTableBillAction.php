@@ -8,7 +8,6 @@ use App\Actions\Qr\PresentQrPendingOrderAction;
 use App\Actions\Qr\QrDineInException;
 use App\Actions\Qr\RefreshQrOrderTotalsAction;
 use App\Models\CompReason;
-use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Order;
@@ -17,6 +16,7 @@ use App\Models\OrderDiscount;
 use App\Models\QrOrderRound;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
+use App\Support\CustomerIdentity;
 use App\Support\Money;
 use App\Support\Pricing\Applicability;
 use App\Support\Pricing\DiscountRule;
@@ -77,8 +77,7 @@ final class AdjustTableBillAction
                 throw self::refusal('approval_required', 'Choose an approving manager from this merchant.');
             }
             if ($kind === 'customer') {
-                $customer = $mode === 'detach' ? null : Customer::query()->whereKey($adjustment['customer_id'])
-                    ->where('company_id', $device->company_id)->first();
+                $customer = $mode === 'detach' ? null : CustomerIdentity::survivor((int) $device->company_id, (int) $adjustment['customer_id']);
                 if ($mode === 'attach' && $customer === null) {
                     throw self::refusal('customer_not_found', 'The customer was not found for this merchant.');
                 }

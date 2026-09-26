@@ -10,6 +10,8 @@ use App\Models\Customer;
 use App\Models\CustomerVehiclePlate;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
+use App\Support\CanonicalPhone;
+use App\Support\CustomerIdentity;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
@@ -61,6 +63,25 @@ class DeviceCustomersController
             ->orderBy('name')
             ->limit(25)
             ->get();
+
+        if (CanonicalPhone::isPhoneQuery($raw)) {
+            $canonical = CanonicalPhone::of($raw);
+            $exact = Customer::query()->where('company_id', $companyId)
+                ->where(function ($query) use ($canonical, $raw): void {
+                    $query->where('phone_canonical', $canonical)->orWhere('phone', $raw);
+                })->orderBy('id')->first();
+            $seen = [];
+            $customers = new Collection(collect($exact === null ? [] : [$exact])->concat($customers)
+                ->filter(function (Customer $customer) use (&$seen): bool {
+                    $key = $customer->phone_canonical ?? 'id:'.$customer->id;
+                    if (isset($seen[$key])) {
+                        return false;
+                    }
+                    $seen[$key] = true;
+
+                    return true;
+                })->take(25)->values()->all());
+        }
 
         $customerIds = $customers->pluck('id')->all() ?: [0];
         $platesByCustomer = CustomerVehiclePlate::query()
@@ -128,31 +149,7 @@ class DeviceCustomersController
         $companyId = $device->company_id;
 
         $customer = DB::transaction(function () use ($data, $companyId): Customer {
-            // Find-or-create on phone (the natural key) so the POS can't
-            // spawn a duplicate customer for a returning phone number.
-            // withTrashed: a soft-deleted customer still OCCUPIES the
-            // (company_id, phone) unique slot — creating "fresh" would hit
-            // the index and 500 the device. A returning phone revives the
-            // deleted profile instead (plates + loyalty history intact).
-            $customer = Customer::query()
-                ->withTrashed()
-                ->where('company_id', $companyId)
-                ->where('phone', $data['phone'])
-                ->first();
-
-            if ($customer !== null && $customer->trashed()) {
-                $customer->restore();
-                // The cashier just typed this name — a revived profile must
-                // not resurface under its stale pre-deletion one.
-                $customer->update(['name' => $data['name']]);
-            } elseif ($customer === null) {
-                $customer = Customer::create([
-                    'uuid' => (string) Str::uuid(),
-                    'company_id' => $companyId,
-                    'name' => $data['name'],
-                    'phone' => $data['phone'],
-                ]);
-            }
+            $customer = CustomerIdentity::findOrCreate((int) $companyId, $data['phone'], $data['name'], true);
 
             if (! empty($data['plate_number'])) {
                 // P-F2 — plates are many-to-many: keyed on (company,

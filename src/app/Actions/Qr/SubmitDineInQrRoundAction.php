@@ -13,6 +13,7 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\TableSession;
+use App\Support\CanonicalPhone;
 use App\Support\Money;
 use App\Support\Pricing\Totals;
 use DateTimeImmutable;
@@ -236,7 +237,7 @@ final class SubmitDineInQrRoundAction
                     ? null
                     : Customer::query()->whereKey((int) $order->customer_id)->value('phone');
                 $identityDiffers = $order === null
-                    || trim((string) $currentPhone) !== $phone
+                    || ! CanonicalPhone::same(trim((string) $currentPhone), $phone)
                     || $order->plate_number !== $plate;
 
                 if ($phonePresent && $identityDiffers && ! $this->phoneGuard->allows(

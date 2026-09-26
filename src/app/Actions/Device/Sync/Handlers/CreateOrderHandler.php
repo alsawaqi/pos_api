@@ -25,6 +25,7 @@ use App\Models\QrOrderRound;
 use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Support\CustomerIdentity;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -101,6 +102,13 @@ class CreateOrderHandler implements SyncEventHandler
         $order = (array) ($event->payload_json['order'] ?? null);
         $this->validate($order, $event->event_type);
         $this->assertMoneyInvariant($order);
+        if (isset($order['customer_id'])) {
+            $customer = CustomerIdentity::survivor((int) $device->company_id, (int) $order['customer_id']);
+            if ($customer === null) {
+                throw new RuntimeException('order references a customer outside the device tenant');
+            }
+            $order['customer_id'] = (int) $customer->id;
+        }
         $this->assertReferencesInTenant($order, $device);
         if ($enforceGeofence) {
             $this->enforceGeofence($order, $device);
@@ -377,7 +385,7 @@ class CreateOrderHandler implements SyncEventHandler
 
         $customerId = isset($order['customer_id']) ? (int) $order['customer_id'] : null;
         if ($customerId !== null
-            && ! Customer::query()->where('company_id', $companyId)->whereKey($customerId)->exists()) {
+            && CustomerIdentity::survivor((int) $companyId, $customerId) === null) {
             throw new RuntimeException('order references a customer outside the device tenant');
         }
 

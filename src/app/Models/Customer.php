@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Support\CanonicalPhone;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -23,6 +24,13 @@ class Customer extends Model
     protected $table = 'pos_customers';
 
     protected $guarded = [];
+
+    protected static function booted(): void
+    {
+        static::saving(static function (self $row): void {
+            $row->phone_canonical = CanonicalPhone::of($row->phone);
+        });
+    }
 
     /**
      * @return array<string, string>

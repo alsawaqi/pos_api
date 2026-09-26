@@ -510,6 +510,9 @@ return new class extends Migration
         });
 
         Schema::create('pos_customers', function (Blueprint $table): void {
+            $table->string('phone_canonical', 32)->nullable();
+            $table->foreignId('merged_into_customer_id')->nullable()->index()->constrained('pos_customers');
+            $table->index(['company_id', 'phone_canonical'], 'pos_customers_company_canonical_idx');
             $table->id();
             $table->uuid('uuid')->unique();
             $table->unsignedBigInteger('company_id');

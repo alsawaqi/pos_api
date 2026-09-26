@@ -59,6 +59,57 @@ final class CustomerIdentity
         throw new RuntimeException('Customer merge chain is invalid.');
     }
 
+    /**
+     * Caller owns the write transaction. Discover the chain, lock in id order,
+     * then resolve again from locked rows. If a concurrent merge extended it,
+     * roll back this savepoint before acquiring the enlarged sorted set.
+     */
+    public static function lockedSurvivor(int $companyId, int $id): ?Customer
+    {
+        if (DB::transactionLevel() < 1) {
+            throw new RuntimeException('Customer write resolution requires a transaction.');
+        }
+        for ($attempt = 0; ; $attempt++) {
+            $ids = [];
+            $next = $id;
+            while (! isset($ids[$next])) {
+                $ids[$next] = $next;
+                $row = Customer::withTrashed()->where('company_id', $companyId)->find($next);
+                if ($row?->merged_into_customer_id === null) {
+                    break;
+                }
+                $next = (int) $row->merged_into_customer_id;
+            }
+            try {
+                return DB::transaction(function () use ($companyId, $id, $ids): ?Customer {
+                    $rows = Customer::withTrashed()->where('company_id', $companyId)
+                        ->whereIn('id', $ids)->orderBy('id')->sharedLock()->get()->keyBy('id');
+                    $seen = [];
+                    $next = $id;
+                    while (! isset($seen[$next])) {
+                        $seen[$next] = true;
+                        if (! isset($ids[$next])) {
+                            throw new RuntimeException('Customer merge chain changed while locking.');
+                        }
+                        $row = $rows->get($next);
+                        if ($row === null) {
+                            return null;
+                        }
+                        if ($row->merged_into_customer_id === null) {
+                            return $row->trashed() ? null : $row;
+                        }
+                        $next = (int) $row->merged_into_customer_id;
+                    }
+                    throw new RuntimeException('Customer merge chain is invalid.');
+                });
+            } catch (RuntimeException $exception) {
+                if ($exception->getMessage() !== 'Customer merge chain changed while locking.' || $attempt >= 4) {
+                    throw $exception;
+                }
+            }
+        }
+    }
+
     public static function findOrCreate(int $companyId, string $phone, string $name, bool $renameRevived = false): Customer
     {
         return DB::transaction(function () use ($companyId, $phone, $name, $renameRevived): Customer {

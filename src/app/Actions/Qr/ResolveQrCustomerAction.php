@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Models\Customer;
 use App\Support\CustomerIdentity;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -23,6 +24,13 @@ final class ResolveQrCustomerAction
 
         $customer = CustomerIdentity::findOrCreate($companyId, $phone, $phone);
 
+        return $this->forCustomer($customer, $plateNumber);
+    }
+
+    /** Keep the bill's selected identity while applying the usual plate delta. */
+    public function forCustomer(Customer $customer, ?string $plateNumber): ResolvedQrCustomer
+    {
+        $companyId = (int) $customer->company_id;
         $normalisedPlate = self::normalisePlate($plateNumber);
         if ($normalisedPlate !== null) {
             $created = DB::table('pos_customer_vehicle_plates')->insertOrIgnore([

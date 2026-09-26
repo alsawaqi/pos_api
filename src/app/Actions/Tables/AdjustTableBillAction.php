@@ -8,6 +8,7 @@ use App\Actions\Qr\PresentQrPendingOrderAction;
 use App\Actions\Qr\QrDineInException;
 use App\Actions\Qr\RefreshQrOrderTotalsAction;
 use App\Models\CompReason;
+use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Order;
@@ -23,6 +24,7 @@ use App\Support\Pricing\DiscountRule;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 final class AdjustTableBillAction
 {
@@ -36,7 +38,23 @@ final class AdjustTableBillAction
 
     public function handle(Device $device, array $payload, CarbonInterface $clientAt, CarbonInterface $receivedAt, ?string $uuid = null): array
     {
-        return $this->resolver->locked($device, $payload, 'adjust', function ($device, $tables, $orders, $sessions, $seatings) use ($payload, $uuid): array {
+        Validator::make($payload, ResolveStaffSeatingAction::rules('adjust'))->validate();
+
+        return DB::transaction(function () use ($device, $payload, $uuid): array {
+            // Match the merge's customer-before-order lock order. Preserve the
+            // original payload for the immutable request hash and replay.
+            $adjustment = $payload['adjustment'];
+            $customer = $adjustment['kind'] === 'customer' && $adjustment['mode'] === 'attach'
+                ? CustomerIdentity::lockedSurvivor((int) $device->company_id, (int) $adjustment['customer_id'])
+                : null;
+
+            return $this->adjust($device, $payload, $uuid, $customer);
+        });
+    }
+
+    private function adjust(Device $device, array $payload, ?string $uuid, ?Customer $customer): array
+    {
+        return $this->resolver->locked($device, $payload, 'adjust', function ($device, $tables, $orders, $sessions, $seatings) use ($payload, $uuid, $customer): array {
             $resolved = $this->resolver->resolve($seatings, $payload['seating_key'], $uuid);
             $seat = $resolved['primary'];
             $order = $seat === null ? null : $orders->get((int) $seat->order_id);
@@ -77,7 +95,6 @@ final class AdjustTableBillAction
                 throw self::refusal('approval_required', 'Choose an approving manager from this merchant.');
             }
             if ($kind === 'customer') {
-                $customer = $mode === 'detach' ? null : CustomerIdentity::survivor((int) $device->company_id, (int) $adjustment['customer_id']);
                 if ($mode === 'attach' && $customer === null) {
                     throw self::refusal('customer_not_found', 'The customer was not found for this merchant.');
                 }

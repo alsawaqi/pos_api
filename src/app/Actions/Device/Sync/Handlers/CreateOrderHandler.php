@@ -102,19 +102,19 @@ class CreateOrderHandler implements SyncEventHandler
         $order = (array) ($event->payload_json['order'] ?? null);
         $this->validate($order, $event->event_type);
         $this->assertMoneyInvariant($order);
-        if (isset($order['customer_id'])) {
-            $customer = CustomerIdentity::survivor((int) $device->company_id, (int) $order['customer_id']);
-            if ($customer === null) {
-                throw new RuntimeException('order references a customer outside the device tenant');
-            }
-            $order['customer_id'] = (int) $customer->id;
-        }
-        $this->assertReferencesInTenant($order, $device);
         if ($enforceGeofence) {
             $this->enforceGeofence($order, $device);
         }
 
         return DB::transaction(function () use ($order, $device, $event, $status): array {
+            if (isset($order['customer_id'])) {
+                $customer = CustomerIdentity::lockedSurvivor((int) $device->company_id, (int) $order['customer_id']);
+                if ($customer === null) {
+                    throw new RuntimeException('order references a customer outside the device tenant');
+                }
+                $order['customer_id'] = (int) $customer->id;
+            }
+            $this->assertReferencesInTenant($order, $device);
             $existing = Order::query()->where('uuid', $order['uuid'])->lockForUpdate()->first();
             if ($existing !== null
                 && ((int) $existing->company_id !== (int) $device->company_id

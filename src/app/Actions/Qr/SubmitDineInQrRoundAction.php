@@ -233,9 +233,12 @@ final class SubmitDineInQrRoundAction
                 $plate = isset($payload['plate_number'])
                     ? ResolveQrCustomerAction::normalisePlate((string) $payload['plate_number'])
                     : $order?->plate_number;
-                $currentPhone = $order?->customer_id === null
+                $currentCustomer = $order?->customer_id === null
                     ? null
-                    : Customer::query()->whereKey((int) $order->customer_id)->value('phone');
+                    : Customer::query()->where('company_id', $session->company_id)->find((int) $order->customer_id);
+                $currentPhone = $currentCustomer?->phone;
+                $sameCustomer = $currentCustomer !== null
+                    && CanonicalPhone::same(trim((string) $currentPhone), $phone);
                 $identityDiffers = $order === null
                     || ! CanonicalPhone::same(trim((string) $currentPhone), $phone)
                     || $order->plate_number !== $plate;
@@ -252,11 +255,11 @@ final class SubmitDineInQrRoundAction
                         'Too many customer identities were submitted.',
                     );
                 }
-                $customer = $phonePresent ? $this->customers->handle(
-                    (int) $session->company_id,
-                    $phone,
-                    $plate,
-                ) : null;
+                if ($phonePresent) {
+                    $customer = $sameCustomer
+                        ? $this->customers->forCustomer($currentCustomer, $plate)
+                        : $this->customers->handle((int) $session->company_id, $phone, $plate);
+                }
             }
 
             if ($order !== null && $customer !== null && $order->customer_id !== $customer->customerId && TableLoyaltyDiscount::amount($order) > 0) {

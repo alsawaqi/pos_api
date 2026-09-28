@@ -15,11 +15,13 @@ final class DeviceQrExpiredOrdersController
 {
     public function preview(Request $request, CancelExpiredQuickOrdersAction $action): JsonResponse
     {
-        $input = $request->validate(['order_uuid' => ['sometimes', 'uuid']]);
+        $input = $request->validate(['order_uuid' => ['sometimes', 'uuid'],
+            'exclude_order_uuids' => ['sometimes', 'array', 'max:500'], 'exclude_order_uuids.*' => ['uuid', 'distinct']]);
         /** @var Device $device */
         $device = $request->user();
         try {
-            return QrApiResponse::success($action->preview($device, $input['order_uuid'] ?? null), ['money_unit' => 'baisas']);
+            return QrApiResponse::success($action->preview($device, $input['order_uuid'] ?? null,
+                array_values($input['exclude_order_uuids'] ?? [])), ['money_unit' => 'baisas']);
         } catch (QrChargeException $e) {
             return QrApiResponse::failure($e->codeName, $e->getMessage(), $e->httpStatus);
         }

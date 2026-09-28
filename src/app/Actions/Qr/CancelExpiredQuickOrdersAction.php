@@ -59,11 +59,16 @@ final class CancelExpiredQuickOrdersAction
         return ($lock ? $query->lockForUpdate() : $query)->first();
     }
 
-    public function preview(Device $device, ?string $uuid): array
+    /**
+     * @param  list<string>  $exclude  bulk review only: orders the device leaves out because its own
+     *                                 local payment evidence needs review; never in the proof, never cancelled.
+     */
+    public function preview(Device $device, ?string $uuid, array $exclude = []): array
     {
         $this->present->assertAttended($device);
         $orders = $this->orders($device)->when($uuid !== null, fn ($q) => $q->where('uuid', $uuid))
             ->when($uuid === null, fn ($q) => $q->whereIn('status', [Order::STATUS_HELD, Order::STATUS_AWAITING_PAYMENT]))
+            ->when($uuid === null && $exclude !== [], fn ($q) => $q->whereNotIn('uuid', $exclude))
             ->orderBy('opened_at')->orderBy('id')->with(['items.addons', 'comps'])->get();
         if ($uuid !== null && $orders->isEmpty()) {
             throw new QrChargeException('order_not_found', 404, 'The order was not found in this branch.');

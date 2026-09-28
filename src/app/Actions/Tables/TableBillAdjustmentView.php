@@ -8,6 +8,7 @@ use App\Actions\Qr\RefreshQrOrderTotalsAction;
 use App\Models\Customer;
 use App\Models\Order;
 use App\Models\OrderComp;
+use App\Models\OrderDiscount;
 use App\Models\TableSessionEvent;
 use App\Support\Money;
 use Illuminate\Support\Arr;
@@ -22,6 +23,13 @@ final class TableBillAdjustmentView
         $loyalty = TableLoyaltyDiscount::amount($order);
 
         return ($loyalty > 0 ? ['loyalty_discount_baisas' => $loyalty] : []) + ['manual_discount_baisas' => $rows->sum(fn ($row): int => Money::toBaisas($row->amount)),
+            'discount_sources' => OrderDiscount::query()->where('order_id', $order->id)->orderBy('id')->get()
+                ->map(fn ($row): array => ['source' => in_array($row->amount_type_snapshot, TableLoyaltyDiscount::TYPES, true) ? 'table_loyalty_redeem' : (in_array($row->amount_type_snapshot, RefreshQrOrderTotalsAction::MANUAL_TYPES, true) ? 'manual' : ($row->offer_id !== null ? 'offer' : ($row->order_item_id !== null ? 'line' : 'order'))),
+                    'order_item_id' => $row->order_item_id === null ? null : (int) $row->order_item_id,
+                    'discount_id' => $row->discount_id === null ? null : (int) $row->discount_id,
+                    'offer_id' => $row->offer_id === null ? null : (int) $row->offer_id,
+                    'name' => $row->name_snapshot, 'amount_type' => $row->amount_type_snapshot,
+                    'amount_baisas' => Money::toBaisas($row->amount)])->all(),
             'discounts' => $rows->map(fn ($row): array => ['name' => $row->name_snapshot,
                 'amount_baisas' => Money::toBaisas($row->amount), 'amount_type' => $row->amount_type_snapshot, 'reason' => $row->reason])->all()];
     }

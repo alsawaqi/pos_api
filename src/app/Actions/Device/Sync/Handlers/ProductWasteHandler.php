@@ -43,7 +43,7 @@ class ProductWasteHandler implements SyncEventHandler
     /** Mirror of pos_merchant's App\Enums\WasteReason (no enum exists here). */
     private const REASONS = ['expired', 'spoiled', 'broken', 'dropped', 'contamination', 'other'];
 
-    public function handle(SyncEvent $event, Device $device): array
+    public function handle(SyncEvent $event, Device $device, ?array $preparedQuickCancellation = null): array
     {
         $payload = (array) $event->payload_json;
 
@@ -94,9 +94,12 @@ class ProductWasteHandler implements SyncEventHandler
             $resolved[] = ['product' => $product, 'qty' => round((float) $line['qty'], 3), 'reason' => $reason];
         }
 
-        return DB::transaction(function () use ($event, $device, $payload, $resolved, $companyId, $branchId, $staffId, $note, $wastedAt): array {
+        return DB::transaction(function () use ($event, $device, $payload, $resolved, $companyId, $branchId, $staffId, $note, $wastedAt, $preparedQuickCancellation): array {
             $authority = $this->preparedTableWasteAuthority($event, $device, $payload, $wastedAt);
-            $preparedTableWaste = $authority !== null;
+            // Internal capability only: the QR cancellation action holds the
+            // scoped order/items, caps these quantities and commits its audit
+            // atomically. No HTTP/sync payload field can supply this argument.
+            $preparedTableWaste = $authority !== null || $preparedQuickCancellation !== null;
             $wastedLines = 0;
             $totalQty = 0.0;
 
@@ -146,6 +149,7 @@ class ProductWasteHandler implements SyncEventHandler
 
             return [
                 ...($authority === null ? [] : ['table_cancellation_waste' => $authority]),
+                ...($preparedQuickCancellation === null ? [] : ['quick_cancellation_waste' => $preparedQuickCancellation]),
                 'wasted_lines' => $wastedLines,
                 'total_qty' => number_format($totalQty, 3, '.', ''),
             ];

@@ -28,6 +28,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceQrClaimChargeController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClaimSettlementController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrClearTableController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrConfirmRoundController;
+use App\Http\Controllers\Api\V1\Device\DeviceQrExpiredOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrFallbackToCounterController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrOpenTableController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrPaymentRecoveryController;
@@ -235,6 +236,8 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/order-attention', DeviceOrderAttentionController::class)
             ->middleware('throttle:qr-table-device-read')
             ->name('device.order-attention');
+        Route::get('device/qr/pending-orders/cancel-preview', [DeviceQrExpiredOrdersController::class, 'preview'])->middleware('throttle:qr-table-device-read');
+        Route::post('device/qr/pending-orders/cancel', [DeviceQrExpiredOrdersController::class, 'cancel'])->middleware(['throttle:qr-table-device-write', 'throttle:pos-login']);
         Route::get('device/qr/pending-orders', [DeviceQrPendingOrdersController::class, 'index'])
             ->middleware('throttle:qr-table-device-read')
             ->name('device.qr.pending-orders');

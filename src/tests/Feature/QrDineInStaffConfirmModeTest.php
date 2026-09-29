@@ -1013,7 +1013,7 @@ final class QrDineInStaffConfirmModeTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     public function test_f32_customer_round_shared_addons_price_each_line(): void

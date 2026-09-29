@@ -1420,7 +1420,7 @@ final class QrDineInLifetimeInvariantTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)
+        return $this->withToken((string) $device->plainTextToken)
             ->getJson(self::AWAITING_URL)
             ->assertOk()
             ->json('data.orders');
@@ -1431,7 +1431,7 @@ final class QrDineInLifetimeInvariantTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)
+        return $this->withToken((string) $device->plainTextToken)
             ->getJson(self::TABLE_BOARD_URL)
             ->assertOk()
             ->json('data.tables');
@@ -1448,7 +1448,7 @@ final class QrDineInLifetimeInvariantTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     /** @return array<string, mixed> */

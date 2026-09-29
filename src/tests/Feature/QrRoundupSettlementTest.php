@@ -112,7 +112,7 @@ final class QrRoundupSettlementTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     private function claim(Device $station, Order $order): TestResponse

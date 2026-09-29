@@ -171,7 +171,7 @@ final class DeviceSyncPricingValidatorTest extends TestCase
             ['target_device_id' => (int) $target->getKey()],
         );
 
-        $response = $this->push((string) $source->device_token, [$hold, $transfer])->assertOk();
+        $response = $this->push((string) $source->plainTextToken, [$hold, $transfer])->assertOk();
 
         $this->assertSame('processed', $response->json('data.results.0.status'));
         $this->assertSame('processed', $response->json('data.results.1.status'));

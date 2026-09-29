@@ -110,7 +110,7 @@ final class CanonicalCustomerTest extends TestCase
         $station = $this->seatingDevice('payment_station');
         $till = $this->seatingDevice();
         $product = $this->seatingProduct();
-        $this->withToken($station->device_token)->postJson('/api/v1/device/qr/rotate')->assertOk();
+        $this->withToken($station->plainTextToken)->postJson('/api/v1/device/qr/rotate')->assertOk();
         $quick = QrSession::whereNull('table_id')->sole();
         $this->postJson('/api/v1/public/qr/bind', ['token' => $quick->token, 'client_secret' => 'fix4-quick'])->assertOk();
         $lines = [['product_id' => $product->id, 'qty' => 2, 'addon_ids' => [], 'notes' => null]];
@@ -123,7 +123,7 @@ final class CanonicalCustomerTest extends TestCase
         $order = $this->seatingOrder($seat, ['customer_id' => $a->id]);
         $this->seatingRound($seat, $order);
         $this->app['auth']->forgetGuards();
-        $open = $this->withToken($station->device_token)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
+        $open = $this->withToken($station->plainTextToken)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
         $bind = $this->postJson('/api/v1/public/qr/table-bind', ['table_token' => $open->json('data.table_token'), 'client_secret' => 'fix4-table'])->assertOk();
         $this->withHeaders(['X-QR-Session' => $bind->json('data.session_uuid'), 'X-QR-Client-Secret' => 'fix4-table']);
         $order = Order::whereNotNull('table_session_id')->sole();
@@ -132,7 +132,7 @@ final class CanonicalCustomerTest extends TestCase
         $rule = LoyaltyRule::create(['uuid' => Str::uuid(), 'company_id' => 100, 'name' => 'Fix4 points', 'type' => 'spend_based', 'status' => 'active', 'config_json' => ['redemption_points' => 100, 'redemption_value' => '0.500']]);
         LoyaltyAccount::create(['uuid' => Str::uuid(), 'company_id' => 100, 'customer_id' => $a->id, 'loyalty_rule_id' => $rule->id, 'point_balance' => 200, 'stamp_count' => 0]);
         $this->app['auth']->forgetGuards();
-        $this->withToken($till->device_token)->postJson('/api/v1/device/tables/'.$seat->uuid.'/adjust', [
+        $this->withToken($till->plainTextToken)->postJson('/api/v1/device/tables/'.$seat->uuid.'/adjust', [
             'table_id' => $seat->table_id, 'seating_key' => $seat->uuid, 'queued_offline' => false, 'client_request_id' => (string) Str::uuid(),
             'adjustment' => ['kind' => 'loyalty', 'mode' => 'redeem', 'rule_id' => $rule->id, 'blocks' => 1, 'approved_by_staff_id' => 7, 'authorized_by' => 'Fix4 staff'],
         ])->assertOk();

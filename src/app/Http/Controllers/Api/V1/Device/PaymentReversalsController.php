@@ -60,7 +60,9 @@ final class PaymentReversalsController
         }
 
         return QrApiResponse::success(['reversals' => PaymentReversal::query()
-            ->where('device_id', $request->user()->id)->whereIn('status', $statuses)
+            ->where('device_id', $request->user()->id)
+            ->where('company_id', $request->user()->company_id)
+            ->where('branch_id', $request->user()->branch_id)->whereIn('status', $statuses)
             ->orderBy('id')->get()->map(fn ($row) => ReversalContract::present($row))->all()]);
     }
 

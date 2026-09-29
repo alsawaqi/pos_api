@@ -23,7 +23,7 @@ final class QrCheckoutTest extends QrPendingTestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) ($device ?? $this->till)->device_token)
+        return $this->withToken((string) ($device ?? $this->till)->plainTextToken)
             ->getJson('/api/v1/device/qr/orders/'.$order->uuid.'/checkout');
     }
 
@@ -149,6 +149,8 @@ final class QrCheckoutTest extends QrPendingTestCase
         $this->claim($order)->assertOk();
         $otherCompany = $this->device('fixed_pos');
         $otherCompany->forceFill(['company_id' => 999])->save();
+        DB::table('pos_companies')->insertOrIgnore(['id' => 999, 'name' => 'Other', 'status' => 'active']);
+        $otherCompany->issueCredential();
         foreach ([$this->device('fixed_pos', 20), $otherCompany] as $device) {
             $this->checkout($order, $device)->assertNotFound();
         }

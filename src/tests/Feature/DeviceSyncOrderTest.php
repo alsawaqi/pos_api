@@ -48,6 +48,7 @@ class DeviceSyncOrderTest extends TestCase
     private function seedCatalogue(): void
     {
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
 
         DB::table('pos_products')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Latte', 'base_price' => 1.500, 'status' => 'active'] + $t,
@@ -395,6 +396,7 @@ class DeviceSyncOrderTest extends TestCase
         SyncEvent::create([
             'client_event_id' => $pay['client_event_id'],
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'event_type' => 'order.pay',
             'payload_json' => $pay['payload'],
             'client_timestamp' => now(),
@@ -537,6 +539,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device(); // company 100 / branch 10
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_products')->insert([
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'Foreign Latte', 'base_price' => 9.999, 'status' => 'active'] + $t,
         ]);
@@ -557,6 +560,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_addons')->insert([
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'add_on_group_id' => 1, 'name' => 'Foreign shot', 'price_delta' => 0.500, 'status' => 'active'] + $t,
         ]);
@@ -579,6 +583,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_customers')->insert([
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'name' => 'Foreign Cust', 'phone' => '90000099'] + $t,
         ]);
@@ -596,6 +601,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_tables')->insert([
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'floor_id' => 1, 'label' => 'T99'] + $t,
         ]);
@@ -625,19 +631,19 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertDatabaseCount('pos_orders', 0);
     }
 
-    public function test_order_create_accepts_a_soft_deleted_staff_member(): void
+    public function test_order_create_refuses_a_soft_deleted_staff_member(): void
     {
         $this->seedCatalogue();
         $this->device();
-        // An offline order queued by a since-terminated cashier must still
-        // settle — the guard is withTrashed-tolerant.
+        // W13 requires active, assigned staff even for offline attribution.
         DB::table('pos_staff')->where('id', 7)->update(['deleted_at' => now()]);
 
         $uuid = (string) Str::uuid();
         $r = $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk()->json('data.results.0');
 
-        $this->assertSame('processed', $r['status']);
-        $this->assertSame(7, (int) Order::firstWhere('uuid', $uuid)->staff_id);
+        $this->assertSame('failed', $r['status']);
+        $this->assertStringContainsString('staff member', $r['result']['error']);
+        $this->assertDatabaseCount('pos_orders', 0);
     }
 
     public function test_order_create_accepts_a_soft_deleted_product_and_addon(): void
@@ -666,6 +672,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_tables')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
             ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
@@ -693,6 +700,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_tables')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
             ['id' => 99, 'uuid' => (string) Str::uuid(), 'company_id' => 200, 'floor_id' => 1, 'label' => 'T99'] + $t,
@@ -715,6 +723,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_tables')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
             ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
@@ -744,6 +753,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_tables')->insert([
             ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,
         ]);
@@ -766,6 +776,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->seedCatalogue();
         $this->device();
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_customers')->insert([
             ['id' => 5, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Own Cust', 'phone' => '90000005'] + $t,
         ]);
@@ -885,6 +896,7 @@ class DeviceSyncOrderTest extends TestCase
     private function seedLoyaltyRule(): void
     {
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_customers')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Ali', 'phone' => '+96890000001'] + $t,
         ]);
@@ -1002,6 +1014,7 @@ class DeviceSyncOrderTest extends TestCase
         ]);
 
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         $profileId = (int) DB::table('pos_commission_profiles')->insertGetId([
             'uuid' => (string) Str::uuid(), 'company_id' => 100, 'is_active' => true, 'merchant_percent' => 95,
         ] + $t);
@@ -1047,6 +1060,7 @@ class DeviceSyncOrderTest extends TestCase
             'company_id' => 100, 'branch_id' => 10, 'bank_id' => 5, 'terminal_id' => 'TID-9', 'commission_profile_id' => 7,
         ]);
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         $profileId = (int) DB::table('pos_commission_profiles')->insertGetId([
             'uuid' => (string) Str::uuid(), 'company_id' => 100, 'is_active' => true, 'merchant_percent' => 95,
         ] + $t);
@@ -1084,6 +1098,7 @@ class DeviceSyncOrderTest extends TestCase
             'company_id' => 100, 'branch_id' => 10, 'bank_id' => 5, 'terminal_id' => 'TID-9', 'commission_profile_id' => 7,
         ]);
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         $profileId = (int) DB::table('pos_commission_profiles')->insertGetId([
             'uuid' => (string) Str::uuid(), 'company_id' => 100, 'is_active' => true, 'merchant_percent' => 95,
         ] + $t);
@@ -1110,5 +1125,37 @@ class DeviceSyncOrderTest extends TestCase
         // order's rows — the merchant/bank siblings survive too.
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->whereNotNull('invoice_id')->count());
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->where('party_type', 'merchant')->count());
+    }
+
+    public function test_w13_rejects_same_company_other_branch_tables_and_inactive_or_other_branch_staff(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        DB::table('pos_floors')->insert(['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 20, 'name' => 'Other', 'status' => 'active']);
+        DB::table('pos_tables')->insert(['id' => 55, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 2, 'label' => 'Other branch', 'status' => 'active']);
+        foreach ([['table_id' => 55], ['joined_table_ids' => [55]]] as $attributes) {
+            $this->push('mdev_ord', [$this->createEvent((string) Str::uuid(), $attributes)])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+        }
+        foreach ([['status' => 'inactive'], ['status' => 'active', 'branch_id' => 20]] as $attributes) {
+            DB::table('pos_staff')->where('id', 7)->update($attributes);
+            $this->push('mdev_ord', [$this->createEvent((string) Str::uuid())])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+        }
+        $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_w13_order_client_event_ids_are_unique_per_device(): void
+    {
+        $this->seedCatalogue();
+        $this->device('same-event-a');
+        $this->device('same-event-b');
+        $eventId = (string) Str::uuid();
+        foreach (['same-event-a', 'same-event-b'] as $token) {
+            $this->app['auth']->forgetGuards();
+            $event = $this->createEvent((string) Str::uuid());
+            $event['client_event_id'] = $eventId;
+            $this->push($token, [$event])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+        }
+        $this->assertDatabaseCount('pos_orders', 2);
+        $this->assertSame(2, Order::where('client_event_id', $eventId)->distinct()->count('device_id'));
     }
 }

@@ -177,7 +177,7 @@ class TenantScopedEventIdentityTest extends TestCase
 
         $this->assertSame(SyncEvent::STATUS_FAILED, $res->json('data.results.0.status'));
         $this->assertSame(
-            'order uuid already exists outside the device tenant',
+            'order not found',
             $res->json('data.results.0.result.error'),
         );
 
@@ -211,7 +211,7 @@ class TenantScopedEventIdentityTest extends TestCase
         $this->assertTrue($retry->json('data.results.0.duplicate'));
         $this->assertSame(SyncEvent::STATUS_FAILED, $retry->json('data.results.0.status'));
         $this->assertSame(
-            'order uuid already exists outside the device tenant',
+            'order not found',
             $retry->json('data.results.0.result.error'),
         );
         $this->assertSame(1, Order::query()->where('uuid', $collidingUuid)->count());

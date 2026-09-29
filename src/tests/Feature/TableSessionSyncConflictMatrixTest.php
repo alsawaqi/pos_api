@@ -305,7 +305,7 @@ final class TableSessionSyncConflictMatrixTest extends TestCase
     private function push(Device $device, string $operation, array $payload, string $outcome, bool $changed, ?string $clientAt = null): array
     {
         app('auth')->forgetGuards();
-        $response = $this->withToken((string) $device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.'.$operation,
                 'client_timestamp' => $clientAt ?? now()->toIso8601String(), 'payload' => $payload,
@@ -349,7 +349,7 @@ final class TableSessionSyncConflictMatrixTest extends TestCase
         $station = $this->seatingDevice('payment_station');
         $table = $this->seatingTable('QR party');
         app('auth')->forgetGuards();
-        $response = $this->withToken((string) $station->device_token)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
+        $response = $this->withToken((string) $station->plainTextToken)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
         $session = QrSession::query()->where('uuid', $response->json('data.session_uuid'))->sole();
         $secret = 't4-qr-party-secret';
         $this->postJson('/api/v1/public/qr/table-bind', ['table_token' => $table->qr_token, 'client_secret' => $secret])->assertOk();

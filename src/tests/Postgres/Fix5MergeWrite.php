@@ -27,7 +27,7 @@ if (DB::getDriverName() !== 'pgsql' || DB::connection()->getDatabaseName() !== '
     throw new RuntimeException('Disposable qr_fix4_fix5 PostgreSQL only.');
 }
 [$self, $mode, $label, $kind] = $argv + [null, null, null, null];
-$stateFile = '/state/'.$label.'.json';
+$stateFile = (getenv('POS_RACE_STATE_DIR') ?: '/state').'/'.$label.'.json';
 $check = static function (bool $condition, string $message): void {
     if (! $condition) {
         throw new RuntimeException($message);
@@ -69,7 +69,7 @@ if ($mode === 'seed') {
     $rule = LoyaltyRule::create(['uuid' => Str::uuid(), 'company_id' => $company, 'name' => 'FIX5 points', 'type' => 'spend_based', 'status' => 'active', 'config_json' => ['points_per_omr' => 0, 'redemption_points' => 100, 'redemption_value' => '0.500']]);
     $account = LoyaltyAccount::create(['uuid' => Str::uuid(), 'company_id' => $company, 'customer_id' => $survivor->id, 'loyalty_rule_id' => $rule->id, 'point_balance' => 200, 'stamp_count' => 0]);
     LoyaltyAccount::create(['uuid' => Str::uuid(), 'company_id' => $company, 'customer_id' => $source->id, 'loyalty_rule_id' => $rule->id, 'point_balance' => 100, 'stamp_count' => 0]);
-    $state = ['company' => $company, 'branch' => $branch, 'staff' => $staff, 'device' => $device->id, 'token' => $device->device_token, 'target' => $target->id, 'product' => $product->id,
+    $state = ['company' => $company, 'branch' => $branch, 'staff' => $staff, 'device' => $device->id, 'token' => $device->plainTextToken, 'target' => $target->id, 'product' => $product->id,
         'survivor' => $survivor->id, 'source' => $source->id, 'rule' => $rule->id, 'account' => $account->id, 'order_uuid' => (string) Str::uuid(), 'kind' => $kind];
     if (str_starts_with($kind, 'attach')) {
         $fixture = new class

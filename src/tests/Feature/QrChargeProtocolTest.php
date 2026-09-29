@@ -129,7 +129,7 @@ final class QrChargeProtocolTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     /**
@@ -547,7 +547,7 @@ final class QrChargeProtocolTest extends TestCase
             $order = $this->order($this->qrSession($station));
             app('auth')->forgetGuards();
 
-            $response = $this->withToken((string) $station->device_token)->json(
+            $response = $this->withToken((string) $station->plainTextToken)->json(
                 'POST',
                 self::CLAIM_URL,
                 [

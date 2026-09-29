@@ -34,7 +34,7 @@ final class TableSessionFeedTest extends TestCase
             $ids[] = $this->event($seating)->id;
             $this->event($other);
         }
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/feed')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/feed')
             ->assertOk()->assertJsonCount(50, 'data.events')
             ->assertJsonPath('data.events.0.id', $ids[5])
             ->assertJsonPath('data.events.49.id', $ids[54])
@@ -55,7 +55,7 @@ final class TableSessionFeedTest extends TestCase
     {
         $device = $this->seatingDevice();
         $this->event($this->seatingRow($this->seatingTable('Foreign branch', 20)));
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/feed')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/feed')
             ->assertExactJson(['data' => ['events' => []], 'meta' => ['latest_id' => 0, 'has_more' => false], 'errors' => []]);
     }
 
@@ -66,7 +66,7 @@ final class TableSessionFeedTest extends TestCase
         for ($i = 0; $i < 101; $i++) {
             $this->event($seating);
         }
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/feed?after=0&limit=100')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/feed?after=0&limit=100')
             ->assertOk()->assertJsonCount(100, 'data.events')->assertJsonPath('meta.has_more', true);
         foreach (['after=-1', 'after=abc', 'after=1.2', 'limit=0', 'limit=101', 'limit=abc'] as $query) {
             $this->getJson('/api/v1/device/tables/feed?'.$query)->assertStatus(422)
@@ -89,7 +89,7 @@ final class TableSessionFeedTest extends TestCase
             ]]],
             'meta' => ['latest_id' => (int) $event->id, 'has_more' => false], 'errors' => [],
         ];
-        $response = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/feed')->assertOk();
+        $response = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/feed')->assertOk();
         $this->assertSame($expected, $response->json());
         fwrite(STDOUT, "\nT4_FEED_JSON=".$response->getContent()."\n");
     }
@@ -99,7 +99,7 @@ final class TableSessionFeedTest extends TestCase
         $device = $this->seatingDevice();
         $seating = $this->seatingRow($this->seatingTable());
         $this->event($seating, ['company_id' => 200]);
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/feed')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/feed')
             ->assertOk()->assertJsonPath('data.events', [])->assertJsonPath('meta.latest_id', 0);
     }
 

@@ -118,6 +118,6 @@ final class OrderAttentionTest extends QrPendingTestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) ($device ?? $this->till)->device_token)->getJson('/api/v1/device/order-attention');
+        return $this->withToken((string) ($device ?? $this->till)->plainTextToken)->getJson('/api/v1/device/order-attention');
     }
 }

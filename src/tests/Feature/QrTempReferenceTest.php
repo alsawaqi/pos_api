@@ -486,7 +486,7 @@ final class QrTempReferenceTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     /** @param list<array<string, mixed>> $events */

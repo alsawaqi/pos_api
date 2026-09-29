@@ -68,7 +68,7 @@ final class QrQuickWorkspaceTest extends QrPendingTestCase
     private function payload(string $operation, array $extra = []): array
     {
         $this->app['auth']->forgetGuards();
-        $row = $this->withToken((string) $this->till->device_token)->getJson('/api/v1/device/qr/pending-orders?workspace=1')->assertOk()->json('data.orders.0');
+        $row = $this->withToken((string) $this->till->plainTextToken)->getJson('/api/v1/device/qr/pending-orders?workspace=1')->assertOk()->json('data.orders.0');
 
         return $extra + ['operation' => $operation, 'client_request_id' => (string) Str::uuid(),
             'revision' => $row['edit_revision'] ?? str_repeat('0', 64)];

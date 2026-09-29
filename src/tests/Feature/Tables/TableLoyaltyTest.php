@@ -65,7 +65,7 @@ final class TableLoyaltyTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/'.$path, $data);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $data);
     }
 
     private function intent($seat, array $adjustment): array
@@ -142,7 +142,7 @@ final class TableLoyaltyTest extends TestCase
         $this->assertNull($row->discount_id);
         $this->assertSame('T12 reward', $row->name_snapshot);
         $this->assertSame(($points ? 'points × '.$points : 'stamps × '.$stamps).' — rule '.$rule->id, $row->reason);
-        $this->withToken($d->device_token)->getJson('/api/v1/device/tables/'.$s->table_id.'/detail')->assertOk()
+        $this->withToken($d->plainTextToken)->getJson('/api/v1/device/tables/'.$s->table_id.'/detail')->assertOk()
             ->assertJsonPath('data.bill.adjustment_state.loyalty.points', $points)
             ->assertJsonPath('data.bill.loyalty_discount_baisas', $value);
         fwrite(STDOUT, "\nT12_GOLDEN=".json_encode(['kind' => $kind, 'value' => $value, 'points' => $points, 'stamps' => $stamps, 'measured' => $this->money($o)])."\n");

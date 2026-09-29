@@ -31,7 +31,7 @@ class DevicePairTest extends TestCase
 
         $device->refresh();
         $this->assertNotNull($device->device_token);
-        $this->assertSame($res->json('data.device_token'), $device->device_token);
+        $this->assertSame(hash('sha256', $res->json('data.device_token')), $device->device_token);
 
         // Activation token is single-use.
         $token->refresh();

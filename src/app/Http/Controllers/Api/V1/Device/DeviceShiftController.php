@@ -63,6 +63,8 @@ class DeviceShiftController
         }
         $shift ??= Shift::query()
             ->where('device_id', $device->getKey())
+            ->where('company_id', $device->company_id)
+            ->where('branch_id', $device->branch_id)
             ->where('status', Shift::STATUS_OPEN)
             ->when(
                 $staffId > 0 && $sharedStaffOnly,

@@ -45,7 +45,7 @@ final class ClearEmptyTableSessionTest extends TestCase
         $session = $opened['session'];
         $session->update(['status' => $status]);
         $seat = TableSession::findOrFail($session->table_session_id);
-        $this->withToken((string) $device->device_token)->postJson('/api/v1/device/tables/clear-empty-session', [
+        $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/tables/clear-empty-session', [
             'table_id' => $table->id, 'seating_uuid' => $seat->uuid,
         ])->assertOk()->assertJsonPath('data.status', 'cleared');
         $this->assertSame('closed', $seat->fresh()->status);
@@ -82,7 +82,7 @@ final class ClearEmptyTableSessionTest extends TestCase
         } else {
             $this->seatingOrder($seat, ['status' => $kind]);
         }
-        $this->withToken((string) $device->device_token)->postJson('/api/v1/device/tables/clear-empty-session', [
+        $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/tables/clear-empty-session', [
             'table_id' => $table->id, 'seating_uuid' => $seat->uuid,
         ])->assertStatus(409);
         $this->assertSame('open', $seat->fresh()->status);
@@ -110,14 +110,14 @@ final class ClearEmptyTableSessionTest extends TestCase
         $opened = app(OpenDineInTableAction::class)->handle($device, $table->id);
         $seat = TableSession::findOrFail($opened['session']->table_session_id);
         $foreign = $this->seatingDevice('handheld', 20);
-        $this->withToken((string) $foreign->device_token)->postJson('/api/v1/device/tables/clear-empty-session', [
+        $this->withToken((string) $foreign->plainTextToken)->postJson('/api/v1/device/tables/clear-empty-session', [
             'table_id' => $table->id, 'seating_uuid' => $seat->uuid,
         ])->assertNotFound();
         app('auth')->forgetGuards();
-        $this->withToken((string) $device->device_token)->postJson('/api/v1/device/tables/clear-empty-session', [
+        $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/tables/clear-empty-session', [
             'table_id' => $table->id, 'seating_uuid' => (string) Str::uuid(),
         ])->assertStatus(409);
-        $this->withToken((string) $device->device_token)->postJson('/api/v1/device/tables/clear-empty-session', [
+        $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/tables/clear-empty-session', [
             'table_id' => $table->id,
         ])->assertUnprocessable();
         $this->assertSame('open', $seat->fresh()->status);

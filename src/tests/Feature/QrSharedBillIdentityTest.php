@@ -457,7 +457,7 @@ final class QrSharedBillIdentityTest extends TestCase
             'created_at' => now(), 'updated_at' => now(),
         ]);
         app(FinishDineInQrOrderAction::class)->handle((int) $flow['session']->id, 'counter');
-        $response = $this->withToken($flow['till']->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($flow['till']->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay',
                 'client_timestamp' => now()->toIso8601String(),
@@ -615,7 +615,7 @@ final class QrSharedBillIdentityTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => $eventId, 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(),
                 'payload' => [

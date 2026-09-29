@@ -45,6 +45,7 @@ class DeviceOrderTransferTest extends TestCase
     private function seedCatalogue(int $company = 100): void
     {
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_products')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => $company, 'name' => 'Latte', 'base_price' => 1.500, 'status' => 'active'] + $t,
         ]);
@@ -272,6 +273,7 @@ class DeviceOrderTransferTest extends TestCase
         $to = $this->device('mdev_b', 100, 10, 'Handheld', 'handheld');
 
         $t = ['created_at' => now(), 'updated_at' => now()];
+        DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
         DB::table('pos_tables')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T1'] + $t,
             ['id' => 2, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'floor_id' => 1, 'label' => 'T2'] + $t,

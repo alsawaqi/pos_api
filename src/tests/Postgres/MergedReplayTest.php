@@ -41,7 +41,7 @@ final class MergedReplayTest extends TestCase
             'lines' => [['product_id' => $product->id, 'qty' => 1, 'unit_price_baisas' => 1000, 'line_total_baisas' => 1000]],
             'discounts' => [['name' => 'Loyalty redemption', 'amount_baisas' => 500]],
         ]]];
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
         $this->assertSame($survivor->id, Order::where('uuid', $uuid)->sole()->customer_id);
         $this->assertSame($source->id, SyncEvent::where('client_event_id', $event['client_event_id'])->sole()->payload_json['order']['customer_id']);
         $pay = ['client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(), 'payload' => [

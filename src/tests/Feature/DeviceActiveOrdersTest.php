@@ -102,6 +102,6 @@ class DeviceActiveOrdersTest extends TestCase
     public function test_an_unassigned_device_is_rejected(): void
     {
         Device::factory()->paired('mdev_unassigned')->create(['company_id' => null, 'branch_id' => null]);
-        $this->withToken('mdev_unassigned')->getJson('/api/v1/device/orders/active')->assertStatus(409);
+        $this->withToken('mdev_unassigned')->getJson('/api/v1/device/orders/active')->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 }

@@ -24,6 +24,9 @@ class HeartbeatController
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
+            'pending_outbox_count' => ['sometimes', 'integer', 'min:0'],
+            'quarantined_count' => ['sometimes', 'integer', 'min:0'],
+            'printer_status' => ['sometimes', 'nullable', 'string', 'max:100'],
             'lat' => ['sometimes', 'nullable', 'numeric', 'between:-90,90'],
             'lng' => ['sometimes', 'nullable', 'numeric', 'between:-180,180'],
             'battery' => ['sometimes', 'nullable', 'integer', 'between:0,100'],
@@ -34,6 +37,10 @@ class HeartbeatController
         $device = $request->user();
 
         $device->update(array_filter([
+            'pending_outbox_count' => $validated['pending_outbox_count'] ?? null,
+            'quarantined_count' => $validated['quarantined_count'] ?? null,
+            'printer_status' => $validated['printer_status'] ?? null,
+            'outbox_reported_at' => array_key_exists('pending_outbox_count', $validated) ? now() : null,
             'last_seen_at' => now(),
             'last_ip' => $request->ip(),
             'last_lat' => $validated['lat'] ?? null,

@@ -80,7 +80,7 @@ final class PaidBillPendingCleanupTest extends TestCase
             'client_event_id' => (string) Str::uuid(), 'event_type' => $type,
             'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,
         ];
-        $response = $this->withToken($device->device_token)
+        $response = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/sync/push', ['events' => [$event]])->assertOk();
         $this->assertSame('processed', $response->json('data.results.0.status'), $response->getContent());
         $this->assertSame($status, $order->fresh()->status);
@@ -106,7 +106,7 @@ final class PaidBillPendingCleanupTest extends TestCase
         $this->assertSame($otherBefore, $otherRound->fresh()->getRawOriginal());
         $rowsBefore = QrOrderRound::query()->orderBy('id')->get()->map->getRawOriginal()->all();
         $journalBefore = TableSessionEvent::query()->orderBy('id')->get()->toArray();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.duplicate', true);
         $this->assertSame(0, DB::transaction(fn (): int => app(CloseTableSessionForOrderAction::class)->handle(
             Order::query()->lockForUpdate()->findOrFail($order->id), now()->addMinute(), $reason, (int) $device->id,

@@ -673,13 +673,13 @@ final class QrDineInStaffDeviceSurfaceTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     private function getAs(Device $device, string $url): TestResponse
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->getJson($url);
+        return $this->withToken((string) $device->plainTextToken)->getJson($url);
     }
 }

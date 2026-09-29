@@ -137,6 +137,6 @@ class DeviceOrderHistoryTest extends TestCase
     public function test_an_unassigned_device_is_rejected(): void
     {
         Device::factory()->paired('mdev_unassigned_hist')->create(['company_id' => null, 'branch_id' => null]);
-        $this->withToken('mdev_unassigned_hist')->getJson('/api/v1/device/orders/history')->assertStatus(409);
+        $this->withToken('mdev_unassigned_hist')->getJson('/api/v1/device/orders/history')->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 }

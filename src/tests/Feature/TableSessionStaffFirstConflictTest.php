@@ -79,7 +79,7 @@ final class TableSessionStaffFirstConflictTest extends TestCase
         $submittedAt = now()->toIso8601String();
         $this->travel(10)->minutes();
         $product->update(['status' => 'inactive']);
-        $response = $this->withToken($till->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($till->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.round',
                 'client_timestamp' => $submittedAt,

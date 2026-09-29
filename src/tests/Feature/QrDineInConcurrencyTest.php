@@ -90,8 +90,8 @@ final class QrDineInConcurrencyTest extends TestCase
                 $requests[] = [
                     'url' => self::OPEN_TABLE_URL,
                     'token' => $worker % 2 === 0
-                        ? (string) $firstStation->device_token
-                        : (string) $secondStation->device_token,
+                        ? (string) $firstStation->plainTextToken
+                        : (string) $secondStation->plainTextToken,
                     'payload' => ['table_id' => (int) $table->getKey()],
                     'observe_table_id' => (int) $table->getKey(),
                 ];
@@ -190,7 +190,7 @@ final class QrDineInConcurrencyTest extends TestCase
             foreach ([$first, $second] as $index => $device) {
                 $requests[] = [
                     'url' => '/api/v1/device/sync/push',
-                    'token' => (string) $device->device_token,
+                    'token' => (string) $device->plainTextToken,
                     'payload' => ['events' => [[
                         'client_event_id' => (string) Str::uuid(),
                         'event_type' => 'table.session.open',
@@ -271,7 +271,7 @@ final class QrDineInConcurrencyTest extends TestCase
                 $deviceIds[] = (int) $device->id;
                 $requests[] = [
                     'url' => '/api/v1/device/kitchen/claim-print',
-                    'token' => (string) $device->device_token,
+                    'token' => (string) $device->plainTextToken,
                     'payload' => ['ticket_key' => 'round:'.$round->id],
                     'observe_table_id' => null,
                 ];
@@ -402,13 +402,13 @@ final class QrDineInConcurrencyTest extends TestCase
             $requests = [
                 [
                     'url' => self::CLAIM_URL,
-                    'token' => (string) $firstStation->device_token,
+                    'token' => (string) $firstStation->plainTextToken,
                     'payload' => ['order_uuid' => (string) $order->uuid],
                     'observe_table_id' => null,
                 ],
                 [
                     'url' => self::CLAIM_URL,
-                    'token' => (string) $secondStation->device_token,
+                    'token' => (string) $secondStation->plainTextToken,
                     'payload' => ['order_uuid' => (string) $order->uuid],
                     'observe_table_id' => null,
                 ],
@@ -486,13 +486,13 @@ final class QrDineInConcurrencyTest extends TestCase
             $requests = [
                 [
                     'url' => self::CLAIM_SETTLEMENT_URL,
-                    'token' => (string) $firstTill->device_token,
+                    'token' => (string) $firstTill->plainTextToken,
                     'payload' => ['order_uuid' => (string) $order->uuid],
                     'observe_table_id' => null,
                 ],
                 [
                     'url' => self::CLAIM_SETTLEMENT_URL,
-                    'token' => (string) $secondTill->device_token,
+                    'token' => (string) $secondTill->plainTextToken,
                     'payload' => ['order_uuid' => (string) $order->uuid],
                     'observe_table_id' => null,
                 ],
@@ -554,7 +554,7 @@ final class QrDineInConcurrencyTest extends TestCase
             $requests = [
                 [
                     'url' => self::CLAIM_SETTLEMENT_URL,
-                    'token' => (string) $till->device_token,
+                    'token' => (string) $till->plainTextToken,
                     'payload' => ['order_uuid' => (string) $order->uuid],
                     'observe_table_id' => null,
                 ],
@@ -638,13 +638,13 @@ final class QrDineInConcurrencyTest extends TestCase
             $requests = [
                 [
                     'url' => self::CONFIRM_ROUND_URL,
-                    'token' => (string) $firstTill->device_token,
+                    'token' => (string) $firstTill->plainTextToken,
                     'payload' => ['round_id' => (int) $firstRound->id],
                     'observe_table_id' => null,
                 ],
                 [
                     'url' => self::CONFIRM_ROUND_URL,
-                    'token' => (string) $secondTill->device_token,
+                    'token' => (string) $secondTill->plainTextToken,
                     'payload' => ['round_id' => (int) $secondRound->id],
                     'observe_table_id' => null,
                 ],
@@ -709,7 +709,7 @@ final class QrDineInConcurrencyTest extends TestCase
             $requests = [
                 [
                     'url' => self::CLAIM_SETTLEMENT_URL,
-                    'token' => (string) $till->device_token,
+                    'token' => (string) $till->plainTextToken,
                     'payload' => ['order_uuid' => (string) $order->uuid],
                     'observe_table_id' => null,
                 ],
@@ -770,7 +770,7 @@ final class QrDineInConcurrencyTest extends TestCase
                 $device = $this->attendedTill('synthetic-quick-append-'.$worker);
                 $requests[] = [
                     'url' => '/api/v1/device/qr/pending-orders/'.$order->uuid.'/items',
-                    'token' => $device->device_token, 'observe_table_id' => null,
+                    'token' => $device->plainTextToken, 'observe_table_id' => null,
                     'payload' => ['client_request_id' => $requestId, 'lines' => [
                         ['product_id' => 99001, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
                     ]],
@@ -815,12 +815,12 @@ final class QrDineInConcurrencyTest extends TestCase
             $paying = $this->attendedTill('synthetic-quick-pay');
             $requests = [[
                 'url' => '/api/v1/device/qr/pending-orders/'.$order->uuid.'/items',
-                'token' => $adding->device_token, 'observe_table_id' => null,
+                'token' => $adding->plainTextToken, 'observe_table_id' => null,
                 'payload' => ['client_request_id' => (string) Str::uuid(), 'lines' => [
                     ['product_id' => 99001, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
                 ]],
             ], [
-                'url' => self::CLAIM_SETTLEMENT_URL, 'token' => $paying->device_token,
+                'url' => self::CLAIM_SETTLEMENT_URL, 'token' => $paying->plainTextToken,
                 'observe_table_id' => null, 'payload' => ['order_uuid' => $order->uuid],
             ]];
             DB::disconnect('sqlite');
@@ -869,7 +869,7 @@ final class QrDineInConcurrencyTest extends TestCase
             $requests = [];
             for ($worker = 0; $worker < 2; $worker++) {
                 $requests[] = [
-                    'url' => '/api/v1/device/sync/push', 'token' => $device->device_token, 'observe_table_id' => null,
+                    'url' => '/api/v1/device/sync/push', 'token' => $device->plainTextToken, 'observe_table_id' => null,
                     'payload' => ['events' => [[
                         'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay',
                         'client_timestamp' => now()->toIso8601String(),
@@ -929,7 +929,7 @@ final class QrDineInConcurrencyTest extends TestCase
             for ($worker = 0; $worker < 10; $worker++) {
                 $requests[] = [
                     'url' => '/api/v1/device/payments/'.$payment->uuid.'/reversals',
-                    'token' => $device->device_token, 'observe_table_id' => null,
+                    'token' => $device->plainTextToken, 'observe_table_id' => null,
                     'payload' => ['kind' => 'refund', 'manager_pin' => '123456',
                         'client_request_id' => (string) Str::uuid(), 'reason_code' => 'RETURN',
                         'custom_amount_baisas' => 1000],
@@ -1358,7 +1358,7 @@ final class QrDineInConcurrencyTest extends TestCase
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,
             'branch_id' => 10,
-            'name' => 'Concurrency Floor',
+            'name' => 'Concurrency Floor '.$label,
             'display_order' => 1,
             'status' => 'active',
         ]);

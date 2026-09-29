@@ -91,7 +91,7 @@ final class QrDeviceLessSessionTest extends TestCase
         ]);
 
         $this->app['auth']->forgetGuards();
-        $this->withToken((string) $station->device_token)
+        $this->withToken((string) $station->plainTextToken)
             ->postJson('/api/v1/device/qr/claim-charge', ['order_uuid' => $orderUuid])
             ->assertStatus(409)
             ->assertJsonPath('errors.0.code', 'order_not_bound_to_device_session');
@@ -108,6 +108,9 @@ final class QrDeviceLessSessionTest extends TestCase
     {
         $this->travelTo(Carbon::parse('2026-09-07 12:00:00', 'UTC'));
         $table = $this->seatingTable();
+        DB::table('pos_branch_settings')->updateOrInsert(
+            ['company_id' => 100, 'branch_id' => 10, 'key' => 'qr_table_card_enabled'], ['value' => '"on"']
+        );
         $till = $this->seatingDevice();
         $station = $this->seatingDevice('payment_station');
         $product = $this->seatingProduct();

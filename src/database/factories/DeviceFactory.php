@@ -21,6 +21,26 @@ class DeviceFactory extends Factory
 {
     protected $model = Device::class;
 
+    public function configure(): static
+    {
+        return $this->afterMaking(function (Device $device): void {
+            if ($device->company_id !== null) {
+                DB::table('pos_companies')->insertOrIgnore([
+                    'id' => $device->company_id, 'uuid' => (string) Str::uuid(),
+                    'name' => 'Test Merchant '.$device->company_id, 'status' => 'active',
+                ]);
+            }
+            if ($device->device_token !== null) {
+                $device->plainTextToken = $device->device_token;
+                $device->forceFill([
+                    'device_token' => hash('sha256', $device->plainTextToken),
+                    'token_company_id' => $device->company_id,
+                    'token_branch_id' => $device->branch_id,
+                ]);
+            }
+        });
+    }
+
     public function definition(): array
     {
         return [

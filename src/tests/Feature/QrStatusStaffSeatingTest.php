@@ -120,7 +120,7 @@ class QrStatusStaffSeatingTest extends TestCase
         $this->postJson('/api/v1/public/qr/table-finish', ['payment_choice' => 'counter'])->assertOk();
         $claim = app(ClaimQrSettlementAction::class)->handle($till, ['order_uuid' => $bill->uuid]);
         $this->assertSame(2000, $claim['charge_amount_baisas']);
-        $this->withToken($till->device_token)->postJson('/api/v1/device/sync/push', [
+        $this->withToken($till->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(),
                 'payload' => [

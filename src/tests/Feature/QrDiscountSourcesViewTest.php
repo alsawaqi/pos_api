@@ -38,12 +38,12 @@ final class QrDiscountSourcesViewTest extends QrPendingTestCase
             'charge_device_id' => $this->till->id, 'charge_claimed_at' => now(),
             'charge_deadline_at' => now()->addMinute(), 'charge_amount_baisas' => 4000]);
         $this->app['auth']->forgetGuards();
-        $checkout = $this->withToken($this->till->device_token)->getJson('/api/v1/device/qr/orders/'.$order->uuid.'/checkout')
+        $checkout = $this->withToken($this->till->plainTextToken)->getJson('/api/v1/device/qr/orders/'.$order->uuid.'/checkout')
             ->assertOk()->assertJsonPath('data.order.discount_total_baisas', 750)->json('data.order');
         $this->assertSame($row['discount_sources'], $checkout['discount_sources']);
         $order->update(['status' => 'paid']);
         $this->app['auth']->forgetGuards();
-        $history = $this->withToken($this->till->device_token)->getJson('/api/v1/device/orders/history')
+        $history = $this->withToken($this->till->plainTextToken)->getJson('/api/v1/device/orders/history')
             ->assertOk()->assertJsonPath('data.orders.0.status', 'paid')->assertJsonPath('data.orders.0.discount_total_baisas', 750)->json('data.orders.0');
         $this->assertSame($row['discount_sources'], $history['discount_sources']);
         $this->assertSame($row['discounts'], $history['discounts']);

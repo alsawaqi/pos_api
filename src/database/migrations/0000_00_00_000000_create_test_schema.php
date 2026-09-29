@@ -31,7 +31,22 @@ return new class extends Migration
             return;
         }
 
+        Schema::create('pos_companies', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->nullable();
+            $table->string('name')->default('Test Merchant');
+            $table->string('name_ar')->nullable();
+            $table->string('status')->default('active');
+            $table->json('settings')->nullable();
+            $table->softDeletes();
+        });
         Schema::create('pos_devices', function (Blueprint $table): void {
+            $table->unsignedBigInteger('token_company_id')->nullable();
+            $table->unsignedBigInteger('token_branch_id')->nullable();
+            $table->unsignedInteger('pending_outbox_count')->nullable();
+            $table->unsignedInteger('quarantined_count')->default(0);
+            $table->timestamp('outbox_reported_at')->nullable();
+            $table->string('printer_status', 100)->nullable();
             $table->id();
             $table->uuid('uuid')->unique();
             $table->string('serial_number')->unique();
@@ -71,6 +86,8 @@ return new class extends Migration
         });
 
         Schema::create('pos_sync_events', function (Blueprint $table): void {
+            $table->unsignedBigInteger('company_id')->nullable();
+            $table->unsignedBigInteger('branch_id')->nullable();
             $table->id();
             $table->uuid('client_event_id');
             $table->unsignedBigInteger('device_id')->nullable();
@@ -532,6 +549,7 @@ return new class extends Migration
         });
 
         Schema::create('pos_qr_sessions', function (Blueprint $table): void {
+            $table->string('table_qr_token_hash', 64)->nullable();
             $table->id();
             $table->uuid('uuid')->unique();
             $table->unsignedBigInteger('company_id');
@@ -667,7 +685,8 @@ return new class extends Migration
             $table->decimal('grand_total', 12, 3)->default(0);
             $table->timestamp('opened_at')->useCurrent();
             $table->timestamp('closed_at')->nullable();
-            $table->string('client_event_id', 64)->nullable()->unique();
+            $table->string('client_event_id', 64)->nullable();
+            $table->unique(['device_id', 'client_event_id']);
             $table->text('note')->nullable();
             // P-F8 — the printed receipt number (prefix + zero-padded
             // counter, e.g. "KLD-0042"); NULL when numbering is off or the
@@ -1210,7 +1229,8 @@ return new class extends Migration
             $table->unsignedBigInteger('city_id')->nullable();
             $table->decimal('latitude', 10, 7)->nullable();
             $table->decimal('longitude', 10, 7)->nullable();
-            $table->string('client_event_id', 64)->nullable()->unique();
+            $table->string('client_event_id', 64)->nullable();
+            $table->unique(['device_id', 'client_event_id']);
             $table->timestamp('occurred_at')->nullable();
             // P-F7 — when the round-up was actually forwarded to the charity
             // app (NULL = pending reconciliation approval / forward failed).
@@ -1692,5 +1712,6 @@ return new class extends Migration
         Schema::dropIfExists('pos_sync_events');
         Schema::dropIfExists('pos_device_activation_tokens');
         Schema::dropIfExists('pos_devices');
+        Schema::dropIfExists('pos_companies');
     }
 };

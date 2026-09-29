@@ -78,7 +78,7 @@ final class QrPaymentReviewTest extends QrPendingTestCase
         $this->getPending()->assertOk()->assertJsonPath('data.orders.0.charge', 'none')
             ->assertJsonPath('data.orders.0.actions.settle', true);
         $this->app['auth']->forgetGuards();
-        $this->withToken($this->till->device_token)->getJson('/api/v1/device/qr/pending-orders/cancel-preview?order_uuid='.$order->uuid)
+        $this->withToken($this->till->plainTextToken)->getJson('/api/v1/device/qr/pending-orders/cancel-preview?order_uuid='.$order->uuid)
             ->assertOk()->assertJsonPath('data.count', 1);
 
         $input['reference'] = 'REF-OTHER';

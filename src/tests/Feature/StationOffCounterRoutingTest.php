@@ -70,7 +70,7 @@ final class StationOffCounterRoutingTest extends TestCase
         $this->qrPost($caller, 'claim-settlement', ['order_uuid' => $order->uuid])->assertOk();
         $this->assertSame('awaiting_payment', $order->fresh()->status);
         app('auth')->forgetGuards();
-        $paid = $this->withToken($caller->device_token)->postJson('/api/v1/device/sync/push', ['events' => [[
+        $paid = $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay',
             'client_timestamp' => now()->toIso8601String(), 'payload' => [
                 'order_uuid' => $order->uuid, 'paid_at' => now()->toIso8601String(),
@@ -186,6 +186,6 @@ final class StationOffCounterRoutingTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/qr/'.$operation, $payload);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/qr/'.$operation, $payload);
     }
 }

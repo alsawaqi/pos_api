@@ -101,6 +101,8 @@ class SweepStrandedSyncEvents extends Command
                     default => null,
                 };
                 if ($unsafeReason !== null) {
+                    $event->update(['ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,
+                        'result_json' => ['error' => 'identity_mismatch', 'permanent' => true]]);
                     Log::warning('Stranded sync event skipped because device attribution is unsafe', [
                         'sync_event_id' => (int) $event->getKey(),
                         'device_id' => $event->device_id !== null ? (int) $event->device_id : null,

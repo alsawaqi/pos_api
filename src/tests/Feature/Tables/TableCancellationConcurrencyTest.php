@@ -51,19 +51,19 @@ final class TableCancellationConcurrencyTest extends TestCase
             $prefix = ['seating_key' => $seat->client_request_id, 'table_id' => (int) $seat->table_id, 'queued_offline' => false, 'staff_id' => 7];
             $round = $prefix + ['client_request_id' => (string) Str::uuid(), 'submitted_at' => now()->toIso8601String(),
                 'lines' => [['product_id' => $product->id, 'qty' => 3, 'addon_ids' => []]]];
-            $this->withToken($device->device_token)->postJson('/api/v1/device/tables/'.$seat->uuid.'/round', $round)
+            $this->withToken($device->plainTextToken)->postJson('/api/v1/device/tables/'.$seat->uuid.'/round', $round)
                 ->assertOk()->assertJsonPath('data.outcome', 'appended');
             $order = Order::query()->sole();
             $cancel = $prefix + ['client_request_id' => (string) Str::uuid(), 'reason' => 'T11 race', 'authorized_by' => 'T11 manager',
                 'cancelled_at' => now()->toIso8601String(), 'lines' => [['client_request_id' => (string) Str::uuid(),
                     'product_id' => $product->id, 'addon_ids' => [], 'qty' => 3, 'prepared' => true]]];
             $requests = [['url' => '/api/v1/device/tables/'.$seat->uuid.'/cancel-bill', 'payload' => $cancel,
-                'token' => $device->device_token, 'observe_table_id' => null]];
+                'token' => $device->plainTextToken, 'observe_table_id' => null]];
             $round['client_request_id'] = (string) Str::uuid();
             $round['lines'][0]['qty'] = 1;
             $requests[] = ['url' => $competitor === 'append' ? '/api/v1/device/tables/'.$seat->uuid.'/round' : '/api/v1/device/qr/claim-settlement',
                 'payload' => $competitor === 'append' ? $round : ['order_uuid' => $order->uuid],
-                'token' => $device->device_token, 'observe_table_id' => null];
+                'token' => $device->plainTextToken, 'observe_table_id' => null];
             DB::disconnect('sqlite');
             $results = $this->runConcurrentRequests($path, $requests);
             foreach ($results as $result) {

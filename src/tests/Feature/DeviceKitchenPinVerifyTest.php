@@ -151,6 +151,6 @@ class DeviceKitchenPinVerifyTest extends TestCase
         $this->app['auth']->forgetGuards();
         $this->withToken('mdev_unassigned')
             ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '4321'])
-            ->assertStatus(409);
+            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 }

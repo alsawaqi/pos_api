@@ -519,6 +519,7 @@ class DeviceSyncDonationTest extends TestCase
         $syncEvent = SyncEvent::create([
             'client_event_id' => $event['client_event_id'],
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'event_type' => $event['event_type'],
             'payload_json' => $event['payload'],
             'client_timestamp' => now()->subMinutes(12),

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Payments;
 
+use App\Models\Device;
 use App\Models\PaymentReversal;
 use App\Support\Money;
 use Illuminate\Support\Facades\DB;
@@ -19,8 +20,16 @@ final class ApplyPaymentReversalResultAction
         if (! in_array($payload['status'] ?? null, ['approved', 'declined', 'uncertain', 'cancelled'], true)) {
             throw new ReversalException('invalid_reversal_result', 422);
         }
+        $device = $deviceId === null ? null : Device::query()->find($deviceId);
+        if ($deviceId !== null) {
+            if ($device === null) {
+                throw new ReversalException('reversal_not_found', 404);
+            }
+            app(ReservePaymentReversalAction::class)->assertAttended($device);
+        }
         $found = PaymentReversal::query()->where('uuid', $uuid)
-            ->when($deviceId !== null, fn ($q) => $q->where('device_id', $deviceId))->first();
+            ->when($deviceId !== null, fn ($q) => $q->where('device_id', $deviceId)
+                ->where('company_id', $device->company_id)->where('branch_id', $device->branch_id))->first();
         if ($found === null) {
             throw new ReversalException('reversal_not_found', 404);
         }
@@ -29,7 +38,14 @@ final class ApplyPaymentReversalResultAction
         return DB::transaction(function () use ($found, $payload, $deviceId, $adminId, $fingerprint): array {
             $order = DB::table('pos_orders')->where('id', $found->order_id)->lockForUpdate()->first();
             $payment = DB::table('pos_payments')->where('id', $found->payment_id)->lockForUpdate()->first();
-            DB::table('pos_devices')->where('id', $found->device_id)->lockForUpdate()->first();
+            $currentDevice = Device::query()->whereKey($found->device_id)->lockForUpdate()->first();
+            if ($deviceId !== null) {
+                if ($currentDevice === null || (int) $currentDevice->company_id !== (int) $found->company_id
+                    || (int) $currentDevice->branch_id !== (int) $found->branch_id) {
+                    throw new ReversalException('reversal_not_found', 404);
+                }
+                app(ReservePaymentReversalAction::class)->assertAttended($currentDevice);
+            }
             $reversal = PaymentReversal::query()->whereKey($found->id)->lockForUpdate()->firstOrFail();
             if ($deviceId !== null) {
                 $existing = DB::table('pos_payment_reversal_results')->where('device_id', $deviceId)

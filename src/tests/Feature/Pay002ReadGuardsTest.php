@@ -30,8 +30,8 @@ class Pay002ReadGuardsTest extends TestCase
         ]);
         $this->withToken('read-guard');
         foreach (['/payments/reversals', '/orders/'.Str::uuid().'/payments'] as $path) {
-            $this->getJson('/api/v1/device'.$path)->assertStatus(409)
-                ->assertJsonPath('errors.0.code', 'device_not_attended');
+            $this->getJson('/api/v1/device'.$path)->assertStatus($branch === null ? 401 : 409)
+                ->assertJsonPath('errors.0.code', $branch === null ? 'device_reactivation_required' : 'device_not_attended');
         }
         $this->assertDatabaseCount('pos_payment_reversals', 0);
         $this->assertDatabaseCount('pos_payment_reversal_results', 0);

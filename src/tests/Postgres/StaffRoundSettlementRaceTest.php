@@ -33,18 +33,26 @@ final class StaffRoundSettlementRaceTest extends TestCase
         $this->assertSame('qrfix2_test', DB::connection()->getDatabaseName());
         $this->assertSame('qrfix2-pg', config('database.connections.pgsql.host'));
         $this->assertTrue(function_exists('pcntl_fork'));
-        $connection = DB::connection();
-        $connection->useDefaultSchemaGrammar();
-        $originalGrammar = $connection->getSchemaGrammar();
-        $grammar = new DeferredForeignKeysGrammar($connection);
-        $connection->setSchemaGrammar($grammar);
-        try {
-            $this->assertSame(0, Artisan::call('migrate:fresh', ['--force' => true]));
-            foreach ($grammar->foreignKeys as $sql) {
-                DB::statement($sql);
+        // The W11 runner has already applied the authoritative admin schema.
+        // Keep the old standalone SQLite-mirror harness available explicitly.
+        if (getenv('LAUNCH_P0_DISPOSABLE') !== '1') {
+            $connection = DB::connection();
+            $connection->useDefaultSchemaGrammar();
+            $originalGrammar = $connection->getSchemaGrammar();
+            $grammar = new DeferredForeignKeysGrammar($connection);
+            $connection->setSchemaGrammar($grammar);
+            try {
+                $this->assertSame(0, Artisan::call('migrate:fresh', ['--force' => true]));
+                foreach ($grammar->foreignKeys as $sql) {
+                    DB::statement($sql);
+                }
+            } finally {
+                $connection->setSchemaGrammar($originalGrammar);
             }
-        } finally {
-            $connection->setSchemaGrammar($originalGrammar);
+
+        } else {
+            $this->assertTrue(DB::table('pos_admin_migrations')->where('migration', '2026_09_30_000001_bind_and_hash_pos_device_credentials')->exists());
+            DB::table('pos_companies')->insert(['id' => 100, 'uuid' => Str::uuid(), 'name' => 'F08 synthetic', 'status' => 'active']);
         }
 
         Branch::create(['id' => 10, 'uuid' => (string) Str::uuid(), 'company_id' => 100,
@@ -78,8 +86,8 @@ final class StaffRoundSettlementRaceTest extends TestCase
                     'lines' => [['product_id' => 99001, 'qty' => 1, 'addon_ids' => [], 'notes' => null]],
                 ]];
             $requests = [
-                ['/api/v1/device/sync/push', $staff->device_token, ['events' => [$event]]],
-                ['/api/v1/device/qr/claim-settlement', $claimant->device_token, ['order_uuid' => $order->uuid]],
+                ['/api/v1/device/sync/push', $staff->plainTextToken, ['events' => [$event]]],
+                ['/api/v1/device/qr/claim-settlement', $claimant->plainTextToken, ['order_uuid' => $order->uuid]],
             ];
             $dir = sys_get_temp_dir().'/f08-'.Str::uuid();
             mkdir($dir, 0700);
@@ -146,14 +154,14 @@ final class StaffRoundSettlementRaceTest extends TestCase
             throw new QueryException('pgsql', 'select private_data from internal_table', [], new PDOException('SQLSTATE[23505] internal-host'));
         });
         $event['client_event_id'] = (string) Str::uuid();
-        $response = $this->withToken($staff->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]]);
+        $response = $this->withToken($staff->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]]);
         $mode = 'none';
         $response->assertOk()->assertJsonPath('data.results.0.status', 'processed');
         $this->assertGreaterThanOrEqual(2, $injected);
 
         $mode = 'error';
         $event['client_event_id'] = (string) Str::uuid();
-        $response = $this->withToken($staff->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]]);
+        $response = $this->withToken($staff->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]]);
         $mode = 'none';
         $response->assertOk()->assertJsonPath('data.results.0.status', 'failed')
             ->assertJsonPath('data.results.0.result.error', 'Could not save this update. Retry the same request.');
@@ -161,7 +169,7 @@ final class StaffRoundSettlementRaceTest extends TestCase
         $this->assertStringNotContainsString('internal-host', $response->getContent());
 
         $mode = 'error';
-        $response = $this->withToken($claimant->device_token)->postJson('/api/v1/device/qr/claim-settlement', ['order_uuid' => $order->uuid]);
+        $response = $this->withToken($claimant->plainTextToken)->postJson('/api/v1/device/qr/claim-settlement', ['order_uuid' => $order->uuid]);
         $mode = 'none';
         $response->assertStatus(503)->assertJsonPath('errors.0.code', 'settlement_retry_required');
         $this->assertStringNotContainsString('SQLSTATE', $response->getContent());
@@ -199,7 +207,7 @@ final class StaffRoundSettlementRaceTest extends TestCase
             DB::purge();
             DB::statement("SET lock_timeout = '300ms'");
             $event['client_event_id'] = (string) Str::uuid();
-            $this->withToken($staff->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+            $this->withToken($staff->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
                 ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
             fwrite(STDOUT, "\nF08_UNRELATED_PAID_ORDER_LOCK=IGNORED\n");
         } finally {

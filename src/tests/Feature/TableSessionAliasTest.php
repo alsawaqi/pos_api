@@ -48,7 +48,7 @@ final class TableSessionAliasTest extends TestCase
         $original = $this->push($device, 'open', $payload, 'opened', true, $eventId);
         $replayed = $this->push($device, 'open', $payload, 'opened', true, $eventId);
         $this->assertSame($original, $replayed);
-        $online = $this->withToken($device->device_token)->postJson('/api/v1/device/tables/open', $payload)->assertOk();
+        $online = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/tables/open', $payload)->assertOk();
         $this->assertSame('replayed', $online->json('data.outcome'));
         $this->assertNull($online->json('data.event_id'));
         $this->push($device, 'open', $payload, 'replayed', false);
@@ -288,7 +288,7 @@ final class TableSessionAliasTest extends TestCase
         ] as $operation => $payload) {
             foreach ([$foreign->uuid, (string) $foreign->id] as $identity) {
                 app('auth')->forgetGuards();
-                $this->withToken($device->device_token)->postJson('/api/v1/device/tables/'.$identity.'/'.$operation, $payload)
+                $this->withToken($device->plainTextToken)->postJson('/api/v1/device/tables/'.$identity.'/'.$operation, $payload)
                     ->assertNotFound()->assertJsonPath('errors.0.code', 'table_session_not_found');
             }
         }
@@ -331,7 +331,7 @@ final class TableSessionAliasTest extends TestCase
         $this->travel(1)->minutes();
 
         app('auth')->forgetGuards();
-        $response = $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner', [
+        $response = $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner', [
             'opened_by_device_id' => $holder->id, 'company_id' => 999, 'branch_id' => 999,
         ])->assertOk()->assertJsonPath('data.outcome', 'claimed')
             ->assertJsonPath('data.table_session_uuid', $seating->uuid)
@@ -370,12 +370,12 @@ final class TableSessionAliasTest extends TestCase
         $holder = $this->seatingDevice($type);
         $seating = $this->seatingRow($this->seatingTable(), ['opened_by_device_id' => $holder->id])->refresh();
         $before = $seating->getRawOriginal();
-        $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner')
+        $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner')
             ->assertOk()->assertJsonPath('data.outcome', 'owner_usable')->assertJsonPath('data.event_id', null);
         $this->assertSame($before, $seating->fresh()->getRawOriginal());
         if ($type !== 'payment_station') {
             app('auth')->forgetGuards();
-            $this->withToken($holder->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner')
+            $this->withToken($holder->plainTextToken)->postJson('/api/v1/device/tables/'.$seating->uuid.'/claim-owner')
                 ->assertOk()->assertJsonPath('data.outcome', 'replayed')->assertJsonPath('data.event_id', null);
             $this->assertSame($before, $seating->fresh()->getRawOriginal());
         }
@@ -397,14 +397,14 @@ final class TableSessionAliasTest extends TestCase
         ])->refresh();
         $joinedBefore = $joined->getRawOriginal();
         $aliasBefore = $alias->getRawOriginal();
-        $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$joined->uuid.'/claim-owner')
+        $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/tables/'.$joined->uuid.'/claim-owner')
             ->assertOk()->assertJsonPath('data.outcome', 'claimed')
             ->assertJsonPath('data.table_session_uuid', $primary->uuid)
             ->assertJsonPath('data.requested_table_session_uuid', $joined->uuid);
         $this->assertSame((int) $caller->id, (int) $primary->fresh()->opened_by_device_id);
         $this->assertSame($joinedBefore, $joined->fresh()->getRawOriginal());
         app('auth')->forgetGuards();
-        $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$alias->uuid.'/claim-owner')
+        $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/tables/'.$alias->uuid.'/claim-owner')
             ->assertOk()->assertJsonPath('data.outcome', 'stale_generation')->assertJsonPath('data.event_id', null);
         $this->assertSame($aliasBefore, $alias->fresh()->getRawOriginal());
         $primary->update(['status' => 'closed', 'closed_at' => now(), 'close_reason' => 'paid']);
@@ -412,7 +412,7 @@ final class TableSessionAliasTest extends TestCase
         $nextBefore = $next->getRawOriginal();
         foreach ([$alias, $primary, $joined] as $stale) {
             app('auth')->forgetGuards();
-            $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$stale->uuid.'/claim-owner')
+            $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/tables/'.$stale->uuid.'/claim-owner')
                 ->assertOk()->assertJsonPath('data.outcome', 'stale_generation')->assertJsonPath('data.event_id', null);
         }
         $this->assertSame($nextBefore, $next->fresh()->getRawOriginal());
@@ -429,12 +429,12 @@ final class TableSessionAliasTest extends TestCase
         $before = $this->snapshot();
         foreach ([$foreign->uuid, (string) $local->id, (string) Str::uuid()] as $uuid) {
             app('auth')->forgetGuards();
-            $this->withToken($caller->device_token)->postJson('/api/v1/device/tables/'.$uuid.'/claim-owner')
+            $this->withToken($caller->plainTextToken)->postJson('/api/v1/device/tables/'.$uuid.'/claim-owner')
                 ->assertNotFound()->assertJsonPath('errors.0.code', 'table_session_not_found');
         }
         $station = $this->seatingDevice('payment_station');
         app('auth')->forgetGuards();
-        $this->withToken($station->device_token)->postJson('/api/v1/device/tables/'.$local->uuid.'/claim-owner')
+        $this->withToken($station->plainTextToken)->postJson('/api/v1/device/tables/'.$local->uuid.'/claim-owner')
             ->assertStatus(409)->assertJsonPath('errors.0.code', 'device_not_attended');
         $this->assertSame($before, $this->snapshot());
     }
@@ -455,7 +455,7 @@ final class TableSessionAliasTest extends TestCase
     private function push(Device $device, string $operation, array $payload, string $outcome, bool $changed, ?string $eventId = null): array
     {
         app('auth')->forgetGuards();
-        $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => $eventId ?? (string) Str::uuid(), 'event_type' => 'table.session.'.$operation,
                 'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,

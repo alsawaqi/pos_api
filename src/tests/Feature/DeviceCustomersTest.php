@@ -285,7 +285,7 @@ class DeviceCustomersTest extends TestCase
     public function test_an_unassigned_device_is_rejected(): void
     {
         Device::factory()->paired('mdev_unassigned')->create(['company_id' => null, 'branch_id' => null]);
-        $this->withToken('mdev_unassigned')->getJson('/api/v1/device/customers/search?q=ali')->assertStatus(409);
+        $this->withToken('mdev_unassigned')->getJson('/api/v1/device/customers/search?q=ali')->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 
     public function test_store_revives_a_soft_deleted_customer_instead_of_500ing(): void

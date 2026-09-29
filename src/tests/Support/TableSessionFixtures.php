@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\QrOrderRound;
 use App\Models\Table as PosTable;
 use App\Models\TableSession;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 /** Explicit SQLite fixtures shared by the T4 feature tests. */
@@ -19,6 +20,10 @@ trait TableSessionFixtures
 {
     protected function seatingBranch(int $id = 10, int $companyId = 100): Branch
     {
+        DB::table('pos_companies')->insertOrIgnore([
+            'id' => $companyId, 'uuid' => (string) Str::uuid(), 'name' => 'Merchant '.$companyId, 'status' => 'active',
+        ]);
+
         return Branch::query()->firstOrCreate(['id' => $id], [
             'uuid' => (string) Str::uuid(), 'company_id' => $companyId,
             'name' => 'Seating branch '.$id, 'status' => 'active',

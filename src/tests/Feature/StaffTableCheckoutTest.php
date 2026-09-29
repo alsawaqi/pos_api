@@ -32,14 +32,14 @@ final class StaffTableCheckoutTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/'.$path, $data);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $data);
     }
 
     private function readAs(Device $device, string $path): TestResponse
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->getJson('/api/v1/device/'.$path);
+        return $this->withToken($device->plainTextToken)->getJson('/api/v1/device/'.$path);
     }
 
     private function fixture(string $type = 'fixed_pos'): array

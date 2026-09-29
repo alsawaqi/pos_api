@@ -28,7 +28,7 @@ final class QrExpiredOrdersCancelTest extends QrPendingTestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($this->till->device_token)->getJson('/api/v1/device/qr/pending-orders/cancel-preview'.($order ? '?order_uuid='.$order->uuid : ''));
+        return $this->withToken($this->till->plainTextToken)->getJson('/api/v1/device/qr/pending-orders/cancel-preview'.($order ? '?order_uuid='.$order->uuid : ''));
     }
 
     private function input(array $preview): array
@@ -170,6 +170,8 @@ final class QrExpiredOrdersCancelTest extends QrPendingTestCase
         $this->cancel($input)->assertOk();
         $this->till->forceFill(['branch_id' => 20])->save();
         $this->assertSame(20, (int) $this->till->fresh()->branch_id);
+        $this->cancel($input)->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+        $this->till->issueCredential();
         $this->cancel($input)->assertConflict()->assertJsonPath('errors.0.code', 'idempotency_conflict');
         $this->assertDatabaseCount('pos_sync_events', 1);
     }

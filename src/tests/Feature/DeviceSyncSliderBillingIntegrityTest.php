@@ -196,6 +196,7 @@ class DeviceSyncSliderBillingIntegrityTest extends TestCase
 
             $event = SyncEvent::query()->create([
                 'device_id' => $device->id,
+                'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
                 'client_event_id' => (string) Str::uuid(),
                 'event_type' => 'slider.display',
                 'client_timestamp' => $reportedAt,
@@ -237,6 +238,7 @@ class DeviceSyncSliderBillingIntegrityTest extends TestCase
         // re-dispatch path re-enters the handler — that is what this covers.
         $event = SyncEvent::query()->create([
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'company_id' => $device->company_id,
             'branch_id' => $device->branch_id,
             'client_event_id' => (string) Str::uuid(),

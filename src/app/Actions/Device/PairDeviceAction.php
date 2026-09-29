@@ -6,8 +6,6 @@ namespace App\Actions\Device;
 
 use App\Models\Device;
 use App\Models\DeviceActivationToken;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -35,33 +33,13 @@ final readonly class PairDeviceAction
 {
     public function handle(string $kioskId, string $activationToken): Device
     {
-        $device = Device::query()->where('kiosk_id', $kioskId)->first();
-        if ($device === null) {
-            throw new RuntimeException('Pairing failed: invalid kiosk or activation token.');
-        }
-        if (! $device->isAssigned()) {
-            throw new RuntimeException('Pairing failed: device is not assigned to a branch.');
-        }
-
-        $token = $device->activationTokens()
-            ->where('token_hash', DeviceActivationToken::hash($activationToken))
-            ->first();
-        if ($token === null || ! $token->isUsable()) {
+        $deviceId = Device::query()->where('kiosk_id', $kioskId)->value('id');
+        $codeDeviceId = DeviceActivationToken::query()
+            ->where('token_hash', DeviceActivationToken::hash($activationToken))->value('device_id');
+        if ($deviceId === null || (int) $deviceId !== (int) $codeDeviceId) {
             throw new RuntimeException('Pairing failed: invalid kiosk or activation token.');
         }
 
-        return DB::transaction(function () use ($device, $token): Device {
-            $token->update(['used_at' => now()]);
-
-            // The bearer credential. Stored plaintext in the (UNIQUE)
-            // device_token column so the pos_device guard can match it
-            // directly. 'mdev_' + 60 = 65 chars, within the varchar(80).
-            $device->update([
-                'device_token' => 'mdev_'.Str::random(60),
-                'last_seen_at' => now(),
-            ]);
-
-            return $device->fresh();
-        });
+        return app(ActivateDeviceAction::class)->handle($activationToken);
     }
 }

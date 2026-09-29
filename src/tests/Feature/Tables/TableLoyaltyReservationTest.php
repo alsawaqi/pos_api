@@ -62,7 +62,7 @@ final class TableLoyaltyReservationTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/'.$path, $data);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $data);
     }
 
     private function intent($seat, array $adjustment): array

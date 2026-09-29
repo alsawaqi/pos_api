@@ -43,7 +43,7 @@ final class TableDetailTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$table->id.'/detail');
+        return $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$table->id.'/detail');
     }
 
     private function snapshot(): array
@@ -327,7 +327,7 @@ final class TableDetailTest extends TestCase
         $table = $this->seatingTable();
         $this->getJson('/api/v1/device/tables/'.$table->id.'/detail')->assertUnauthorized();
         $device = $this->seatingDevice();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/not-a-number/detail')->assertNotFound();
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/not-a-number/detail')->assertNotFound();
     }
 
     public function test_canonical_link_to_other_tenant_bill_fails_closed_without_disclosure(): void

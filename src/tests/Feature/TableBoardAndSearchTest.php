@@ -54,7 +54,7 @@ final class TableBoardAndSearchTest extends TestCase
         Floor::findOrFail($deletedFloorTable->floor_id)->delete();
         $this->seatingTable('Foreign branch', 20);
         $this->seatingTable('Foreign company', 30, 200);
-        $rows = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')
+        $rows = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')
             ->assertOk()->assertJsonCount(3, 'data.tables')->json('data.tables');
         $this->assertSame([$empty->id, $table->id, $orphanTable->id], array_column($rows, 'table_id'));
         $this->assertNull($rows[0]['seating']);
@@ -79,7 +79,7 @@ final class TableBoardAndSearchTest extends TestCase
         $this->seatingRound($joined, $order, ['status' => QrOrderRound::STATUS_PENDING_CONFIRMATION, 'needs_review' => true]);
         $this->seatingRound($primary, $order, ['needs_review' => true]);
         $this->seatingRound($primary, $order, ['status' => QrOrderRound::STATUS_REJECTED, 'needs_review' => true]);
-        $rows = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables');
+        $rows = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables');
         foreach ($rows as $row) {
             $this->assertSame('T-0905-007', $row['seating']['temp_reference']);
             $this->assertSame([$joined->table_id], $row['seating']['joined_table_ids']);
@@ -107,7 +107,7 @@ final class TableBoardAndSearchTest extends TestCase
         $this->seatingOrder($terminal, ['status' => Order::STATUS_PAID, 'temp_reference' => 'T-0905-007', 'customer_id' => $customerId]);
         $foreign = $this->seatingRow($this->seatingTable('Terrace foreign', 20));
         $this->seatingOrder($foreign, ['customer_id' => $customerId, 'temp_reference' => 'T-0905-007']);
-        $this->withToken($device->device_token);
+        $this->withToken($device->plainTextToken);
         foreach (['t-0905-00', 'terra', '1234'] as $query) {
             $this->getJson('/api/v1/device/tables/search?q='.$query)->assertOk()
                 ->assertJsonCount(1, 'data.tables')->assertJsonPath('data.tables.0.seating.uuid', $seating->uuid);
@@ -135,7 +135,7 @@ final class TableBoardAndSearchTest extends TestCase
             } else {
                 Floor::findOrFail($primaryTable->floor_id)->delete();
             }
-            $rows = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables');
+            $rows = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables');
             $this->assertNotContains((int) $primaryTable->id, array_column($rows, 'table_id'));
             $row = collect($rows)->firstWhere('table_id', (int) $joined->table_id);
             $this->assertNotNull($row);
@@ -158,7 +158,7 @@ final class TableBoardAndSearchTest extends TestCase
         }
         $orphan = $this->seatingRow($this->seatingTable('Orphan'), ['status' => 'expired', 'closed_at' => now()]);
         $order = $this->seatingOrder($orphan, ['status' => Order::STATUS_KITCHEN, 'temp_reference' => 'T-0905-999', 'table_session_id' => null]);
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/search?q=Seat')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/search?q=Seat')
             ->assertOk()->assertJsonCount(20, 'data.tables');
         $this->getJson('/api/v1/device/tables/search?q=t-0905-999')->assertOk()
             ->assertJsonCount(1, 'data.tables')->assertJsonPath('data.tables.0.seating', null)
@@ -175,16 +175,16 @@ final class TableBoardAndSearchTest extends TestCase
             $device = $this->seatingDevice($type);
             foreach (['board', 'feed', 'search?q=ab'] as $path) {
                 $this->app['auth']->forgetGuards();
-                $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$path)->assertOk();
+                $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$path)->assertOk();
             }
         }
         $unsupported = $this->seatingDevice('customer_tablet');
         $inactive = $this->seatingDevice(attributes: ['status' => 'inactive']);
         $unassigned = $this->seatingDevice(attributes: ['branch_id' => null]);
-        foreach ([[$unsupported, 409], [$inactive, 401], [$unassigned, 409]] as [$device, $status]) {
+        foreach ([[$unsupported, 409], [$inactive, 401], [$unassigned, 401]] as [$device, $status]) {
             foreach (['board', 'feed', 'search?q=ab'] as $path) {
                 $this->app['auth']->forgetGuards();
-                $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$path)->assertStatus($status);
+                $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$path)->assertStatus($status);
             }
         }
         $this->app['auth']->forgetGuards();
@@ -211,7 +211,7 @@ final class TableBoardAndSearchTest extends TestCase
             }
         });
         foreach (['board', 'feed', 'search?q=T-0905'] as $path) {
-            $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$path)->assertOk();
+            $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$path)->assertOk();
         }
         $this->assertSame([], $writes);
         $this->assertSame($before, [$seating->fresh()->getRawOriginal(), $session->fresh()->getRawOriginal(), $order->fresh()->getRawOriginal()]);
@@ -234,7 +234,7 @@ final class TableBoardAndSearchTest extends TestCase
             'claimed_by_device_id' => $foreign->id, 'claimed_at' => now(),
             'printed_at' => now(), 'print_result' => 'printed',
         ]);
-        $response = $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+        $response = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/qr/accepted-rounds')
             ->assertOk()->assertJsonCount(1, 'data.rounds')
             ->assertJsonPath('data.rounds.0.id', (int) $round->id)
             ->assertJsonPath('data.rounds.0.session_uuid', null)
@@ -288,7 +288,7 @@ final class TableBoardAndSearchTest extends TestCase
                 'source' => 'main_pos', 'customer_rounds' => 0, 'staff_rounds' => 0,
             ],
         ];
-        $board = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk();
+        $board = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk();
         $this->assertSame(['data' => ['tables' => [$row]], 'meta' => ['generated_at' => '2026-09-05T12:00:00+00:00', 'money_unit' => 'baisas'], 'errors' => []], $board->json());
         $search = $this->getJson('/api/v1/device/tables/search?q=t-0905')->assertOk();
         $this->assertSame(['data' => ['tables' => [$row]], 'meta' => ['money_unit' => 'baisas'], 'errors' => []], $search->json());
@@ -311,7 +311,7 @@ final class TableBoardAndSearchTest extends TestCase
             'lines' => $lines,
         ], now(), now());
         $this->assertSame('appended', $staff['outcome']);
-        $staffBoard = $this->withToken($till->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+        $staffBoard = $this->withToken($till->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()
             ->assertJsonCount(1, 'data.tables')
             ->assertJsonPath('data.tables.0.seating.uuid', $opened['table_session_uuid'])
             ->assertJsonPath('data.tables.0.seating.credential_status', null)
@@ -371,7 +371,7 @@ final class TableBoardAndSearchTest extends TestCase
         $other = $this->seatingRow($this->seatingTable('Other'));
         $otherOrder = $this->seatingOrder($other);
         $this->seatingRound($other, $otherOrder);
-        $board = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+        $board = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()
             ->assertJsonPath('data.tables.0.bill.source', 'qr_web')
             ->assertJsonPath('data.tables.0.bill.customer_rounds', 2)
             ->assertJsonPath('data.tables.0.bill.staff_rounds', 2)
@@ -398,7 +398,7 @@ final class TableBoardAndSearchTest extends TestCase
                 'status' => 'active', 'expires_at' => now()->addHours(6),
             ]);
         }
-        $board = $this->withToken($till->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+        $board = $this->withToken($till->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()
             ->assertJsonPath('data.tables.0.seating.credential_origin', 'station')
             ->assertJsonPath('data.tables.0.seating.credential_geofence', 'inside')
             ->assertJsonPath('data.tables.1.seating.credential_origin', 'table_card')
@@ -426,7 +426,7 @@ final class TableBoardAndSearchTest extends TestCase
         $createSession($joined, QrSession::STATUS_ACTIVE);
         foreach (QrSession::EXPIRABLE_STATUSES as $status) {
             $session->update(['status' => $status]);
-            $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()
+            $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()
                 ->assertJsonPath('data.tables.0.seating.credential_status', $status)
                 ->assertJsonPath('data.tables.1.seating.credential_status', $status);
         }

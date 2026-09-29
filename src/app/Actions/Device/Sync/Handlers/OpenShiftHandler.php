@@ -64,6 +64,8 @@ class OpenShiftHandler implements SyncEventHandler
         return DB::transaction(function () use ($device, $uuid, $staffId, $isShared, $openedAt, $openingBaisas): array {
             $hasOpenShift = Shift::query()
                 ->where('device_id', $device->getKey())
+                ->where('company_id', $device->company_id)
+                ->where('branch_id', $device->branch_id)
                 ->where('status', Shift::STATUS_OPEN)
                 ->exists();
             if ($hasOpenShift) {

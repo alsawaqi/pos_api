@@ -30,6 +30,8 @@ use Illuminate\Database\Eloquent\Model;
 #[Fillable([
     'client_event_id',
     'device_id',
+    'company_id',
+    'branch_id',
     'event_type',
     'payload_json',
     'client_timestamp',
@@ -53,6 +55,8 @@ class SyncEvent extends Model
 
     /** Domain handler ran and rejected the event. */
     public const STATUS_FAILED = 'failed';
+
+    public const STATUS_NEEDS_REVIEW = 'needs_review';
 
     /**
      * The event taxonomy the ledger accepts (blueprint §10.9). The ledger

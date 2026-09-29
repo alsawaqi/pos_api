@@ -52,14 +52,14 @@ final class TableDraftRecoveryTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$table->id.'/draft-recovery?'.http_build_query($input));
+        return $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$table->id.'/draft-recovery?'.http_build_query($input));
     }
 
     private function finalize(Device $device, Table $table, array $input): TestResponse
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/tables/'.$table->id.'/draft-recovery', $input);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/tables/'.$table->id.'/draft-recovery', $input);
     }
 
     private function intent(Device $device, Table $table, array $input): array
@@ -77,7 +77,7 @@ final class TableDraftRecoveryTest extends TestCase
                 'lines' => [['product_id' => $productId, 'qty' => $qty, 'notes' => 'Keep exactly', 'addon_ids' => []]],
             ]];
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')->assertJsonPath('data.results.0.result.outcome', 'appended');
 
         return SyncEvent::where('client_event_id', $event['client_event_id'])->sole();
@@ -97,7 +97,7 @@ final class TableDraftRecoveryTest extends TestCase
                     'tax_total_baisas' => 0, 'grand_total_baisas' => 2000,
                     'lines' => [['product_id' => $product->id, 'qty' => 2, 'unit_price_baisas' => 1000, 'line_total_baisas' => 2000]],
                 ]]];
-            $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+            $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
                 ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
             $order = Order::sole();
             $seat = $this->seatingRow($table, ['order_id' => $order->id, 'opened_by_device_id' => $device->id]);
@@ -221,11 +221,11 @@ final class TableDraftRecoveryTest extends TestCase
     {
         [$device, $table, $seat, $product, $event, $order, $input] = $this->fixture('handheld', true);
         $url = '/api/v1/device/tables/'.$table->id.'/draft-proof?'.http_build_query($input);
-        $this->withToken($device->device_token)->getJson($url)->assertOk()
+        $this->withToken($device->plainTextToken)->getJson($url)->assertOk()
             ->assertJsonPath('data.delta_policy', 'blocked_until_baseline_adoption')->assertJsonPath('data.archive_authorized', false);
         $this->finalize($device, $table, $this->intent($device, $table, $input))->assertOk();
         $before = $this->rows();
-        $this->withToken($device->device_token)->getJson($url)->assertStatus(409)->assertJsonPath('errors.0.code', 'draft_proof_evidence_changed');
+        $this->withToken($device->plainTextToken)->getJson($url)->assertStatus(409)->assertJsonPath('errors.0.code', 'draft_proof_evidence_changed');
         $this->assertSame($before, $this->rows());
     }
 
@@ -492,7 +492,7 @@ final class TableDraftRecoveryTest extends TestCase
             ->getJson('/api/v1/public/qr/status')->assertOk();
         $this->assertSame(now()->timestamp, $session->fresh()->last_seen_at->timestamp);
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/heartbeat',
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/heartbeat',
             ['battery' => 80, 'app_version' => 'test-recovery', 'lat' => 0, 'lng' => 0])->assertOk();
         $before = $this->rows();
         $response = $this->finalize($device, $table, $intent)->assertOk();
@@ -515,7 +515,7 @@ final class TableDraftRecoveryTest extends TestCase
     {
         [$device, $table, $seat, $product, $event, $order, $input] = $this->fixture();
         $round = QrOrderRound::sole();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$table->id.'/detail')->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$table->id.'/detail')->assertOk()
             ->assertJsonPath('data.rounds.0.id', $round->id)->assertJsonPath('data.rounds.0.round_no', 1)
             ->assertJsonPath('data.rounds.0.status', 'accepted')
             ->assertJsonPath('data.rounds.0.client_request_id', $event->payload_json['client_request_id']);

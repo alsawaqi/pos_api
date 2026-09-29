@@ -432,6 +432,6 @@ final class KitchenTicketClaimTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson($path, $payload);
+        return $this->withToken($device->plainTextToken)->postJson($path, $payload);
     }
 }

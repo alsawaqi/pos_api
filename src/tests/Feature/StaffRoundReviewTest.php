@@ -138,7 +138,7 @@ final class StaffRoundReviewTest extends TestCase
         $other = $this->seatingRow($this->seatingTable('Other party'));
         $otherBill = $this->seatingOrder($other);
         $before = $otherBill->fresh()->getRawOriginal();
-        $this->withToken($device->device_token)->postJson($this->url($other->uuid, $round->id, 'confirm'))->assertNotFound();
+        $this->withToken($device->plainTextToken)->postJson($this->url($other->uuid, $round->id, 'confirm'))->assertNotFound();
         $this->assertSame($before, $otherBill->fresh()->getRawOriginal());
     }
 
@@ -147,13 +147,13 @@ final class StaffRoundReviewTest extends TestCase
         [$device, $seating, $round] = $this->pendingFixture();
         $before = $round->getRawOriginal();
         $count = TableSessionEvent::query()->count();
-        $this->withToken($device->device_token)->postJson($this->url((string) $seating->id, $round->id, 'confirm'))->assertNotFound();
+        $this->withToken($device->plainTextToken)->postJson($this->url((string) $seating->id, $round->id, 'confirm'))->assertNotFound();
         $foreign = $this->seatingDevice('fixed_pos', 20);
         app('auth')->forgetGuards();
-        $this->withToken($foreign->device_token)->postJson($this->url($seating->uuid, $round->id, 'confirm'))->assertNotFound();
+        $this->withToken($foreign->plainTextToken)->postJson($this->url($seating->uuid, $round->id, 'confirm'))->assertNotFound();
         $station = $this->seatingDevice('payment_station');
         app('auth')->forgetGuards();
-        $this->withToken($station->device_token)->postJson($this->url($seating->uuid, $round->id, 'confirm'))->assertStatus(409);
+        $this->withToken($station->plainTextToken)->postJson($this->url($seating->uuid, $round->id, 'confirm'))->assertStatus(409);
         $this->assertSame($before, $round->fresh()->getRawOriginal());
         $this->assertSame($count, TableSessionEvent::query()->count());
     }
@@ -172,7 +172,7 @@ final class StaffRoundReviewTest extends TestCase
         $before = $round->getRawOriginal();
         $beforeBill = $seating->fresh()->order->getRawOriginal();
         foreach (['confirm', 'reject'] as $operation) {
-            $this->withToken($device->device_token)->postJson($this->url($seating->uuid, $round->id, $operation))
+            $this->withToken($device->plainTextToken)->postJson($this->url($seating->uuid, $round->id, $operation))
                 ->assertNotFound()->assertJsonPath('errors.0.code', 'table_round_not_found');
         }
         $this->assertSame($before, $round->fresh()->getRawOriginal());
@@ -205,7 +205,7 @@ final class StaffRoundReviewTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson($this->url($uuid, $roundId, $operation))
+        return $this->withToken($device->plainTextToken)->postJson($this->url($uuid, $roundId, $operation))
             ->assertOk()->assertJsonPath('data.outcome', $outcome)->json('data');
     }
 

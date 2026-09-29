@@ -72,7 +72,7 @@ final class QrFlowBoundaryRegressionTest extends TestCase
             'status' => $status, 'source' => 'qr_web', 'temp_reference' => 'F01-SYNTHETIC',
             'subtotal' => '1.000', 'grand_total' => '1.000', 'opened_at' => now(),
         ]);
-        $this->withToken((string) $reader->device_token)->postJson('/api/v1/device/tables/clear-empty-session', [
+        $this->withToken((string) $reader->plainTextToken)->postJson('/api/v1/device/tables/clear-empty-session', [
             'table_id' => $table->id, 'seating_uuid' => $seat->uuid,
         ])->assertConflict()->assertJsonPath('errors.0.code', 'table_session_not_empty');
         $this->assertSame('open', $seat->fresh()->status);

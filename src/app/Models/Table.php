@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -18,6 +19,11 @@ class Table extends Model
     protected $table = 'pos_tables';
 
     protected $guarded = [];
+
+    public function floor(): BelongsTo
+    {
+        return $this->belongsTo(Floor::class);
+    }
 
     /**
      * @return array<string, string>

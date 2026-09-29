@@ -93,6 +93,85 @@ jobs:
           grep -Fxq 'All real multi-hop true-client-IP checks passed.' "$harness_log"
           printf 'TrueClientIp evidence: %s PASS / %s FAIL\n' "$pass_count" "$fail_count"
 
+  postgres-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: .
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: p0_test
+          POSTGRES_PASSWORD: p0_disposable_only
+          POSTGRES_DB: qr_fix4_p0
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U p0_test -d qr_fix4_p0"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      APP_ENV: testing
+      LAUNCH_P0_DISPOSABLE: '1'
+      DB_CONNECTION: pgsql
+      DB_HOST: qrfix2-pg
+      DB_PORT: '5432'
+      DB_DATABASE: qr_fix4_p0
+      DB_USERNAME: p0_test
+      DB_PASSWORD: p0_disposable_only
+      DB_URL: ''
+      CHARITY_API_URL: ''
+      BROADCAST_CONNECTION: 'null'
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      QUEUE_CONNECTION: sync
+      MAIL_MAILER: array
+      APP_KEY: 'base64:QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE='
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pos_api
+      # Owner must push companion branches after independent review.
+      # Private cross-repo checkouts require POS_CI_READ_TOKEN with contents:read.
+      - uses: actions/checkout@v4
+        with:
+          repository: alsawaqi/pos_admin
+          ref: launch-p0-tenancy
+          path: pos_admin
+          token: ${{ secrets.POS_CI_READ_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: alsawaqi/pos_merchant
+          ref: launch-p0-tenancy
+          path: pos_merchant
+          token: ${{ secrets.POS_CI_READ_TOKEN || github.token }}
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: ctype, curl, dom, fileinfo, filter, iconv, mbstring, openssl, pcntl, pdo_pgsql, pdo_sqlite, sqlite3, simplexml, tokenizer, xml, xmlreader, xmlwriter, zlib
+          ini-values: memory_limit=1G
+          coverage: none
+      - name: Prepare disposable real-schema job
+        run: |
+          echo '127.0.0.1 qrfix2-pg' | sudo tee -a /etc/hosts
+          for app in pos_api pos_admin pos_merchant; do
+            (
+              cd "$app/src"
+              mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache
+              cp .env.example .env
+              composer install --prefer-dist --no-interaction --no-progress
+            )
+          done
+      - name: Tenant isolation and all PostgreSQL races
+        run: |
+          set -o pipefail
+          php pos_admin/tests/Postgres/run-launch-p0.php | tee postgres-job.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pos_api-postgres-evidence
+          path: postgres-job.log
+
   # ---- CD: auto-deploy to the production VPS ----
   # Push to main only (never PRs), and only after the device-contract tests
   # and real true-client-IP integration gate are green. SSHes into the VPS,
@@ -103,7 +182,7 @@ jobs:
   # key), VPS_KNOWN_HOSTS (pinned host key).
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [php-tests, true-client-ip-integration]
+    needs: [php-tests, true-client-ip-integration, postgres-tests]
     runs-on: ubuntu-latest
     concurrency:
       group: prod-deploy-pos-api

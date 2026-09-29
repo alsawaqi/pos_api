@@ -7,7 +7,6 @@ namespace App\Actions\Device;
 use App\Models\Device;
 use App\Models\DeviceActivationToken;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -29,6 +28,10 @@ final readonly class ActivateDeviceAction
         $tokenHash = DeviceActivationToken::hash($code);
 
         return DB::transaction(function () use ($tokenHash): Device {
+            // Lock the device first, like assignment/revocation. Then re-read
+            // the code under lock so a move or a second activation cannot race.
+            $deviceId = DeviceActivationToken::query()->where('token_hash', $tokenHash)->value('device_id');
+            $device = Device::query()->whereKey($deviceId)->lockForUpdate()->first();
             $token = DeviceActivationToken::query()
                 ->where('token_hash', $tokenHash)
                 ->lockForUpdate()
@@ -37,10 +40,6 @@ final readonly class ActivateDeviceAction
                 throw new RuntimeException('Activation failed: invalid or expired code.');
             }
 
-            $device = Device::query()
-                ->whereKey($token->device_id)
-                ->lockForUpdate()
-                ->first();
             if ($device === null || ! $device->isAssigned()) {
                 throw new RuntimeException('Activation failed: device is not assigned to a branch.');
             }
@@ -50,17 +49,9 @@ final readonly class ActivateDeviceAction
 
             $token->update(['used_at' => now()]);
 
-            // Mint the bearer credential and promote the assigned device into its
-            // operable state atomically. QR station guards deliberately require
-            // status=active, so activation is the lifecycle boundary that makes a
-            // newly enrolled station usable.
-            $device->update([
-                'device_token' => 'mdev_'.Str::random(60),
-                'status' => 'active',
-                'last_seen_at' => now(),
-            ]);
+            $device->issueCredential();
 
-            return $device->fresh();
+            return $device;
         });
     }
 }

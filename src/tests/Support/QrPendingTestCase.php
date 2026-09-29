@@ -99,7 +99,7 @@ abstract class QrPendingTestCase extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) ($device ?? $this->till)->device_token)
+        return $this->withToken((string) ($device ?? $this->till)->plainTextToken)
             ->getJson('/api/v1/device/qr/pending-orders');
     }
 
@@ -117,7 +117,7 @@ abstract class QrPendingTestCase extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     protected function snapshot(): array

@@ -48,7 +48,7 @@ final class T12Fix5DineInIdentityTest extends TestCase
         $order = $this->seatingOrder($seat, ['customer_id' => $ids[$attachedKey]]);
         $this->seatingRound($seat, $order);
         $this->app['auth']->forgetGuards();
-        $open = $this->withToken($station->device_token)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
+        $open = $this->withToken($station->plainTextToken)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
         $bind = $this->postJson('/api/v1/public/qr/table-bind', ['table_token' => $open->json('data.table_token'), 'client_secret' => 's1-table'])->assertOk();
         $this->withHeaders(['X-QR-Session' => $bind->json('data.session_uuid'), 'X-QR-Client-Secret' => 's1-table']);
         $order = Order::whereNotNull('table_session_id')->sole();
@@ -58,7 +58,7 @@ final class T12Fix5DineInIdentityTest extends TestCase
             LoyaltyAccount::create(['uuid' => Str::uuid(), 'company_id' => 100, 'customer_id' => $id, 'loyalty_rule_id' => $rule->id, 'point_balance' => 200, 'stamp_count' => 0]);
         }
         $this->app['auth']->forgetGuards();
-        $this->withToken($till->device_token)->postJson('/api/v1/device/tables/'.$seat->uuid.'/adjust', [
+        $this->withToken($till->plainTextToken)->postJson('/api/v1/device/tables/'.$seat->uuid.'/adjust', [
             'table_id' => $seat->table_id, 'seating_key' => $seat->uuid, 'queued_offline' => false, 'client_request_id' => (string) Str::uuid(),
             'adjustment' => ['kind' => 'loyalty', 'mode' => 'redeem', 'rule_id' => $rule->id, 'blocks' => 1, 'approved_by_staff_id' => 7, 'authorized_by' => 'S1 staff'],
         ])->assertOk();
@@ -160,7 +160,7 @@ final class T12Fix5DineInIdentityTest extends TestCase
         Customer::create(['uuid' => Str::uuid(), 'company_id' => 100, 'name' => 'Higher', 'phone' => '90000001']);
         $station = $this->seatingDevice('payment_station');
         $product = $this->seatingProduct();
-        $this->withToken($station->device_token)->postJson('/api/v1/device/qr/rotate')->assertOk();
+        $this->withToken($station->plainTextToken)->postJson('/api/v1/device/qr/rotate')->assertOk();
         $qr = QrSession::whereNull('table_id')->sole();
         $this->postJson('/api/v1/public/qr/bind', ['token' => $qr->token, 'client_secret' => 'fix5-new'])->assertOk();
         $this->withHeaders(['X-QR-Session' => $qr->uuid, 'X-QR-Client-Secret' => 'fix5-new'])->postJson('/api/v1/public/qr/checkout', [

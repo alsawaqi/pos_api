@@ -32,7 +32,7 @@ final class TableCancellationWasteTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/'.$path, $payload);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $payload);
     }
 
     private function fixture(): array

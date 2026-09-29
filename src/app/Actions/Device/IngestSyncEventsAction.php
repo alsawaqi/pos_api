@@ -53,11 +53,39 @@ class IngestSyncEventsAction
         $duplicates = 0;
 
         foreach ($events as $event) {
+            $identity = $event['identity'] ?? null;
+            if ($identity !== null && (
+                (int) ($identity['company_id'] ?? 0) !== (int) $device->company_id
+                || (int) ($identity['branch_id'] ?? 0) !== (int) $device->branch_id
+                || ($identity['device_uuid'] ?? null) !== $device->uuid
+            )) {
+                $results[] = [
+                    'client_event_id' => $event['client_event_id'], 'duplicate' => false,
+                    'status' => 'failed', 'event_id' => null,
+                    'result' => ['error' => 'identity_mismatch', 'code' => 'identity_mismatch', 'permanent' => true],
+                ];
+
+                continue;
+            }
             $existing = SyncEvent::query()
                 ->where('device_id', $device->getKey())
                 ->where('client_event_id', $event['client_event_id'])
                 ->first();
 
+            if ($existing !== null && (
+                (int) $existing->company_id !== (int) $device->company_id
+                || (int) $existing->branch_id !== (int) $device->branch_id
+            )) {
+                if (in_array($existing->ack_status, [SyncEvent::STATUS_FAILED, SyncEvent::STATUS_RECEIVED], true)) {
+                    $existing->update(['ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,
+                        'result_json' => ['error' => 'identity_mismatch', 'permanent' => true]]);
+                }
+                $results[] = ['client_event_id' => $event['client_event_id'], 'duplicate' => true,
+                    'status' => 'needs_review', 'result' => ['error' => 'identity_mismatch', 'permanent' => true]];
+                $duplicates++;
+
+                continue;
+            }
             if ($existing !== null) {
                 // A previously FAILED event is RETRIED, not swallowed. Serialize
                 // retries across API workers: the ledger's UNIQUE constraint
@@ -104,6 +132,8 @@ class IngestSyncEventsAction
                 $row = SyncEvent::create([
                     'client_event_id' => $event['client_event_id'],
                     'device_id' => $device->getKey(),
+                    'company_id' => $device->company_id,
+                    'branch_id' => $device->branch_id,
                     'event_type' => $event['event_type'],
                     'payload_json' => $event['payload'],
                     'client_timestamp' => Carbon::parse($event['client_timestamp']),

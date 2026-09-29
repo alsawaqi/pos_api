@@ -31,7 +31,11 @@ final class TenantReferenceGuard
     public static function assertStaffInTenant(Device $device, ?int $staffId, string $message): void
     {
         if ($staffId !== null
-            && ! PosStaff::withTrashed()->where('company_id', $device->company_id)->whereKey($staffId)->exists()) {
+            && ! PosStaff::query()->where('company_id', $device->company_id)->where('status', 'active')
+                ->where(function ($query) use ($device): void {
+                    $query->where('branch_id', $device->branch_id)
+                        ->orWhere(fn ($q) => $q->whereNull('branch_id')->where('position', 'manager'));
+                })->whereKey($staffId)->exists()) {
             throw new RuntimeException($message);
         }
     }

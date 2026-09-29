@@ -121,7 +121,7 @@ class CreateOrderHandler implements SyncEventHandler
                     || (int) $existing->branch_id !== (int) $device->branch_id)) {
                 // §9.11 — a uuid squatted by another tenant/branch can neither
                 // be read nor overwritten; fail without leaking its contents.
-                throw new RuntimeException('order uuid already exists outside the device tenant');
+                throw new RuntimeException('order not found');
             }
             if ($existing !== null && $existing->status === Order::STATUS_AWAITING_PAYMENT) {
                 throw new RuntimeException(sprintf(
@@ -391,7 +391,7 @@ class CreateOrderHandler implements SyncEventHandler
 
         $tableId = isset($order['table_id']) ? (int) $order['table_id'] : null;
         if ($tableId !== null
-            && ! Table::query()->where('company_id', $companyId)->whereKey($tableId)->exists()) {
+            && ! Table::query()->where('company_id', $companyId)->whereHas('floor', fn ($q) => $q->where('branch_id', $device->branch_id))->whereKey($tableId)->exists()) {
             throw new RuntimeException('order references a table outside the device tenant');
         }
 
@@ -408,7 +408,7 @@ class CreateOrderHandler implements SyncEventHandler
         // primary table above, applied to the list).
         $joinedTableIds = $this->joinedTableIds($order);
         if ($joinedTableIds !== []) {
-            $ownedTables = Table::query()->where('company_id', $companyId)->whereIn('id', $joinedTableIds)->pluck('id')->all();
+            $ownedTables = Table::query()->where('company_id', $companyId)->whereHas('floor', fn ($q) => $q->where('branch_id', $device->branch_id))->whereIn('id', $joinedTableIds)->pluck('id')->all();
             $foreignTables = array_diff($joinedTableIds, array_map('intval', $ownedTables));
             if ($foreignTables !== []) {
                 throw new RuntimeException('order references joined table(s) outside the device tenant: '.implode(',', $foreignTables));

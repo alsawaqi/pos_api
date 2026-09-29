@@ -49,7 +49,7 @@ final class JoinedSeatingClosureTest extends TestCase
             $payload += ['voided_at' => now()->toIso8601String(), 'reason' => 'Joined seating cancellation'];
         }
         app('auth')->forgetGuards();
-        $response = $this->withToken((string) $device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => $eventType,
                 'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,
@@ -107,7 +107,7 @@ final class JoinedSeatingClosureTest extends TestCase
         $order->update(['source' => $source, 'status' => $status]);
         $before = [Order::query()->get()->toArray(), TableSession::query()->orderBy('id')->get()->toArray()];
         $target = $viaJoined ? $joined[0] : $primary;
-        $this->withToken($device->device_token)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $target->table_id])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $target->table_id])
             ->assertStatus(409)->assertJsonPath('errors.0.code', $status === 'awaiting_payment' ? 'qr_table_payment_pending' : 'qr_table_unpaid_order');
         $this->assertSame($before, [Order::query()->get()->toArray(), TableSession::query()->orderBy('id')->get()->toArray()]);
         $this->assertDatabaseCount('pos_table_session_events', 0);
@@ -139,7 +139,7 @@ final class JoinedSeatingClosureTest extends TestCase
             'subtotal_baisas' => 1000, 'tax_baisas' => 0, 'total_baisas' => 1000, 'submitted_at' => now(),
         ]);
         $before = [$primary->getRawOriginal(), $joined[1]->getRawOriginal(), $alias->getRawOriginal(), $order->fresh()->getRawOriginal()];
-        $this->withToken($device->device_token)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $joined[0]->table_id])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $joined[0]->table_id])
             ->assertOk()->assertJsonPath('data.status', 'cleared');
         $this->assertSame('closed', $joined[0]->fresh()->status);
         $this->assertSame('cleared', $joined[0]->fresh()->close_reason);
@@ -149,7 +149,7 @@ final class JoinedSeatingClosureTest extends TestCase
         $this->assertSame([(int) $joined[0]->id], TableSessionEvent::query()->pluck('table_session_id')->map(fn ($id): int => (int) $id)->all());
         $closedBefore = $joined[0]->fresh()->getRawOriginal();
         $this->travel(1)->hours();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $joined[0]->table_id])->assertOk();
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/qr/clear-table', ['table_id' => $joined[0]->table_id])->assertOk();
         $this->assertSame($closedBefore, $joined[0]->fresh()->getRawOriginal());
         $this->assertDatabaseCount('pos_table_session_events', 1);
     }

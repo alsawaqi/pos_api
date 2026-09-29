@@ -52,7 +52,7 @@ final class CancelStaffLineContractTest extends TestCase
     public function test_online_twin_and_new_sync_envelope_replay_share_the_same_journal_identity(): void
     {
         [$device, $seating, $order, $round, $item, $payload] = $this->fixture();
-        $response = $this->withToken($device->device_token)
+        $response = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/cancel-line', $payload)
             ->assertOk()->assertJsonPath('data.outcome', 'cancelled');
         $ack = $response->json('data');
@@ -178,7 +178,7 @@ final class CancelStaffLineContractTest extends TestCase
 
     private function push(Device $device, array $payload, string $outcome): array
     {
-        $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.cancel_line',
                 'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,

@@ -38,6 +38,10 @@ class SyncPushRequest extends FormRequest
             'events.*.client_event_id' => ['required', 'uuid'],
             'events.*.event_type' => ['required', 'string', Rule::in(SyncEvent::EVENT_TYPES)],
             'events.*.client_timestamp' => ['required', 'date'],
+            'events.*.identity' => ['sometimes', 'array:company_id,branch_id,device_uuid'],
+            'events.*.identity.company_id' => ['required_with:events.*.identity', 'integer', 'min:1'],
+            'events.*.identity.branch_id' => ['required_with:events.*.identity', 'integer', 'min:1'],
+            'events.*.identity.device_uuid' => ['required_with:events.*.identity', 'uuid'],
             'events.*.payload' => ['required', 'array'],
         ];
     }

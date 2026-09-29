@@ -64,7 +64,7 @@ class DeviceSyncPushTest extends TestCase
 
         $this->withToken('mdev_sync_unassigned')
             ->postJson('/api/v1/device/sync/push', ['events' => [$this->event()]])
-            ->assertStatus(409);
+            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
 
         $this->assertDatabaseCount('pos_sync_events', 0);
     }
@@ -247,7 +247,7 @@ class DeviceSyncPushTest extends TestCase
             }
         });
         try {
-            $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+            $response = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
                 'events' => [$this->event('table.session.round', ['payload' => [
                     'seating_key' => (string) Str::uuid(), 'table_id' => (int) $table->id,
                     'queued_offline' => true, 'client_request_id' => 'catalogue-race-held',

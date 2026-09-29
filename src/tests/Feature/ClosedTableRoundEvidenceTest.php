@@ -24,9 +24,9 @@ final class ClosedTableRoundEvidenceTest extends TestCase
         $rejected = $this->seatingRound($seat, $order, ['round_no' => 2, 'status' => 'rejected', 'needs_review' => true]);
         $pending = $this->seatingRound($seat, $order, ['round_no' => 3, 'status' => 'pending_confirmation', 'needs_review' => true]);
         $before = QrOrderRound::orderBy('id')->get()->toArray();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/orders/history')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/orders/history')
             ->assertOk()->assertJsonMissingPath('data.orders.0.table_round_evidence');
-        $response = $this->withToken($device->device_token)->getJson('/api/v1/device/orders/history?include_table_rounds=1')->assertOk();
+        $response = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/orders/history?include_table_rounds=1')->assertOk();
         $response->assertJsonPath('data.orders.0.table_round_evidence.complete', true)
             ->assertJsonPath('data.orders.0.table_round_evidence.order_uuid', $order->uuid)
             ->assertJsonPath('data.orders.0.table_round_evidence.table_session_uuid', $seat->uuid)
@@ -42,7 +42,11 @@ final class ClosedTableRoundEvidenceTest extends TestCase
         $this->assertSame($before, QrOrderRound::orderBy('id')->get()->toArray());
         $device->forceFill(['branch_id' => $device->branch_id + 1])->save();
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/orders/history?include_table_rounds=1')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/orders/history?include_table_rounds=1')
+            ->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+        $device->issueCredential();
+        $this->app['auth']->forgetGuards();
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/orders/history?include_table_rounds=1')
             ->assertOk()->assertJsonCount(0, 'data.orders');
     }
 }

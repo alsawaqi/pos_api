@@ -63,7 +63,7 @@ final class SharedBillAdjustmentsTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/'.$path, $data);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $data);
     }
 
     private function intent($seat, array $adjustment): array
@@ -206,7 +206,7 @@ final class SharedBillAdjustmentsTest extends TestCase
         $this->adjust($device, $seat, ['kind' => 'discount', 'mode' => 'fixed', 'amount_baisas' => 500, 'label' => 'Service'])->assertOk();
         $this->postAs($device, 'qr/claim-settlement', ['order_uuid' => $order->uuid])->assertOk()->assertJsonPath('data.charge_amount_baisas', 4148);
         $this->adjust($device, $seat, ['kind' => 'discount', 'mode' => 'clear'])->assertConflict()->assertJsonPath('errors.0.code', 'bill_reserved');
-        $this->withToken($device->device_token)->getJson('/api/v1/device/qr/orders/'.$order->uuid.'/checkout')->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/qr/orders/'.$order->uuid.'/checkout')->assertOk()
             ->assertJsonPath('data.order.manual_discount_baisas', 500)->assertJsonPath('data.claim.charge_amount_baisas', 4148);
         $event = ['client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(),
             'payload' => ['order_uuid' => $order->uuid, 'paid_at' => now()->toIso8601String(), 'loyalty_rule_ids' => [999],
@@ -231,7 +231,7 @@ final class SharedBillAdjustmentsTest extends TestCase
             ->assertConflict()->assertJsonPath('errors.0.code', 'customer_not_found');
         $this->adjust($device, $seat, ['kind' => 'customer', 'mode' => 'attach', 'customer_id' => $customer->id])->assertOk();
         $this->assertSame($customer->id, $order->refresh()->customer_id);
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$seat->table_id.'/detail')->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$seat->table_id.'/detail')->assertOk()
             ->assertJsonPath('data.bill.customer.id', $customer->id)->assertJsonPath('data.bill.customer.name', 'T65 synthetic')
             ->assertJsonMissingPath('data.bill.customer_id')->assertJsonMissingPath('data.bill.plate_number');
         $this->adjust($device, $seat, ['kind' => 'customer', 'mode' => 'detach'])->assertOk();
@@ -280,7 +280,7 @@ final class SharedBillAdjustmentsTest extends TestCase
         unset($p['adjustment']);
         $p += ['submitted_at' => now()->toIso8601String(), 'lines' => [['product_id' => $product->id, 'qty' => 1, 'addon_ids' => []]]];
         $this->postAs($device, 'tables/'.$seat->uuid.'/round', $p)->assertOk()->assertJsonPath('data.round_status', 'accepted');
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$seat->table_id.'/detail')->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$seat->table_id.'/detail')->assertOk()
             ->assertJsonPath('data.bill.manual_discount_baisas', 445)->assertJsonPath('data.bill.adjustment_state.discount.stale', true)
             ->assertJsonPath('data.bill.adjustment_state.discount.basis_baisas', 4450);
     }

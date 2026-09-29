@@ -105,14 +105,14 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->getJson(self::URL);
+        return $this->withToken((string) $device->plainTextToken)->getJson(self::URL);
     }
 
     private function claimAs(Device $device, string $orderUuid): TestResponse
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)
+        return $this->withToken((string) $device->plainTextToken)
             ->postJson('/api/v1/device/qr/claim-charge', [
                 'order_uuid' => $orderUuid,
             ]);
@@ -316,12 +316,13 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
             ->unassigned()
             ->create(['device_type' => 'payment_station']);
         $this->getAs($unassigned)
-            ->assertStatus(409)
+            ->assertStatus(401)
             ->assertExactJson([
                 'data' => null,
+                'message' => 'Unauthenticated.',
                 'errors' => [[
-                    'code' => 'device_unassigned',
-                    'message' => 'This device is not assigned to a branch.',
+                    'code' => 'device_reactivation_required',
+                    'message' => 'This device needs activation.',
                 ]],
             ]);
 
@@ -329,12 +330,13 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
             'status' => 'assigned',
         ]);
         $this->getAs($assigned)
-            ->assertStatus(409)
+            ->assertStatus(401)
             ->assertExactJson([
                 'data' => null,
+                'message' => 'Unauthenticated.',
                 'errors' => [[
-                    'code' => 'device_not_active',
-                    'message' => 'This payment station is not active.',
+                    'code' => 'device_reactivation_required',
+                    'message' => 'This device needs activation.',
                 ]],
             ]);
     }

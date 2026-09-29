@@ -176,7 +176,7 @@ final class QrTableSessionLifecycleTest extends TestCase
         $expiresAt = $seating->getRawOriginal('expires_at');
         $station->forceDelete();
         app('auth')->forgetGuards();
-        $this->withToken((string) $till->device_token)
+        $this->withToken((string) $till->plainTextToken)
             ->postJson('/api/v1/device/qr/clear-table', ['table_id' => $table->id])
             ->assertOk()->assertJsonPath('data.status', 'cleared');
         $seating->refresh();
@@ -192,7 +192,7 @@ final class QrTableSessionLifecycleTest extends TestCase
         $before = $seating->getRawOriginal();
         $this->travel(1)->days();
         app('auth')->forgetGuards();
-        $this->withToken((string) $till->device_token)
+        $this->withToken((string) $till->plainTextToken)
             ->postJson('/api/v1/device/qr/clear-table', ['table_id' => $table->id])
             ->assertOk();
         $this->assertSame(0, app(ExpireAbandonedTableSessionsAction::class)->handle(now()));
@@ -261,7 +261,7 @@ final class QrTableSessionLifecycleTest extends TestCase
         $foreignBefore = $foreignSeating->getRawOriginal();
         $table = $this->table();
         app('auth')->forgetGuards();
-        $opened = $this->withToken((string) $station->device_token)
+        $opened = $this->withToken((string) $station->plainTextToken)
             ->postJson('/api/v1/device/qr/open-table', [
                 'table_id' => $table->id, 'table_session_id' => $foreignSeating->id,
             ])->assertCreated()->assertJsonMissingPath('data.table_session_id');
@@ -305,7 +305,7 @@ final class QrTableSessionLifecycleTest extends TestCase
         $session = $this->qrSession($station, $table);
         $seating = $this->ensure($session, null, $station);
         app('auth')->forgetGuards();
-        $this->withToken((string) $till->device_token)
+        $this->withToken((string) $till->plainTextToken)
             ->postJson('/api/v1/device/qr/clear-table', ['table_id' => $table->id])
             ->assertOk()->assertJsonPath('data.status', 'cleared');
         $before = $seating->fresh()->getRawOriginal();

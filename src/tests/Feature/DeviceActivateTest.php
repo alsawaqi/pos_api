@@ -37,7 +37,7 @@ class DeviceActivateTest extends TestCase
         $this->assertSame((int) $device->company_id, $res->json('data.device.company_id'));
 
         $device->refresh();
-        $this->assertSame($res->json('data.device_token'), $device->device_token);
+        $this->assertSame(hash('sha256', $res->json('data.device_token')), $device->device_token);
         $this->assertSame('active', $device->status);
     }
 

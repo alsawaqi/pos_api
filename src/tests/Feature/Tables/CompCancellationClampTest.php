@@ -69,7 +69,7 @@ final class CompCancellationClampTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->json($method, '/api/v1/device/'.$path, $data);
+        return $this->withToken($device->plainTextToken)->json($method, '/api/v1/device/'.$path, $data);
     }
 
     /** @return array{key:string, table:int, uuid:string, order:string} */

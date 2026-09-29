@@ -39,7 +39,7 @@ final class T12Fix5CustomerWriteSafetyTest extends TestCase
             $customer->update(['merged_into_customer_id' => $foreign->id]);
             $customer->delete();
         }
-        $this->withToken($device->device_token);
+        $this->withToken($device->plainTextToken);
         $uuid = (string) Str::uuid();
         if (str_starts_with($route, 'attach')) {
             $seat = $this->seatingRow($this->seatingTable(), ['opened_by_device_id' => $device->id]);

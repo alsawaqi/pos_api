@@ -215,7 +215,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $expected = array_replace($first, ['outcome' => 'replayed', 'event_id' => null]);
         unset($expected['event_ids']);
         $this->assertSame($expected, $replay);
-        $online = $this->withToken($device->device_token)
+        $online = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/round', $payload)->assertOk()->json('data');
         $this->assertSame($expected, $online);
         $this->assertSame($roundBefore, QrOrderRound::findOrFail($first['round_id'])->getRawOriginal());
@@ -247,7 +247,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         [$device, $seating, $payload] = $this->roundFixture();
         Product::findOrFail($payload['lines'][0]['product_id'])->update(['status' => 'inactive']);
         $payload['queued_offline'] = false;
-        $response = $this->withToken($device->device_token)
+        $response = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/round', $payload)->assertOk()
             ->assertJsonPath('data.outcome', 'held')
             ->assertJsonPath('data.review_reasons', ['catalogue'])
@@ -267,7 +267,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
     {
         [$device, $seating, $payload] = $this->roundFixture();
         data_set($payload, $key, null);
-        $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.round',
                 'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,
@@ -303,7 +303,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $bill = $seating->fresh()->order;
         Product::findOrFail($payload['lines'][0]['product_id'])->update(['base_price' => '80.000', 'status' => 'inactive']);
         $unavailable->update(['status' => 'active', 'base_price' => '40.000']);
-        $response = $this->withToken($device->device_token)
+        $response = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/confirm')
             ->assertOk()->assertJsonPath('data.outcome', 'accepted')
             ->assertJsonPath('data.round_status', 'accepted')
@@ -329,7 +329,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $this->assertArrayNotHasKey('lines', $resolved->payload);
         $this->assertStringNotContainsString($payload['lines'][1]['notes'], json_encode($resolved->payload, JSON_THROW_ON_ERROR));
         $this->assertSame(3, TableSessionEvent::query()->count());
-        $replay = $this->withToken($device->device_token)
+        $replay = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/confirm')
             ->assertOk()->assertJsonPath('data.outcome', 'replayed')->assertJsonPath('data.event_id', null);
         $this->assertSame([$dropped], $replay->json('data.dropped_lines'));
@@ -345,13 +345,13 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $round = QrOrderRound::findOrFail($heldAck['round_id']);
         $roundBefore = $round->getRawOriginal();
         $billBefore = $seating->fresh()->order->getRawOriginal();
-        $this->withToken($device->device_token)
+        $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/confirm')
             ->assertStatus(409)->assertJsonPath('errors.0.code', 'nothing_to_confirm');
         $this->assertSame($roundBefore, $round->fresh()->getRawOriginal());
         $this->assertSame($billBefore, $seating->fresh()->order->getRawOriginal());
         $this->assertDatabaseCount('pos_table_session_events', 2);
-        $reject = $this->withToken($device->device_token)
+        $reject = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$round->id.'/reject')
             ->assertOk()->assertJsonPath('data.outcome', 'rejected')
             ->assertJsonPath('data.print_pending', false)
@@ -371,28 +371,28 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $unavailable->update(['status' => 'inactive']);
         $payload['lines'][] = ['product_id' => (int) $unavailable->id, 'qty' => 1, 'addon_ids' => [], 'notes' => 'dropped item'];
         $held = $this->push($device, $payload, 'held');
-        $board = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk();
+        $board = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk();
         $beforeBoard = $board->json('data.tables.0');
         $this->assertSame(1, $beforeBoard['seating']['needs_review_count']);
         $this->assertSame(1, $beforeBoard['bill']['pending_rounds']);
         $this->assertSame($held['held_lines'], $beforeBoard['seating']['pending_rounds'][0]['held_lines']);
         $this->assertSame(['catalogue'], $beforeBoard['seating']['pending_rounds'][0]['review_reasons']);
         $this->assertStringNotContainsString('confirm_payload', $board->getContent());
-        $beforeFeed = $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+        $beforeFeed = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/qr/accepted-rounds')
             ->assertOk()->assertJsonPath('data.rounds', [])->json('data');
-        $this->withToken($device->device_token)->postJson('/api/v1/device/kitchen/claim-print', ['ticket_key' => 'round:'.$held['round_id']])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/kitchen/claim-print', ['ticket_key' => 'round:'.$held['round_id']])
             ->assertStatus(409)->assertJsonPath('errors.0.code', 'kitchen_round_not_printable');
-        $review = $this->withToken($device->device_token)
+        $review = $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$held['round_id'].'/confirm')
             ->assertOk()->assertJsonPath('data.print_pending', true)->json('data');
-        $afterBoard = $this->withToken($device->device_token)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables.0');
+        $afterBoard = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/board')->assertOk()->json('data.tables.0');
         $this->assertSame(0, $afterBoard['seating']['needs_review_count']);
         $this->assertSame([], $afterBoard['seating']['pending_rounds']);
         $this->assertSame(0, $afterBoard['bill']['pending_rounds']);
         $this->assertSame(1000, $afterBoard['bill']['grand_total_baisas']);
-        $afterFeed = $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+        $afterFeed = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/qr/accepted-rounds')
             ->assertOk()->assertJsonPath('data.rounds', [])->json('data');
-        $claim = $this->withToken($device->device_token)->postJson('/api/v1/device/kitchen/claim-print', [
+        $claim = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/kitchen/claim-print', [
             'ticket_key' => 'round:'.$held['round_id'],
         ])->assertCreated()->json('data');
         $this->assertCount(1, $claim['priced_lines']);
@@ -400,7 +400,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $this->assertArrayNotHasKey('held_reason', $claim['priced_lines'][0]);
         $this->assertSame($review['dropped_lines'][0]['product_id'], (int) $unavailable->id);
         $this->assertTrue((bool) QrOrderRound::findOrFail($held['round_id'])->needs_review);
-        $this->withToken($device->device_token)->getJson('/api/v1/device/qr/accepted-rounds')
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/qr/accepted-rounds')
             ->assertOk()->assertJsonPath('data.rounds', []);
         fwrite(STDOUT, "\nT4_HELD_BOARD_FEED_CLAIM_JSON=".json_encode([
             'board_before' => $beforeBoard, 'feed_before' => $beforeFeed,
@@ -416,7 +416,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         $payload['lines'][] = ['product_id' => (int) $unavailable->id, 'qty' => 1, 'addon_ids' => [], 'notes' => null];
         $payload['printed_at'] = now()->subMinutes(2)->toIso8601String();
         $heldAck = $this->push($device, $payload, 'held');
-        $this->withToken($device->device_token)
+        $this->withToken($device->plainTextToken)
             ->postJson('/api/v1/device/tables/'.$seating->uuid.'/rounds/'.$heldAck['round_id'].'/confirm')
             ->assertOk()->assertJsonPath('data.outcome', 'accepted')
             ->assertJsonPath('data.print_pending', false)
@@ -452,7 +452,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
 
     private function push(Device $device, array $payload, string $outcome): array
     {
-        $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [[
                 'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.round',
                 'client_timestamp' => $payload['submitted_at'], 'payload' => $payload,

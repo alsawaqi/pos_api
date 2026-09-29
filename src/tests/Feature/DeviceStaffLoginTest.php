@@ -139,7 +139,7 @@ class DeviceStaffLoginTest extends TestCase
 
         $this->withToken('mdev_unassigned')
             ->postJson('/api/v1/auth/pos/login', ['pin' => '123456'])
-            ->assertStatus(409);
+            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 
     public function test_the_pin_must_be_4_to_6_digits(): void

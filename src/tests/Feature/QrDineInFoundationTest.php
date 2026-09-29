@@ -516,7 +516,7 @@ final class QrDineInFoundationTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     private function qrStatus(QrSession $session, string $secret): TestResponse

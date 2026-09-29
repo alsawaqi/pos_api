@@ -1,8 +1,10 @@
 <?php
 
 use App\Http\Middleware\AttachSentryDeviceContext;
+use App\Http\Middleware\EnsureCompanyActive;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\ResolveQrSession;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -48,10 +50,20 @@ return Application::configure(basePath: dirname(__DIR__))
         // route-level auth:pos_device but resolves the device via the lazy
         // viaRequest guard explicitly.
         $middleware->api(append: [
+            EnsureCompanyActive::class,
             AttachSentryDeviceContext::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        $exceptions->render(function (AuthenticationException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'data' => null,
+                    'message' => 'Unauthenticated.',
+                    'errors' => [['code' => 'device_reactivation_required', 'message' => 'This device needs activation.']],
+                ], 401);
+            }
+        });
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );

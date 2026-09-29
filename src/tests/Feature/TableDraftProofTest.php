@@ -52,7 +52,7 @@ final class TableDraftProofTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$table->id.'/draft-proof?'.http_build_query($input));
+        return $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$table->id.'/draft-proof?'.http_build_query($input));
     }
 
     private function roundEvent(Device $device, TableSession $seat, int $productId, int $qty = 1): SyncEvent
@@ -64,7 +64,7 @@ final class TableDraftProofTest extends TestCase
                 'lines' => [['product_id' => $productId, 'qty' => $qty, 'notes' => 'Keep exactly', 'addon_ids' => []]],
             ]];
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')->assertJsonPath('data.results.0.result.outcome', 'appended');
 
         return SyncEvent::where('client_event_id', $event['client_event_id'])->sole();
@@ -408,7 +408,7 @@ final class TableDraftProofTest extends TestCase
                 'tax_total_baisas' => 0, 'grand_total_baisas' => 2000,
                 'lines' => [['product_id' => $product->id, 'qty' => 2, 'unit_price_baisas' => 1000, 'line_total_baisas' => 2000]],
             ]]];
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
         $order = Order::sole();
         // Historical same-bill link, not a second bill or a combine. The real

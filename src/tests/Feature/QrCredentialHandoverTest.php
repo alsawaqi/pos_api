@@ -65,7 +65,7 @@ class QrCredentialHandoverTest extends TestCase
         $billBefore = $bill->fresh()->getRawOriginal();
         $roundBefore = $round->fresh()->getRawOriginal();
         $seatingBefore = $old->tableSession->getRawOriginal();
-        $this->withToken($till->device_token)->postJson('/api/v1/device/tables/'.$old->tableSession->uuid.'/release-credential')
+        $this->withToken($till->plainTextToken)->postJson('/api/v1/device/tables/'.$old->tableSession->uuid.'/release-credential')
             ->assertOk()->assertJsonPath('data.released', 1)->assertJsonPath('data.bill_uuid', $bill->uuid);
         $this->assertSame($billBefore, $bill->fresh()->getRawOriginal());
         $this->assertSame($roundBefore, $round->fresh()->getRawOriginal());

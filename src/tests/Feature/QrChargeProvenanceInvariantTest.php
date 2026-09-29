@@ -1366,7 +1366,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->getJson(self::AWAITING_URL);
+        return $this->withToken((string) $device->plainTextToken)->getJson(self::AWAITING_URL);
     }
 
     /** @return list<string> */
@@ -1414,7 +1414,7 @@ final class QrChargeProvenanceInvariantTest extends TestCase
     {
         app('auth')->forgetGuards();
 
-        return $this->withToken((string) $device->device_token)->postJson($url, $payload);
+        return $this->withToken((string) $device->plainTextToken)->postJson($url, $payload);
     }
 
     /** @param list<array<string, mixed>> $events */

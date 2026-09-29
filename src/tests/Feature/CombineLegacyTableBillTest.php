@@ -140,7 +140,7 @@ final class CombineLegacyTableBillTest extends TestCase
     public function test_preview_is_private_read_only_and_does_not_expose_identity_or_snapshots(): void
     {
         $before = $this->rows();
-        $response = $this->withToken($this->device->device_token)->getJson('/api/v1/device/tables/'.$this->source->table_id.'/combine-preview?source_order_uuid='.$this->source->uuid)
+        $response = $this->withToken($this->device->plainTextToken)->getJson('/api/v1/device/tables/'.$this->source->table_id.'/combine-preview?source_order_uuid='.$this->source->uuid)
             ->assertOk()->assertHeader('Cache-Control', 'no-store, private')
             ->assertJsonPath('data.source.grand_total_baisas', 2415)->assertJsonPath('data.target.grand_total_baisas', 1000)
             ->assertJsonPath('data.combined_grand_total_baisas', 3415)->assertJsonPath('data.requires_manager_pin', true);
@@ -364,7 +364,7 @@ final class CombineLegacyTableBillTest extends TestCase
             'order.void' => 'combined order is read-only history: '.$this->source->uuid,
             default => 'order '.$this->source->uuid.' already exists in terminal status combined',
         };
-        $this->withToken($this->device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [[
+        $this->withToken($this->device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => (string) Str::uuid(), 'event_type' => $type,
             'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,
         ]]])->assertOk()->assertJsonPath('data.results.0.status', 'failed')
@@ -377,10 +377,10 @@ final class CombineLegacyTableBillTest extends TestCase
     {
         $input = $this->input();
         $path = '/api/v1/device/tables/'.$this->source->table_id.'/combine';
-        $first = $this->withToken($this->device->device_token)->postJson($path, $input)
+        $first = $this->withToken($this->device->plainTextToken)->postJson($path, $input)
             ->assertOk()->assertJsonPath('data.status', 'processed')->assertJsonPath('data.result.outcome', 'combined');
         fwrite(STDOUT, "\nUNIFIED_COMBINE_RESULT_JSON=".json_encode($first->json(), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
-        $this->withToken($this->device->device_token)->postJson($path, $input)->assertOk()->assertExactJson($first->json());
+        $this->withToken($this->device->plainTextToken)->postJson($path, $input)->assertOk()->assertExactJson($first->json());
         $route = app('router')->getRoutes()->getByName('device.tables.combine');
         $this->assertContains('throttle:pos-login', $route->gatherMiddleware());
     }
@@ -455,14 +455,14 @@ final class CombineLegacyTableBillTest extends TestCase
         $path = '/api/v1/device/tables/'.$this->source->table_id.'/combine';
         $this->travel(6)->minutes();
         $before = $this->rows();
-        $this->withToken($this->device->device_token)->postJson($path, $input)->assertStatus(409)
+        $this->withToken($this->device->plainTextToken)->postJson($path, $input)->assertStatus(409)
             ->assertJsonPath('errors.0.code', 'combine_preview_stale')
             ->assertJsonPath('combine_final_no_write', Arr::except($input, ['pin']) + ['table_id' => $this->source->table_id]);
         $this->assertSame($before, $this->rows());
         $input = $this->input();
         $result = $this->combine($input);
         $this->travel(6)->minutes();
-        $this->withToken($this->device->device_token)->postJson($path, $input)->assertOk()
+        $this->withToken($this->device->plainTextToken)->postJson($path, $input)->assertOk()
             ->assertJsonPath('data.result', $result)->assertJsonMissingPath('combine_final_no_write');
     }
 
@@ -471,10 +471,10 @@ final class CombineLegacyTableBillTest extends TestCase
         $input = $this->input();
         $path = '/api/v1/device/tables/'.$this->source->table_id.'/combine';
         $this->source->update(['note' => 'Changed']);
-        $this->withToken($this->device->device_token)->postJson($path, $input)->assertStatus(409)
+        $this->withToken($this->device->plainTextToken)->postJson($path, $input)->assertStatus(409)
             ->assertJsonMissingPath('combine_final_no_write');
         $this->travel(6)->minutes();
-        $this->withToken($this->device->device_token)->postJson($path, array_replace($input, ['pin' => '1111']))
+        $this->withToken($this->device->plainTextToken)->postJson($path, array_replace($input, ['pin' => '1111']))
             ->assertStatus(401)->assertJsonMissingPath('combine_final_no_write');
     }
 
@@ -529,7 +529,7 @@ final class CombineLegacyTableBillTest extends TestCase
         $replay = app(ClaimQrSettlementAction::class)->handle($this->device, ['order_uuid' => $this->target->uuid]);
         $this->assertTrue($replay['already_claimed_by_this_device']);
         $this->assertSame(3415, $replay['charge_amount_baisas']);
-        $this->withToken($this->device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [[
+        $this->withToken($this->device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(),
             'payload' => ['order_uuid' => $this->target->uuid, 'payments' => [['method' => 'cash', 'amount_baisas' => 3415]]],
         ]]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');

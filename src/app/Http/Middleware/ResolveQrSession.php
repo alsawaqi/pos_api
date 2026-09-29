@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Actions\Qr\TableCardIdentity;
 use App\Models\Device;
 use App\Models\QrSession;
 use App\Support\QrApiResponse;
@@ -62,6 +63,9 @@ class ResolveQrSession
                 return null;
             }
 
+            if (! app(TableCardIdentity::class)->valid($session)) {
+                return null;
+            }
             $device = Device::withTrashed()->whereKey($session->device_id)->first();
             if ($session->device_id === null) {
                 if ($session->origin !== 'table_card' || $session->table_id === null) {

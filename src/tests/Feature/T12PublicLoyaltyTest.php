@@ -36,7 +36,7 @@ final class T12PublicLoyaltyTest extends TestCase
         $table = $this->seatingTable('T12 synthetic', $branch, $company);
         $product = $this->seatingProduct($company);
         $this->app['auth']->forgetGuards();
-        $open = $this->withToken($station->device_token)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
+        $open = $this->withToken($station->plainTextToken)->postJson('/api/v1/device/qr/open-table', ['table_id' => $table->id])->assertCreated();
         $bind = $this->postJson('/api/v1/public/qr/table-bind', ['table_token' => $open->json('data.table_token'), 'client_secret' => 't12-synthetic-browser'])->assertOk();
         $session = QrSession::where('uuid', $bind->json('data.session_uuid'))->sole();
         $this->headersFor($session);
@@ -58,7 +58,7 @@ final class T12PublicLoyaltyTest extends TestCase
     private function pay($till, $order): void
     {
         $this->app['auth']->forgetGuards();
-        $this->withToken($till->device_token)->postJson('/api/v1/device/qr/claim-settlement', ['order_uuid' => $order->uuid])->assertOk();
+        $this->withToken($till->plainTextToken)->postJson('/api/v1/device/qr/claim-settlement', ['order_uuid' => $order->uuid])->assertOk();
         $this->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(),
             'payload' => ['order_uuid' => $order->uuid, 'paid_at' => now()->toIso8601String(),
@@ -105,7 +105,7 @@ final class T12PublicLoyaltyTest extends TestCase
         $order = Order::sole();
         $seating = TableSession::findOrFail($order->table_session_id);
         $this->app['auth']->forgetGuards();
-        $this->withToken($till->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/adjust', [
+        $this->withToken($till->plainTextToken)->postJson('/api/v1/device/tables/'.$seating->uuid.'/adjust', [
             'table_id' => (int) $seating->table_id, 'seating_key' => $seating->uuid,
             'queued_offline' => false, 'client_request_id' => (string) Str::uuid(),
             'adjustment' => ['kind' => 'customer', 'mode' => 'detach'],

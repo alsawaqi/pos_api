@@ -12,13 +12,14 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Str;
 
 /**
  * Phase 8 — the device record (shared pos_devices table, owned by
  * pos_admin's schema). pos_api treats it as the authenticatable
  * subject of the `pos_device` guard: the long-lived `device_token`
- * column is the Bearer credential a paired terminal presents on
- * every request.
+ * column stores only SHA-256 of the Bearer credential presented on
+ * every request, bound to the company and branch at activation.
  *
  * Provisioning (register / assign / generate activation token)
  * happens in the Admin Portal; pos_api only PAIRS (consumes an
@@ -29,6 +30,12 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  */
 #[Fillable([
     'device_token',
+    'token_company_id',
+    'token_branch_id',
+    'pending_outbox_count',
+    'quarantined_count',
+    'outbox_reported_at',
+    'printer_status',
     'status',
     'last_seen_at',
     'last_ip',
@@ -43,6 +50,25 @@ class Device extends Model implements Authenticatable
     use AuthenticatableTrait, HasFactory, SoftDeletes;
 
     protected $table = 'pos_devices';
+
+    /** Returned once at activation; never persisted or included in serialization. */
+    public ?string $plainTextToken = null;
+
+    protected $hidden = ['device_token'];
+
+    public function issueCredential(): void
+    {
+        $this->plainTextToken = 'mdev_'.Str::random(60);
+        $this->forceFill([
+            'device_token' => hash('sha256', $this->plainTextToken),
+            'token_company_id' => $this->company_id,
+            'token_branch_id' => $this->branch_id,
+            'status' => 'active',
+            'last_seen_at' => now(),
+            'pending_outbox_count' => null,
+            'outbox_reported_at' => null,
+        ])->save();
+    }
 
     /**
      * @return array<string, string>

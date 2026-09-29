@@ -224,6 +224,9 @@ class DonationRecordHandler implements AfterSyncEventCommitHandler
     ): array {
         $donation = RoundupDonation::query()
             ->where('client_event_id', $event->client_event_id)
+            ->where('device_id', $device->id)
+            ->where('company_id', $device->company_id)
+            ->where('branch_id', $device->branch_id)
             ->lockForUpdate()
             ->first();
 

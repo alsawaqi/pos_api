@@ -48,6 +48,7 @@ class DeviceSyncStrandedEventTest extends TestCase
         return SyncEvent::create(array_merge([
             'client_event_id' => (string) Str::uuid(),
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'event_type' => 'expense.log',
             'payload_json' => [
                 'category' => 'utilities',
@@ -221,8 +222,8 @@ class DeviceSyncStrandedEventTest extends TestCase
             ->assertSuccessful();
 
         $this->assertSame(SyncEvent::STATUS_PROCESSED, $softDeleted->fresh()->ack_status);
-        $this->assertSame(SyncEvent::STATUS_RECEIVED, $missing->fresh()->ack_status);
-        $this->assertSame(SyncEvent::STATUS_RECEIVED, $reassigned->fresh()->ack_status);
+        $this->assertSame(SyncEvent::STATUS_NEEDS_REVIEW, $missing->fresh()->ack_status);
+        $this->assertSame(SyncEvent::STATUS_NEEDS_REVIEW, $reassigned->fresh()->ack_status);
         $this->assertDatabaseCount('pos_expenses', 1);
         Log::shouldHaveReceived('warning')->twice();
         Log::shouldHaveReceived('info')->once();
@@ -251,7 +252,7 @@ class DeviceSyncStrandedEventTest extends TestCase
             ->assertSuccessful();
 
         $this->assertLessThan($recoverable->id, $unsafe->id);
-        $this->assertSame(SyncEvent::STATUS_RECEIVED, $unsafe->fresh()->ack_status);
+        $this->assertSame(SyncEvent::STATUS_NEEDS_REVIEW, $unsafe->fresh()->ack_status);
         $this->assertSame(SyncEvent::STATUS_PROCESSED, $recoverable->fresh()->ack_status);
         $this->assertDatabaseCount('pos_expenses', 1);
     }

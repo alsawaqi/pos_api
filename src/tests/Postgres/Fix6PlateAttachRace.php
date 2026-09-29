@@ -25,7 +25,7 @@ if (DB::getDriverName() !== 'pgsql' || DB::connection()->getDatabaseName() !== '
     throw new RuntimeException('Disposable qr_fix6_disposable PostgreSQL only.');
 }
 [$self, $mode, $label] = $argv;
-$stateFile = '/state/'.$label.'.json';
+$stateFile = (getenv('POS_RACE_STATE_DIR') ?: '/state').'/'.$label.'.json';
 $check = static function (bool $condition, string $message): void {
     if (! $condition) {
         throw new RuntimeException($message);
@@ -66,7 +66,7 @@ if ($mode === 'seed') {
         }
     };
     $seat = $fixture->seat($company, $branch, $device->id);
-    $state = ['company' => $company, 'branch' => $branch, 'customer' => $customer->id, 'token' => $device->device_token, 'product' => $product->id, 'table_id' => $seat->table_id, 'seating_key' => $seat->client_request_id, 'seating_uuid' => $seat->uuid, 'gate' => 600000 + $company];
+    $state = ['company' => $company, 'branch' => $branch, 'customer' => $customer->id, 'token' => $device->plainTextToken, 'product' => $product->id, 'table_id' => $seat->table_id, 'seating_key' => $seat->client_request_id, 'seating_uuid' => $seat->uuid, 'gate' => 600000 + $company];
     $data = $request($state, 'device/sync/push', ['events' => [[
         'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.round', 'client_timestamp' => now()->toIso8601String(),
         'payload' => ['table_id' => $seat->table_id, 'seating_key' => $seat->client_request_id, 'queued_offline' => false, 'client_request_id' => (string) Str::uuid(), 'submitted_at' => now()->toIso8601String(), 'lines' => [['product_id' => $product->id, 'qty' => 1, 'addon_ids' => []]]],
@@ -76,7 +76,7 @@ if ($mode === 'seed') {
     $order->update(['customer_id' => $customer->id]);
     $state['order_id'] = $order->id;
     $opening = $state;
-    $opening['token'] = $station->device_token;
+    $opening['token'] = $station->plainTextToken;
     $open = $request($opening, 'device/qr/open-table', ['table_id' => $seat->table_id], status: 201);
     $bind = $request([], 'public/qr/table-bind', ['table_token' => $open['table_token'], 'client_secret' => 'fix6-private-fixture']);
     $state['session'] = $bind['session_uuid'];

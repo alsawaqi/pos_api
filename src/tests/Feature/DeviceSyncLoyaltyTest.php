@@ -632,6 +632,7 @@ class DeviceSyncLoyaltyTest extends TestCase
         SyncEvent::create([
             'client_event_id' => $pay['client_event_id'],
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'event_type' => 'order.pay',
             'payload_json' => $pay['payload'],
             'client_timestamp' => now(),

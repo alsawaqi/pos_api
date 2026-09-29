@@ -478,6 +478,7 @@ final class QrPublicCustomerPrivacyTest extends TestCase
             'token_expires_at',
             'status',
             'client_secret_hash',
+            'table_qr_token_hash',
             'bound_at',
             'secret_rotated_at',
             'last_seen_at',

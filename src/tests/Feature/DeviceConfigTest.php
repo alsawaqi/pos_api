@@ -400,7 +400,7 @@ class DeviceConfigTest extends TestCase
     {
         Device::factory()->paired('mdev_unassigned')->create(['company_id' => null, 'branch_id' => null]);
 
-        $this->withToken('mdev_unassigned')->getJson('/api/v1/device/config')->assertStatus(409);
+        $this->withToken('mdev_unassigned')->getJson('/api/v1/device/config')->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 
     public function test_delta_requires_a_since_timestamp(): void

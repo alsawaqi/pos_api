@@ -166,6 +166,7 @@ class StrandedLoyaltyOverRedemptionSweepTest extends TestCase
         $stranded = SyncEvent::create([
             'client_event_id' => (string) Str::uuid(),
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'event_type' => 'order.pay',
             'payload_json' => [
                 'order_uuid' => $uuid,

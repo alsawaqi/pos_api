@@ -61,6 +61,7 @@ class QuarantineFloorPermanenceTest extends TestCase
         return SyncEvent::create([
             'client_event_id' => (string) Str::uuid(),
             'device_id' => $device->id,
+            'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
             'event_type' => 'expense.log',
             'payload_json' => [
                 'category' => 'utilities',

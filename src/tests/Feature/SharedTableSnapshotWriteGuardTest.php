@@ -111,7 +111,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
 
         foreach ([1, 2] as $attempt) {
             $this->app['auth']->forgetGuards();
-            $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+            $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
                 ->assertOk()->assertJsonPath('data.results.0.status', 'failed')
                 ->assertJsonPath('data.results.0.result.error', 'shared_table_snapshot_replacement_forbidden');
             $this->assertSame($before, $this->businessRows(), "Attempt $attempt cannot purge children or change any business row.");
@@ -149,7 +149,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
             QrOrderRound::where('order_id', $order->id)->update(['table_session_id' => null]);
         }
         $before = $this->businessRows();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [$this->event($order, $type, $product->id, $target->id)],
         ])->assertOk()->assertJsonPath('data.results.0.status', 'failed')
             ->assertJsonPath('data.results.0.result.error', 'shared_table_snapshot_replacement_forbidden');
@@ -176,7 +176,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
         $event = $this->event($order, 'order.hold', $product->id);
         $event['payload']['order'] = array_replace($event['payload']['order'], $change);
         $before = $this->businessRows();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'failed')
             ->assertJsonPath('data.results.0.result.error', 'shared_table_snapshot_replacement_forbidden');
         $this->assertSame($before, $this->businessRows());
@@ -211,7 +211,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
         $this->assertSame('qr_web', $order->source);
         $this->assertSame(2, QrOrderRound::where('order_id', $order->id)->count());
         $before = $this->businessRows();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [$this->event($order, 'order.create', $product->id)],
         ])->assertOk()->assertJsonPath('data.results.0.status', 'failed')
             ->assertJsonPath('data.results.0.result.error', 'shared_table_snapshot_replacement_forbidden');
@@ -235,7 +235,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
         $table = $this->seatingTable();
         $prototype = new Order(['uuid' => (string) Str::uuid(), 'table_id' => $table->id]);
         $event = $this->event($prototype, 'order.hold', $product->id);
-        $first = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $first = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.duplicate', false);
         $order = Order::sole();
@@ -243,7 +243,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
         $order->update(['table_session_id' => $seat->id]);
         $this->seatingRound($seat, $order);
         $before = $this->businessRows();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.duplicate', true)
             ->assertJsonPath('data.results.0.result', $first->json('data.results.0.result'));
@@ -265,7 +265,7 @@ final class SharedTableSnapshotWriteGuardTest extends TestCase
             'discount_total' => '0.000', 'tax_total' => '0.000', 'grand_total' => '0.000',
             'opened_at' => now(),
         ]);
-        $response = $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', [
+        $response = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', [
             'events' => [$this->event($order, $type, $product->id, $target->id)],
         ])->assertOk()->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.status', 'updated');

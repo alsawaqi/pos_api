@@ -36,7 +36,7 @@ class DeviceActivateController
 
         return response()->json([
             'data' => [
-                'device_token' => $device->device_token,
+                'device_token' => $device->plainTextToken,
                 'device' => [
                     'uuid' => $device->uuid,
                     'company_id' => (int) $device->company_id,

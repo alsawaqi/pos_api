@@ -61,7 +61,7 @@ final class T12DeviceLoyaltyProjectionTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/'.$path, $data);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $data);
     }
 
     private function intent($seat, array $adjustment): array
@@ -117,14 +117,14 @@ final class T12DeviceLoyaltyProjectionTest extends TestCase
         $before = DB::table('pos_order_discounts')->get()->toJson();
         foreach (['customers/search?q=T12', 'customers/'.$customer->id] as $path) {
             $prefix = str_contains($path, 'search') ? 'data.customers.0.loyalty.0' : 'data.customer.loyalty.0';
-            $this->withToken($device->device_token)->getJson('/api/v1/device/'.$path)->assertOk()
+            $this->withToken($device->plainTextToken)->getJson('/api/v1/device/'.$path)->assertOk()
                 ->assertJsonPath($prefix.'.points', 2000)->assertJsonPath($prefix.'.stamps', 100)
                 ->assertJsonPath($prefix.'.available_points', 1800)->assertJsonPath($prefix.'.available_stamps', 100);
         }
         $this->assertSame($before, DB::table('pos_order_discounts')->get()->toJson());
         $this->assertSame(2000, $account->fresh()->point_balance);
         $this->adjust($device, $seat, ['kind' => 'loyalty', 'mode' => 'clear'])->assertOk();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/customers/'.$customer->id)->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/customers/'.$customer->id)->assertOk()
             ->assertJsonPath('data.customer.loyalty.0.available_points', 2000);
     }
 
@@ -133,11 +133,11 @@ final class T12DeviceLoyaltyProjectionTest extends TestCase
         [$device, $seat, $order] = $this->fixture();
         [$rule, $account, $customer] = $this->loyalty($order, 'visit_based');
         $this->adjust($device, $seat, $this->redeem($rule, 2))->assertOk();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/customers/'.$customer->id)->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/customers/'.$customer->id)->assertOk()
             ->assertJsonPath('data.customer.loyalty.0.available_stamps', 90)
             ->assertJsonPath('data.customer.loyalty.0.available_points', 2000);
         $this->pay($device, $order);
-        $this->withToken($device->device_token)->getJson('/api/v1/device/customers/'.$customer->id)->assertOk()
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/customers/'.$customer->id)->assertOk()
             ->assertJsonPath('data.customer.loyalty.0.available_stamps', 91);
         $this->assertSame(91, $account->fresh()->stamp_count);
     }

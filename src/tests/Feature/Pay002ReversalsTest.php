@@ -213,8 +213,8 @@ class Pay002ReversalsTest extends TestCase
                 break;
         }
         $before = $this->states();
-        if ($case === 'inactive') {
-            $this->reserve($payload)->assertUnauthorized()->assertJsonPath('message', 'Unauthenticated.');
+        if (in_array($case, ['inactive', 'unassigned'], true)) {
+            $this->reserve($payload)->assertUnauthorized()->assertJsonPath('message', 'Unauthenticated.')->assertJsonPath('errors.0.code', 'device_reactivation_required');
         } else {
             $this->reserve($payload)->assertStatus($http)->assertJsonPath('errors.0.code', $code);
         }
@@ -508,5 +508,17 @@ class Pay002ReversalsTest extends TestCase
     {
         $this->assertSame([1 => 3334, 2 => 3333, 3 => 3333], ReversalMoney::allocate(10000, [3 => 1, 2 => 1, 1 => 1]));
         $this->assertSame([999999999997, 1], ReversalMoney::fraction(999999999998, 999999999998, 999999999999));
+    }
+
+    public function test_w4_moved_device_cannot_list_or_resolve_old_reversals(): void
+    {
+        $uuid = $this->reserve($this->payload())->assertOk()->json('data.reversal_uuid');
+        $this->device->forceFill(['company_id' => 200, 'branch_id' => 20,
+            'token_company_id' => 200, 'token_branch_id' => 20])->save();
+        DB::table('pos_companies')->insert(['id' => 200, 'name' => 'B', 'status' => 'active']);
+        app('auth')->forgetGuards();
+        $this->getJson('/api/v1/device/payments/reversals')->assertOk()->assertJsonPath('data.reversals', []);
+        $this->submitResult($uuid)->assertNotFound();
+        $this->assertDatabaseHas('pos_payment_reversals', ['uuid' => $uuid, 'status' => 'pending', 'company_id' => 100]);
     }
 }

@@ -149,6 +149,20 @@ class SyncEventDispatcher
                     return null;
                 }
 
+                // Serialize assignment with settlement, then verify the durable
+                // receipt identity. Never reinterpret old work in today's tenant.
+                $current = Device::withTrashed()->whereKey($device->id)->lockForUpdate()->first();
+                if ($current === null || (int) $lockedEvent->device_id !== (int) $device->id
+                    || $lockedEvent->company_id === null || $lockedEvent->branch_id === null
+                    || (int) $current->company_id !== (int) $lockedEvent->company_id
+                    || (int) $current->branch_id !== (int) $lockedEvent->branch_id
+                    || (int) $device->company_id !== (int) $lockedEvent->company_id
+                    || (int) $device->branch_id !== (int) $lockedEvent->branch_id) {
+                    $lockedEvent->update(['ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,
+                        'result_json' => ['error' => 'identity_mismatch', 'permanent' => true]]);
+
+                    return null;
+                }
                 $result = $handler->handle($lockedEvent, $device);
                 $lockedEvent->update([
                     'ack_status' => SyncEvent::STATUS_PROCESSED,

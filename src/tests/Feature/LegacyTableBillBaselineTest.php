@@ -366,7 +366,7 @@ final class LegacyTableBillBaselineTest extends TestCase
         $before = $this->rows();
         $anchorBefore = $anchor->getRawOriginal();
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.outcome', 'bill_unpaid')
             ->assertJsonPath('data.results.0.result.refusal_code', 'legacy_baseline_review_required')
@@ -379,7 +379,7 @@ final class LegacyTableBillBaselineTest extends TestCase
         $this->assertSame(SyncEvent::STATUS_PROCESSED, $ack->ack_status);
         $this->assertSame('legacy_baseline_review_required', $ack->result_json['refusal_code']);
         $beforeReplay = $this->rows();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.refusal_code', 'legacy_baseline_review_required');
         $this->assertSame($beforeReplay, $this->rows());
@@ -645,12 +645,12 @@ final class LegacyTableBillBaselineTest extends TestCase
         $eventId = (string) Str::uuid();
         $payload = $this->staffPayload($seat, (int) $product->id, 2, 'legacy-baseline:'.$order->uuid);
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [[
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => $eventId, 'event_type' => 'table.session.round',
             'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,
         ]]])->assertOk()->assertJsonPath('data.results.0.result.outcome', 'replayed');
         $before = $this->rows();
-        $this->withToken($device->device_token)->getJson('/api/v1/device/tables/'.$seat->table_id.'/draft-proof?'.http_build_query([
+        $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$seat->table_id.'/draft-proof?'.http_build_query([
             'order_uuid' => $order->uuid, 'kind' => 'staff_rounds', 'event_ids' => [$eventId],
         ]))->assertStatus(409)->assertJsonPath('errors.0.code', 'draft_proof_evidence_changed');
         $this->assertSame($before, $this->rows());
@@ -682,7 +682,7 @@ final class LegacyTableBillBaselineTest extends TestCase
         $payload['seating_key'] = (string) Str::uuid();
         $before = $this->rows();
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [[
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.round',
             'client_timestamp' => now()->toIso8601String(), 'payload' => $payload,
         ]]])->assertOk()->assertJsonPath('data.results.0.status', 'processed')
@@ -707,7 +707,7 @@ final class LegacyTableBillBaselineTest extends TestCase
                 'lines' => [['product_id' => $product->id, 'qty' => 2, 'unit_price_baisas' => 1000, 'line_total_baisas' => 2000]],
             ]]];
         $this->app['auth']->forgetGuards();
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
         $order = Order::where('uuid', $uuid)->sole();
         $seat = $this->seatingRow($table, ['order_id' => $order->id, 'opened_by_device_id' => $device->id]);

@@ -25,7 +25,7 @@ final class QrExpiredOrdersExclusionTest extends QrPendingTestCase
         $this->app['auth']->forgetGuards();
         $query = http_build_query(['exclude_order_uuids' => $exclude]);
 
-        return $this->withToken($this->till->device_token)->getJson('/api/v1/device/qr/pending-orders/cancel-preview'.($exclude ? '?'.$query : ''));
+        return $this->withToken($this->till->plainTextToken)->getJson('/api/v1/device/qr/pending-orders/cancel-preview'.($exclude ? '?'.$query : ''));
     }
 
     public function test_bulk_preview_leaves_out_excluded_orders_and_cancel_never_touches_them(): void

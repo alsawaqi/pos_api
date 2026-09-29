@@ -308,6 +308,6 @@ final class StationOpenOnStaffSeatingTest extends TestCase
     {
         $this->app['auth']->forgetGuards();
 
-        return $this->withToken($device->device_token)->postJson('/api/v1/device/qr/open-table', ['table_id' => $tableId]);
+        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/qr/open-table', ['table_id' => $tableId]);
     }
 }

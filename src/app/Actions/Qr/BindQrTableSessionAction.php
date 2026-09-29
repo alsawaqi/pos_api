@@ -72,7 +72,7 @@ final class BindQrTableSessionAction
         }
         $floor = Floor::withTrashed()->whereKey((int) $table->floor_id)->first();
         $branch = $floor === null ? null : Branch::withTrashed()->whereKey((int) $floor->branch_id)->first();
-        if ($floor === null || $branch === null) {
+        if ($floor === null || $branch === null || $branch->trashed()) {
             // Impossible with the production parent FKs; no tenant is invented.
             return null;
         }
@@ -93,6 +93,12 @@ final class BindQrTableSessionAction
             ->update(['status' => QrSession::STATUS_EXPIRED, 'closed_at' => $now, 'updated_at' => $now]);
 
         $live = $this->liveCredential($table);
+        if ($live !== null && $live->origin === 'table_card' && ! app(TableCardIdentity::class)->valid($live)) {
+            // Retire the credential only. Keep the seating and its bill intact;
+            // a fresh scan can attach through the existing handover checks.
+            $live->update(['status' => QrSession::STATUS_EXPIRED, 'released_at' => $now, 'closed_at' => $now]);
+            $live = null;
+        }
         if ($live !== null) {
             return $this->existing($table, $branchId, $live, $secret, $scan, $geofence, $ip);
         }
@@ -114,6 +120,12 @@ final class BindQrTableSessionAction
             ->where('company_id', $companyId)->where('branch_id', $branchId)->lockForUpdate()->first();
         $seating = (clone $seatingQuery)->lockForUpdate()->first();
         $live = $this->liveCredential($table);
+        if ($live !== null && $live->origin === 'table_card' && ! app(TableCardIdentity::class)->valid($live)) {
+            // Retire the credential only. Keep the seating and its bill intact;
+            // a fresh scan can attach through the existing handover checks.
+            $live->update(['status' => QrSession::STATUS_EXPIRED, 'released_at' => $now, 'closed_at' => $now]);
+            $live = null;
+        }
         if ($live !== null) {
             return $this->existing($table, $branchId, $live, $secret, $scan, $geofence, $ip);
         }
@@ -200,7 +212,7 @@ final class BindQrTableSessionAction
     private function existing(Table $table, int $branchId, QrSession $session, string $secret, array $scan, array $geofence, string $ip): QrSession|array|null
     {
         $device = Device::withTrashed()->whereKey($session->device_id)->first();
-        if ($session->released_at !== null || (int) $session->company_id !== (int) $table->company_id
+        if (! app(TableCardIdentity::class)->valid($session) || $session->released_at !== null || (int) $session->company_id !== (int) $table->company_id
             || (int) $session->branch_id !== $branchId
             || ($session->device_id === null
                 ? ($session->origin !== 'table_card' || $session->table_id === null)

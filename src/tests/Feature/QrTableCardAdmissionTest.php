@@ -38,6 +38,9 @@ class QrTableCardAdmissionTest extends TestCase
     private function card(array $attributes = []): QrSession
     {
         $table = $this->seatingTable();
+        DB::table('pos_branch_settings')->updateOrInsert(
+            ['company_id' => 100, 'branch_id' => 10, 'key' => 'qr_table_card_enabled'], ['value' => '"on"']
+        );
 
         return QrSession::query()->create(array_replace([
             'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
@@ -152,6 +155,9 @@ class QrTableCardAdmissionTest extends TestCase
     public function test_card_open_can_supersede_abandoned_seating_with_null_device_attribution(): void
     {
         $table = $this->seatingTable();
+        DB::table('pos_branch_settings')->updateOrInsert(
+            ['company_id' => 100, 'branch_id' => 10, 'key' => 'qr_table_card_enabled'], ['value' => '"on"']
+        );
         $seating = $this->seatingRow($table);
         $result = DB::transaction(fn () => app(SupersedeAbandonedTableSessionAction::class)
             ->handle($table, null, now(), 100, 10));

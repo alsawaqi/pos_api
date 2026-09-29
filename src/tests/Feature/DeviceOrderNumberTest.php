@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
@@ -48,7 +49,7 @@ class DeviceOrderNumberTest extends TestCase
      * flush the guards between requests or every call after the first
      * would run as the FIRST device regardless of token.
      */
-    private function allocate(string $token): \Illuminate\Testing\TestResponse
+    private function allocate(string $token): TestResponse
     {
         app('auth')->forgetGuards();
 
@@ -184,8 +185,8 @@ class DeviceOrderNumberTest extends TestCase
     {
         Device::factory()->paired('mdev_num_un')->create(['company_id' => null, 'branch_id' => null]);
 
-        $res = $this->allocate('mdev_num_un')->assertStatus(409);
-        $this->assertSame('device_unassigned', $res->json('errors.0.code'));
+        $res = $this->allocate('mdev_num_un')->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
+        $this->assertSame('device_reactivation_required', $res->json('errors.0.code'));
     }
 
     public function test_requires_a_device_token(): void

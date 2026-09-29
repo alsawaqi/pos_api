@@ -77,10 +77,10 @@ final class PreparedWasteCancellationIdentityTest extends TestCase
         $cancelEvent = ['client_event_id' => $requestId, 'event_type' => 'table.session.cancel_line',
             'client_timestamp' => $at, 'payload' => $cancel];
         if ($firstSource === 'sync') {
-            $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$cancelEvent]])
+            $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$cancelEvent]])
                 ->assertOk()->assertJsonPath('data.results.0.result.outcome', 'cancelled');
         } else {
-            $this->withToken($device->device_token)->postJson('/api/v1/device/tables/'.$seating->uuid.'/cancel-line', $cancel)
+            $this->withToken($device->plainTextToken)->postJson('/api/v1/device/tables/'.$seating->uuid.'/cancel-line', $cancel)
                 ->assertOk()->assertJsonPath('data.outcome', 'cancelled');
         }
         $journal = TableSessionEvent::query()->sole()->getRawOriginal();
@@ -92,7 +92,7 @@ final class PreparedWasteCancellationIdentityTest extends TestCase
                 'note' => 'Prepared fixture loss',
                 'lines' => [['product_id' => (int) $product->id, 'qty' => 1, 'reason' => 'other']],
             ]];
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$waste]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$waste]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.table_cancellation_waste.source', $firstSource);
         if ($legacyResult) {
@@ -104,7 +104,7 @@ final class PreparedWasteCancellationIdentityTest extends TestCase
             $prior->update(['result_json' => $result]);
         }
         if ($firstSource === 'table') {
-            $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$cancelEvent]])
+            $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$cancelEvent]])
                 ->assertOk()->assertJsonPath('data.results.0.result.outcome', 'replayed');
         }
         $second = $waste;
@@ -114,14 +114,14 @@ final class PreparedWasteCancellationIdentityTest extends TestCase
         } else {
             $second['payload']['staff_id'] = $nextStaff;
         }
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$second]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$second]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$second]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$second]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
         $third = $waste;
         $third['client_event_id'] = (string) Str::uuid();
         $third['payload']['lines'][0]['qty'] = 0.25;
-        $this->withToken($device->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$third]])
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$third]])
             ->assertOk()->assertJsonPath('data.results.0.status', 'failed');
         $this->assertSame(2, DB::table('pos_product_stock_movements')->count());
         $this->assertSame(-2.0, (float) DB::table('pos_product_stock_movements')->sum('quantity'));

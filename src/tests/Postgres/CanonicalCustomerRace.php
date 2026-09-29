@@ -51,7 +51,7 @@ for ($i = 1; $i <= 20; $i++) {
     $gate = sys_get_temp_dir().'/fix4-race-'.Str::uuid();
     $workers = [];
     foreach (['device', 'qr'] as $kind) {
-        $process = proc_open([PHP_BINARY, __FILE__, 'worker', $kind, (string) $company, $device->device_token, $gate], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $process = proc_open([PHP_BINARY, __FILE__, 'worker', $kind, (string) $company, $device->plainTextToken, $gate], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         fclose($pipes[0]);
         $workers[$kind] = [$process, $pipes];
     }

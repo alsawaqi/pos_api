@@ -19,11 +19,22 @@ class QrSession extends Model
 {
     protected $table = 'pos_qr_sessions';
 
+    protected static function booted(): void
+    {
+        static::creating(function (self $session): void {
+            if ($session->origin === 'table_card' && $session->table_id !== null) {
+                $token = Table::query()->whereKey($session->table_id)->value('qr_token');
+                $session->table_qr_token_hash = $token === null ? null : hash('sha256', $token);
+            }
+        });
+    }
+
     protected $guarded = [];
 
     protected $hidden = [
         'token',
         'client_secret_hash',
+        'table_qr_token_hash',
     ];
 
     public const STATUS_PENDING = 'pending';

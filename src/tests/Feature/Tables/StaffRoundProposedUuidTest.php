@@ -51,7 +51,7 @@ final class StaffRoundProposedUuidTest extends TestCase
             'lines' => [['product_id' => (int) $product->id, 'qty' => 2, 'addon_ids' => [], 'notes' => null]],
         ];
         $send = function (array $body, string $outcome) use ($device, $seating, $online): array {
-            $this->withToken($device->device_token);
+            $this->withToken($device->plainTextToken);
             if ($online) {
                 return $this->postJson('/api/v1/device/tables/'.$seating->uuid.'/round', $body)
                     ->assertOk()->assertJsonPath('data.outcome', $outcome)->json('data');

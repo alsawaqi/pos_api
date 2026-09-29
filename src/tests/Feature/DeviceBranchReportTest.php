@@ -523,12 +523,12 @@ class DeviceBranchReportTest extends TestCase
         $this->getJson(self::URL)->assertStatus(401);
     }
 
-    public function test_an_unassigned_device_is_rejected_with_409(): void
+    public function test_an_unassigned_device_is_rejected_with_401(): void
     {
         Device::factory()->paired('mdev_rpt_unassigned')->create(['company_id' => null, 'branch_id' => null]);
 
         $this->withToken('mdev_rpt_unassigned')->getJson(self::URL)
-            ->assertStatus(409)
-            ->assertJsonPath('errors.0.code', 'device_unassigned');
+            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required')
+            ->assertJsonPath('errors.0.code', 'device_reactivation_required');
     }
 }

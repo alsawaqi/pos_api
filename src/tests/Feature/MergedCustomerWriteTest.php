@@ -64,18 +64,18 @@ final class MergedCustomerWriteTest extends TestCase
             'discounts' => [['name' => 'Loyalty redemption', 'amount_baisas' => 500]]];
         foreach (['order.hold', 'order.create'] as $type) {
             $event = ['client_event_id' => (string) Str::uuid(), 'event_type' => $type, 'client_timestamp' => now()->toIso8601String(), 'payload' => ['order' => $order]];
-            $this->withToken($d->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$event]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+            $this->withToken($d->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$event]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
             $this->assertSame($a->id, Order::where('uuid', $uuid)->sole()->customer_id);
             $this->assertSame($b->id, SyncEvent::where('client_event_id', $event['client_event_id'])->sole()->payload_json['order']['customer_id']);
         }
         $pay = ['client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay', 'client_timestamp' => now()->toIso8601String(), 'payload' => ['order_uuid' => $uuid, 'paid_at' => now()->toIso8601String(), 'payments' => [['method' => 'cash', 'amount_baisas' => 500]], 'loyalty_redeem' => ['rule_id' => $rule->id, 'points' => 100, 'stamps' => 0]]];
         for ($i = 0; $i < 2; $i++) {
-            $this->withToken($d->device_token)->postJson('/api/v1/device/sync/push', ['events' => [$pay]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+            $this->withToken($d->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$pay]])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
         }
         $this->assertSame(210, $account->fresh()->point_balance);
         $this->assertSame(16, $account->fresh()->stamp_count);
         $this->assertSame(1, DB::table('pos_loyalty_transactions')->where('loyalty_account_id', $account->id)->where('type', 'redeem')->count());
-        $this->withToken($d->device_token)->getJson('/api/v1/device/customers/'.$b->id)->assertNotFound()->assertJsonPath('errors.0.code', 'customer_not_found');
+        $this->withToken($d->plainTextToken)->getJson('/api/v1/device/customers/'.$b->id)->assertNotFound()->assertJsonPath('errors.0.code', 'customer_not_found');
         fwrite(STDOUT, "\nMERGED_REPLAY ".json_encode(['customer' => $a->id, 'source_payload' => $b->id, 'points_before' => 310, 'points_after' => 210, 'debits' => 1])."\n");
     }
 
@@ -87,14 +87,14 @@ final class MergedCustomerWriteTest extends TestCase
         $o = $this->seatingOrder($s);
         $this->seatingRound($s, $o);
         $payload = ['table_id' => $s->table_id, 'seating_key' => $s->client_request_id, 'queued_offline' => false, 'client_request_id' => (string) Str::uuid(), 'adjustment' => ['kind' => 'customer', 'mode' => 'attach', 'customer_id' => $b->id]];
-        $this->withToken($d->device_token)->postJson('/api/v1/device/tables/'.$s->uuid.'/adjust', $payload)->assertOk();
+        $this->withToken($d->plainTextToken)->postJson('/api/v1/device/tables/'.$s->uuid.'/adjust', $payload)->assertOk();
         $this->assertSame($a->id, $o->fresh()->customer_id);
         DB::table('pos_customer_vehicle_plates')->insert(['uuid' => (string) Str::uuid(), 'company_id' => 100, 'customer_id' => $a->id, 'plate_number' => 'MERGED']);
         $rule = LoyaltyRule::create(['uuid' => Str::uuid(), 'company_id' => 100, 'name' => 'Folded', 'type' => 'spend_based', 'status' => 'active', 'config_json' => []]);
         LoyaltyAccount::create(['uuid' => Str::uuid(), 'company_id' => 100, 'customer_id' => $a->id, 'loyalty_rule_id' => $rule->id, 'point_balance' => 300, 'stamp_count' => 15]);
         $since = now()->subSecond()->toIso8601String();
         $a->touch();
-        $response = $this->withToken($d->device_token)->getJson('/api/v1/device/config/delta?since='.urlencode($since))->assertOk();
+        $response = $this->withToken($d->plainTextToken)->getJson('/api/v1/device/config/delta?since='.urlencode($since))->assertOk();
         $customer = collect($response->json('data.customers'))->firstWhere('id', $a->id);
         $this->assertSame(['MERGED'], $customer['plates']);
         $this->assertSame(300, $customer['loyalty'][0]['points']);

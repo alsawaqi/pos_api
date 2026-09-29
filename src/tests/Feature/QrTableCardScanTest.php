@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Actions\Qr\BindQrTableSessionAction;
+use App\Actions\Qr\BuildQrBranchMenuAction;
 use App\Actions\Qr\OpenDineInTableAction;
 use App\Models\QrSession;
 use App\Models\Table;
@@ -43,6 +44,41 @@ class QrTableCardScanTest extends TestCase
     private function scan(Table $table, string $secret = 'synthetic-owner'): TestResponse
     {
         return $this->postJson('/api/v1/public/qr/table-bind', ['table_token' => $table->qr_token, 'client_secret' => $secret]);
+    }
+
+    public function test_launch_p0_both_menu_builders_expose_only_their_merchant_branch_and_receipt_logo(): void
+    {
+        $table = $this->seatingTable();
+        $this->enable();
+        DB::table('pos_companies')->where('id', 100)->update(['name' => 'Al Noor Bakery', 'name_ar' => 'مخبز النور']);
+        DB::table('pos_branches')->where('id', 10)->update([
+            'name' => 'Al Khuwair', 'name_ar' => 'الخوير',
+            'receipt_template' => json_encode(['logo_base64' => 'iVBORw0KGgo=', 'business_name' => 'Receipt-only name']),
+        ]);
+        $expected = [
+            'merchant' => ['name' => 'Al Noor Bakery', 'name_ar' => 'مخبز النور'],
+            'branch' => ['name' => 'Al Khuwair', 'name_ar' => 'الخوير'],
+            'logo_base64' => 'iVBORw0KGgo=',
+        ];
+        $this->getJson('/api/v1/public/qr/table-menu?t='.$table->qr_token)->assertOk()->assertJsonPath('data.branding', $expected);
+        $quickMenu = app(BuildQrBranchMenuAction::class)->handle(100, 10);
+        $this->assertSame($expected, $quickMenu['branding']);
+        DB::table('pos_branches')->where('id', 10)->update(['receipt_template' => null]);
+        $this->assertNull(app(BuildQrBranchMenuAction::class)->handle(100, 10)['branding']['logo_base64']);
+        $foreign = $this->seatingBranch(20, 200);
+        $other = app(BuildQrBranchMenuAction::class)->handle(200, $foreign->id);
+        $this->assertSame('Merchant 200', $other['branding']['merchant']['name']);
+        $this->assertStringNotContainsString('Al Noor Bakery', json_encode($other));
+    }
+
+    public function test_launch_p0_suspended_company_cannot_read_or_bind_public_table_menu(): void
+    {
+        $table = $this->seatingTable();
+        $this->enable();
+        DB::table('pos_companies')->where('id', 100)->update(['status' => 'suspended']);
+        $this->getJson('/api/v1/public/qr/table-menu?t='.$table->qr_token)->assertForbidden()->assertJsonPath('errors.0.code', 'company_suspended');
+        $this->scan($table)->assertForbidden()->assertJsonPath('errors.0.code', 'company_suspended');
+        $this->assertDatabaseCount('pos_qr_sessions', 0);
     }
 
     public function test_disabled_and_unknown_bind_keep_the_exact_generic_response_and_only_known_table_is_logged(): void
@@ -157,7 +193,7 @@ class QrTableCardScanTest extends TestCase
         $this->assertSame([10], DB::table('pos_qr_session_scans')->distinct()->pluck('branch_id')->all());
     }
 
-    public function test_expired_bill_less_credential_allows_a_new_scan_but_disabling_cards_does_not_kill_existing_owner(): void
+    public function test_expired_bill_less_credential_allows_a_new_scan_and_disabling_cards_revokes_existing_owner(): void
     {
         $table = $this->seatingTable();
         $this->enable();
@@ -169,7 +205,7 @@ class QrTableCardScanTest extends TestCase
         $current = QrSession::query()->latest('id')->first();
         DB::table('pos_branch_settings')->where('key', 'qr_table_card_enabled')->update(['value' => '"off"']);
         $this->withHeaders(['X-QR-Session' => $current->uuid, 'X-QR-Client-Secret' => 'replacement'])
-            ->getJson('/api/v1/public/qr/status')->assertOk();
+            ->getJson('/api/v1/public/qr/status')->assertNotFound()->assertJsonPath('errors.0.code', 'qr_session_not_found');
         $this->scan($this->seatingTable('New table'))->assertNotFound();
     }
 
@@ -194,5 +230,28 @@ class QrTableCardScanTest extends TestCase
             ->assertJsonMissingPath('data.session_uuid')->assertJsonMissingPath('data.branch.latitude')
             ->assertJsonMissingPath('data.rounds');
         fwrite(STDOUT, "\nT9_TABLE_MENU=".json_encode($response->json())."\n");
+    }
+
+    public function test_w13_table_card_credentials_are_revoked_on_every_lifecycle_boundary(): void
+    {
+        foreach (['rotate', 'inactive', 'delete_table', 'disable_cards', 'delete_branch'] as $change) {
+            $table = $this->seatingTable('Lifecycle '.$change);
+            $this->enable();
+            $this->scan($table, 'lifecycle-secret')->assertOk();
+            $session = QrSession::where('table_id', $table->id)->latest('id')->firstOrFail();
+            match ($change) {
+                'rotate' => $table->update(['qr_token' => hash('sha256', 'new-token')]),
+                'inactive' => $table->update(['status' => 'inactive']),
+                'delete_table' => $table->delete(),
+                'disable_cards' => DB::table('pos_branch_settings')->where('key', 'qr_table_card_enabled')->update(['value' => '"off"']),
+                'delete_branch' => DB::table('pos_branches')->where('id', 10)->update(['deleted_at' => now()]),
+            };
+            $this->withHeaders(['X-QR-Session' => $session->uuid, 'X-QR-Client-Secret' => 'lifecycle-secret'])
+                ->getJson('/api/v1/public/qr/status')->assertNotFound()->assertJsonPath('errors.0.code', 'qr_session_not_found');
+            if ($change === 'delete_branch') {
+                $this->scan($table, 'fresh-secret')->assertNotFound();
+            }
+        }
+        $this->assertDatabaseCount('pos_orders', 0);
     }
 }

@@ -38,6 +38,31 @@ class LaunchP0FixOrder3ApiTest extends TestCase
             $row->result_json['claimed_identity']);
     }
 
+    public function test_e3_a_processed_duplicate_hides_a_result_stamped_for_another_merchant(): void
+    {
+        $this->seedPosStaff([7]);
+        $device = Device::factory()->paired('p0-fix3e3')->create(['company_id' => 100, 'branch_id' => 10]);
+        $event = $this->expense();
+        $row = SyncEvent::query()->create([
+            'device_id' => $device->id, 'client_event_id' => $event['client_event_id'],
+            'event_type' => $event['event_type'], 'payload_json' => $event['payload'],
+            'client_timestamp' => now()->subDay(), 'server_received_at' => now()->subDay(),
+            'ack_status' => SyncEvent::STATUS_PROCESSED, 'company_id' => 200, 'branch_id' => 20,
+            'result_json' => ['status' => 'recorded', 'expense_id' => 555],
+        ]);
+
+        // The device has since moved to merchant 100: the old receipt stays hidden.
+        $this->withToken('p0-fix3e3')->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.result', null);
+
+        // Control: the same receipt stamped for the device's own merchant is returned.
+        $row->update(['company_id' => 100, 'branch_id' => 10]);
+        $this->withToken('p0-fix3e3')->postJson('/api/v1/device/sync/push', ['events' => [$event]])
+            ->assertOk()->assertJsonPath('data.results.0.result.expense_id', 555);
+        $this->assertSame(1, SyncEvent::query()->where('client_event_id', $event['client_event_id'])->count());
+    }
+
     public function test_d4_a_refused_untagged_sale_claims_no_identity(): void
     {
         $this->seedPosStaff([7]);

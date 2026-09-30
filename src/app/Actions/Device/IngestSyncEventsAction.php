@@ -59,7 +59,13 @@ class IngestSyncEventsAction
             // a historical processed ACK into a permanent refusal.
             if ($existing?->ack_status === SyncEvent::STATUS_PROCESSED) {
                 $ack = $this->ack($existing, duplicate: true);
-                if (! $this->samePayload($existing, $event)) {
+                // Same device + same payload proves the original result, even
+                // when its historical attribution is unknown (NULL). A receipt
+                // stamped for another merchant/branch stays hidden after a move.
+                $stampedElsewhere = $existing->company_id !== null && (
+                    (int) $existing->company_id !== (int) $device->company_id
+                    || (int) $existing->branch_id !== (int) $device->branch_id);
+                if ($stampedElsewhere || ! $this->samePayload($existing, $event)) {
                     $ack['result'] = null;
                 }
                 $results[] = $ack;

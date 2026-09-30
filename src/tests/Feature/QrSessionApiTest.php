@@ -90,6 +90,25 @@ class QrSessionApiTest extends TestCase
         ])->getJson('/api/v1/public/qr/session-probe');
     }
 
+    public function test_f13_logo_is_sent_on_bind_and_explicit_restore_but_never_on_status_polls(): void
+    {
+        $device = $this->device('brand-poll');
+        $session = $this->qrSession($device);
+        $secret = str_repeat('b', 64);
+        DB::table('pos_branches')->updateOrInsert(['id' => $device->branch_id], [
+            'company_id' => $device->company_id, 'name' => 'Main', 'uuid' => (string) Str::uuid(),
+            'receipt_template' => json_encode(['logo_base64' => str_repeat('A', 200000)]),
+        ]);
+        $bound = $this->bind($session->token, $secret)->assertOk();
+        $this->assertSame(200000, strlen($bound->json('data.branding.logo_base64')));
+        $this->withHeaders(['X-QR-Session' => $session->uuid, 'X-QR-Client-Secret' => $secret]);
+        foreach (range(1, 3) as $_) {
+            $this->getJson('/api/v1/public/qr/status')->assertOk()->assertJsonMissingPath('data.branding');
+        }
+        $this->getJson('/api/v1/public/qr/status?include_branding=1')->assertOk()
+            ->assertJsonPath('data.branding', $bound->json('data.branding'));
+    }
+
     public function test_fix1_bind_and_status_include_the_same_public_branding_without_loading_menu(): void
     {
         $device = $this->device('brand-release');
@@ -99,7 +118,7 @@ class QrSessionApiTest extends TestCase
         $bound = $this->bind($session->token, $secret)->assertOk();
         $bound->assertJsonPath('data.branding.merchant.name', 'Binding Bakery');
         $this->withHeaders(['X-QR-Session' => $session->uuid, 'X-QR-Client-Secret' => $secret])
-            ->getJson('/api/v1/public/qr/status')->assertOk()
+            ->getJson('/api/v1/public/qr/status?include_branding=1')->assertOk()
             ->assertJsonPath('data.branding', $bound->json('data.branding'));
     }
 

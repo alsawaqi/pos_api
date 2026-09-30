@@ -578,7 +578,9 @@ class CreateOrderHandler implements SyncEventHandler
             // (approved_by_pos_staff_id) is an audit-integrity FK: a device
             // must not attribute a comp approval to an arbitrary staff number.
             // Same tenant + withTrashed guard as the order's cashier.
-            $approverId = isset($c['staff_id']) ? (int) $c['staff_id'] : null;
+            $cashierId = isset($c['staff_id']) ? (int) $c['staff_id'] : null;
+            TenantReferenceGuard::assertCashier($device, $cashierId, 'comp references a staff member outside the device tenant: '.$cashierId);
+            $approverId = isset($c['approved_by_staff_id']) ? (int) $c['approved_by_staff_id'] : null;
             TenantReferenceGuard::assertApprover($device, $approverId, 'comp references an approver outside the device tenant: '.$approverId);
 
             $lineIndex = isset($c['line_index']) ? (int) $c['line_index'] : null;
@@ -602,7 +604,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'is_gift' => $isGift,
                 'amount' => Money::toOmr($amountBaisas),
                 'qty' => $qty,
-                'approved_by_pos_staff_id' => $c['staff_id'] ?? null,
+                'approved_by_pos_staff_id' => $approverId ?? $cashierId,
                 'note' => $c['note'] ?? null,
                 'applied_at' => $model->opened_at,
             ]);
@@ -696,6 +698,7 @@ class CreateOrderHandler implements SyncEventHandler
             'comps.*.amount_baisas' => ['required', 'integer', 'min:1'],
             'comps.*.line_index' => ['nullable', 'integer', 'min:0'],
             'comps.*.staff_id' => ['nullable', 'integer'],
+            'comps.*.approved_by_staff_id' => ['nullable', 'integer'],
             'comps.*.note' => ['nullable', 'string'],
             'comps.*.qty' => ['nullable'],
         ]);

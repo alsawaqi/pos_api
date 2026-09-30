@@ -21,6 +21,20 @@ final class SnapshotCardSoftPos
         if (($tender['method'] ?? null) !== Payment::METHOD_CARD) {
             return [];
         }
+        if ($device->reviewedSoftposSnapshot !== null) {
+            $profile = $device->reviewedSoftposSnapshot;
+            $reported = $this->text($tender['softpos_provider'] ?? null, 32);
+            $note = empty($profile) ? 'reviewed_profile_unavailable'
+                : (($reported !== null && $reported !== ($profile['provider'] ?? null))
+                    ? 'reported_provider_differs_from_reviewed_profile' : null);
+            return [
+                'softpos_provider' => $profile['provider'] ?? null,
+                'softpos_package' => $profile['package'] ?? null,
+                'softpos_reported_provider' => $reported,
+                'softpos_mismatch' => $note !== null,
+                'softpos_mismatch_note' => $note,
+            ] + $this->receipt(is_array($tender['bank_response'] ?? null) ? $tender['bank_response'] : []);
+        }
         $device = Device::query()->whereKey($device->id)->lockForUpdate()->firstOrFail();
         $profile = $this->profiles->handle($device);
         $reported = $this->text($tender['softpos_provider'] ?? null, 32);

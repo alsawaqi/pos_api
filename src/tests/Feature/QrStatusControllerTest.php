@@ -144,10 +144,6 @@ class QrStatusControllerTest extends TestCase
 
         $this->requestStatus($session, $secret)->assertOk()->assertExactJson([
             'data' => [
-                'branding' => [
-                    'merchant' => ['name' => 'Test Merchant 100', 'name_ar' => null],
-                    'branch' => ['name' => null, 'name_ar' => null], 'logo_base64' => null,
-                ],
                 'session_uuid' => $session->uuid,
                 'status' => QrSession::STATUS_ACTIVE,
                 'expires_at' => $session->expires_at->toIso8601String(),

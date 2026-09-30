@@ -38,7 +38,9 @@ class QrStatusController
         $order = $session->orders()->latest('id')->first();
 
         $data = [
-            'branding' => app(ReadQrBranding::class)->handle((int) $session->company_id, (int) $session->branch_id),
+            ...($request->boolean('include_branding') ? [
+                'branding' => app(ReadQrBranding::class)->handle((int) $session->company_id, (int) $session->branch_id),
+            ] : []),
             'session_uuid' => $session->uuid,
             'status' => $session->status,
             'expires_at' => $session->expires_at?->toIso8601String(),

@@ -59,10 +59,8 @@ class IngestSyncEventsAction
             // a historical processed ACK into a permanent refusal.
             if ($existing?->ack_status === SyncEvent::STATUS_PROCESSED) {
                 $ack = $this->ack($existing, duplicate: true);
-                if ($existing->company_id === null || $existing->branch_id === null
-                    || (int) $existing->company_id !== (int) $device->company_id
-                    || (int) $existing->branch_id !== (int) $device->branch_id) {
-                    $ack['result'] = null; // Do not expose another assignment's receipt.
+                if (! $this->samePayload($existing, $event)) {
+                    $ack['result'] = null;
                 }
                 $results[] = $ack;
                 $duplicates++;
@@ -72,18 +70,24 @@ class IngestSyncEventsAction
             $identity = $event['identity'] ?? null;
             // Legacy APKs carry no identity tag. Allow at most five minutes
             // of clock skew, never a backlog preceding this credential epoch.
-            $predatesCredential = $identity === null && $device->token_issued_at !== null
-                && Carbon::parse($event['client_timestamp'])->lt(Carbon::parse($device->token_issued_at)->subMinutes(5));
+            $cutoff = $device->assignment_activated_at ?? $device->token_issued_at;
+            $predatesCredential = $existing === null && $identity === null && $cutoff !== null
+                && Carbon::parse($event['client_timestamp'])->lt(Carbon::parse($cutoff)->subMinutes(5));
             if ($predatesCredential || ($identity !== null && (
                 (int) ($identity['company_id'] ?? 0) !== (int) $device->company_id
                 || (int) ($identity['branch_id'] ?? 0) !== (int) $device->branch_id
                 || ($identity['device_uuid'] ?? null) !== $device->uuid
             ))) {
-                $results[] = [
-                    'client_event_id' => $event['client_event_id'], 'duplicate' => false,
-                    'status' => 'failed', 'event_id' => null,
-                    'result' => ['error' => 'identity_mismatch', 'code' => 'identity_mismatch', 'permanent' => true],
-                ];
+                // Keep the original evidence without assigning it to today's
+                // merchant. The audited review workflow can attribute it later.
+                $row = SyncEvent::firstOrCreate(
+                    ['device_id' => $device->id, 'client_event_id' => $event['client_event_id']],
+                    ['event_type' => $event['event_type'], 'payload_json' => $event['payload'],
+                        'client_timestamp' => Carbon::parse($event['client_timestamp']),
+                        'server_received_at' => now(), 'ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,
+                        'result_json' => ['error' => 'identity_mismatch', 'code' => 'identity_mismatch', 'permanent' => true]]
+                );
+                $results[] = $this->ack($row, duplicate: ! $row->wasRecentlyCreated);
 
                 continue;
             }
@@ -178,7 +182,11 @@ class IngestSyncEventsAction
                     ->firstOrFail();
 
                 $duplicates++;
-                $results[] = $this->ack($row, duplicate: true);
+                $ack = $this->ack($row, duplicate: true);
+                if ($row->ack_status === SyncEvent::STATUS_PROCESSED && ! $this->samePayload($row, $event)) {
+                    $ack['result'] = null;
+                }
+                $results[] = $ack;
             }
         }
 
@@ -205,6 +213,23 @@ class IngestSyncEventsAction
      *
      * @return array<string, mixed>
      */
+    private function samePayload(SyncEvent $row, array $event): bool
+    {
+        $canonical = function (mixed $value) use (&$canonical): mixed {
+            if (! is_array($value)) {
+                return $value;
+            }
+            if (! array_is_list($value)) {
+                ksort($value);
+            }
+            return array_map($canonical, $value);
+        };
+        $fingerprint = fn (string $type, array $payload): string => hash('sha256',
+            json_encode([$type, $canonical($payload)], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
+        return hash_equals($fingerprint($row->event_type, $row->payload_json),
+            $fingerprint($event['event_type'], $event['payload']));
+    }
+
     private function ack(SyncEvent $row, bool $duplicate): array
     {
         return [

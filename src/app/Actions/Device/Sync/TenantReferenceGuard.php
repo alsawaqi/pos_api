@@ -46,7 +46,7 @@ final class TenantReferenceGuard
         $staff = PosStaff::withTrashed()->findOrFail($staffId);
         $positions = app(VerifyManagerPinAction::class)->approvalPositions((int) $device->company_id);
         if ((int) $staff->branch_id !== (int) $device->branch_id && ! in_array($staff->position, $positions, true)) {
-            throw new RuntimeException($message);
+            $device->syncIntegrityFlags[] = 'staff_branch_changed:'.$staffId;
         }
     }
 
@@ -58,7 +58,7 @@ final class TenantReferenceGuard
         }
         $positions = app(VerifyManagerPinAction::class)->approvalPositions((int) $device->company_id);
         if (! PosStaff::withTrashed()->whereKey($staffId)->whereIn('position', $positions)->exists()) {
-            throw new RuntimeException($message);
+            $device->syncIntegrityFlags[] = 'approver_position_changed:'.$staffId;
         }
     }
 }

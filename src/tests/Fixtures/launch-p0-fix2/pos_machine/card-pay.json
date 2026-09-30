@@ -1,0 +1,1 @@
+{"client_event_id":"4da642c2-bccb-4b75-8946-7be2496d5354","event_type":"order.pay","client_timestamp":"2026-09-30T08:39:35.929774Z","payload":{"order_uuid":"20efea18-06dd-46ba-a8b7-65832c14fdd4","paid_at":"2026-09-30T08:39:35.929774Z","payments":[{"method":"card","amount_baisas":1500,"status":"success"}]}}

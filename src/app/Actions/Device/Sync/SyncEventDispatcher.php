@@ -167,7 +167,11 @@ class SyncEventDispatcher
 
                     return null;
                 }
+                $device->syncIntegrityFlags = [];
                 $result = $handler->handle($lockedEvent, $device);
+                if ($device->syncIntegrityFlags !== []) {
+                    $result['integrity_flags'] = array_values(array_unique($device->syncIntegrityFlags));
+                }
                 $lockedEvent->update([
                     'ack_status' => SyncEvent::STATUS_PROCESSED,
                     'processed_at' => now(),
@@ -226,6 +230,11 @@ class SyncEventDispatcher
             return;
         }
 
+        // A reviewed replay settles historical evidence only. Post-commit
+        // hooks and broadcasts would reintroduce it into today's live workflow.
+        if ($reviewId !== null) {
+            return;
+        }
         $result = $settlement;
 
         // External work must never run before the effect + ACK transaction

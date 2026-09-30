@@ -85,7 +85,7 @@ class LaunchP0FixOrder1ApiTest extends TestCase
         SyncEvent::create(['device_id' => $device->id, 'client_event_id' => $event['client_event_id'],
             'event_type' => 'sync.noop', 'client_timestamp' => now()->subDay(),
             'server_received_at' => now()->subDay(), 'ack_status' => 'processed',
-            'payload_json' => [], 'result_json' => ['receipt' => 'unproven merchant']]);
+            'payload_json' => ['different_original' => true], 'result_json' => ['receipt' => 'unproven merchant']]);
         $ack = app(IngestSyncEventsAction::class)->handle($device, [$event])['data']['results'][0];
         $this->assertSame('processed', $ack['status']);
         $this->assertNull($ack['result']);
@@ -104,7 +104,8 @@ class LaunchP0FixOrder1ApiTest extends TestCase
             if ($seconds < -300) {
                 $this->assertSame('identity_mismatch', $result['result']['code'] ?? null);
                 $this->assertTrue($result['result']['permanent']);
-                $this->assertDatabaseMissing('pos_sync_events', ['client_event_id' => $event['client_event_id']]);
+                $this->assertDatabaseHas('pos_sync_events', ['client_event_id' => $event['client_event_id'],
+                    'device_id' => $device->id, 'ack_status' => 'needs_review', 'company_id' => null, 'branch_id' => null]);
             } else {
                 $this->assertSame('received', $result['status']);
             }

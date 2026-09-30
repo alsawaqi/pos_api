@@ -1128,7 +1128,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->where('party_type', 'merchant')->count());
     }
 
-    public function test_w13_rejects_same_company_other_branch_tables_and_other_branch_cashier(): void
+    public function test_w13_rejects_other_branch_tables_and_flags_a_since_moved_cashier(): void
     {
         $this->seedCatalogue();
         $this->device();
@@ -1137,11 +1137,17 @@ class DeviceSyncOrderTest extends TestCase
         foreach ([['table_id' => 55], ['joined_table_ids' => [55]]] as $attributes) {
             $this->push('mdev_ord', [$this->createEvent((string) Str::uuid(), $attributes)])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
         }
-        foreach ([['status' => 'active', 'branch_id' => 20]] as $attributes) {
-            DB::table('pos_staff')->where('id', 7)->update($attributes);
-            $this->push('mdev_ord', [$this->createEvent((string) Str::uuid())])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
-        }
         $this->assertDatabaseCount('pos_orders', 0);
+        DB::table('pos_staff')->where('id', 7)->update(['branch_id' => 20]);
+        $wire = json_decode(file_get_contents(base_path('tests/Fixtures/launch-p0-fix2/pos_machine/payloads.json')), true)[0];
+        // This existing catalogue has no comp reason; seed the release's reason
+        // without changing any staff role or merchant policy.
+        DB::table('pos_comp_reasons')->insert(['id'=>2,'uuid'=>Str::uuid(),'company_id'=>100,
+            'code'=>'staff_meal','name'=>'Staff meal','is_active'=>true]);
+        $this->push('mdev_ord', [$wire])->assertOk()
+            ->assertJsonPath('data.results.0.status', 'processed')
+            ->assertJsonPath('data.results.0.result.integrity_flags.0', 'staff_branch_changed:7');
+        $this->assertDatabaseCount('pos_orders', 1);
     }
 
     public function test_w13_order_client_event_ids_are_unique_per_device(): void

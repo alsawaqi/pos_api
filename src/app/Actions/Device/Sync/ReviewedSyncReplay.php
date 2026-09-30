@@ -34,8 +34,9 @@ final class ReviewedSyncReplay
             'id' => $current->id, 'uuid' => $current->uuid, 'kiosk_id' => $current->kiosk_id,
             'serial_number' => $current->serial_number,
             'assigned_at' => $event->server_received_at->copy()->subSecond()->toDateTimeString(),
-        ] + $snapshot);
+        ] + array_diff_key($snapshot, ['softpos_profile' => true]));
         $device->exists = true;
+        $device->reviewedSoftposSnapshot = $snapshot['softpos_profile'] ?? [];
 
         return $device;
     }

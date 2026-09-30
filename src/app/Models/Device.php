@@ -54,6 +54,9 @@ class Device extends Model implements Authenticatable
 
     /** Returned once at activation; never persisted or included in serialization. */
     public ?string $plainTextToken = null;
+    /** Reviewed historical settlement must never consult or mutate live device state. */
+    public ?array $reviewedSoftposSnapshot = null;
+    public array $syncIntegrityFlags = [];
 
     protected $hidden = ['device_token'];
 
@@ -64,7 +67,16 @@ class Device extends Model implements Authenticatable
             'device_token' => hash('sha256', $this->plainTextToken),
             'token_company_id' => $this->company_id,
             'token_branch_id' => $this->branch_id,
-            'token_issued_at' => now(),
+            // This is the first activation of the current assignment, not a
+            // sliding cutoff each time the same terminal is reactivated.
+            'token_issued_at' => $this->assignment_activated_at
+                ?? (((int) $this->token_company_id === (int) $this->company_id
+                    && (int) $this->token_branch_id === (int) $this->branch_id)
+                    ? $this->token_issued_at : now()),
+            'assignment_activated_at' => $this->assignment_activated_at
+                ?? (((int) $this->token_company_id === (int) $this->company_id
+                    && (int) $this->token_branch_id === (int) $this->branch_id)
+                    ? $this->token_issued_at : now()),
             'status' => 'active',
             'last_seen_at' => now(),
             'pending_outbox_count' => null,
@@ -81,6 +93,7 @@ class Device extends Model implements Authenticatable
             'last_seen_at' => 'datetime',
             'assigned_at' => 'datetime',
             'token_issued_at' => 'datetime',
+            'assignment_activated_at' => 'datetime',
             'last_lat' => 'decimal:7',
             'last_lng' => 'decimal:7',
             'last_battery' => 'integer',

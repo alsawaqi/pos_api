@@ -284,6 +284,13 @@ Route::prefix('v1')->group(function (): void {
             ->name('device.kitchen.print-result');
 
         // Config bundle (Â§11.4): full snapshot + incremental delta.
+        Route::get('device/identity', function (Request $request) {
+            $device = $request->user('pos_device');
+            return response()->json(['data' => [
+                'uuid' => $device->uuid, 'company_id' => (int) $device->company_id,
+                'branch_id' => (int) $device->branch_id,
+            ]]);
+        })->name('device.identity');
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');
         Route::get('device/config/delta', [DeviceConfigController::class, 'delta'])->name('device.config.delta');
 

@@ -79,13 +79,20 @@ class IngestSyncEventsAction
                 || ($identity['device_uuid'] ?? null) !== $device->uuid
             ))) {
                 // Keep the original evidence without assigning it to today's
-                // merchant. The audited review workflow can attribute it later.
+                // merchant. The audited review workflow can attribute it later;
+                // the identity the device stamped on the sale is part of that
+                // evidence (the row itself is stored at push time).
                 $row = SyncEvent::firstOrCreate(
                     ['device_id' => $device->id, 'client_event_id' => $event['client_event_id']],
                     ['event_type' => $event['event_type'], 'payload_json' => $event['payload'],
                         'client_timestamp' => Carbon::parse($event['client_timestamp']),
                         'server_received_at' => now(), 'ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,
-                        'result_json' => ['error' => 'identity_mismatch', 'code' => 'identity_mismatch', 'permanent' => true]]
+                        'result_json' => ['error' => 'identity_mismatch', 'code' => 'identity_mismatch', 'permanent' => true]
+                            + ($identity === null ? [] : ['claimed_identity' => [
+                                'company_id' => (int) ($identity['company_id'] ?? 0),
+                                'branch_id' => (int) ($identity['branch_id'] ?? 0),
+                                'device_uuid' => isset($identity['device_uuid']) ? (string) $identity['device_uuid'] : null,
+                            ]])]
                 );
                 $results[] = $this->ack($row, duplicate: ! $row->wasRecentlyCreated);
 

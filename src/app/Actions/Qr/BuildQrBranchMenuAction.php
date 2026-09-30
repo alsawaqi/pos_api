@@ -6,7 +6,6 @@ namespace App\Actions\Qr;
 
 use App\Models\AddOn;
 use App\Models\AddOnGroup;
-use App\Models\Branch;
 use App\Models\BranchProduct;
 use App\Models\Product;
 use App\Models\ProductCategory;
@@ -74,17 +73,8 @@ final class BuildQrBranchMenuAction
         );
         $groupOrder = array_flip($activeGroupIds);
 
-        $company = DB::table('pos_companies')->where('id', $companyId)->whereNull('deleted_at')
-            ->where('status', 'active')->first(['name', 'name_ar']);
-        $branch = Branch::query()->whereKey($branchId)->where('company_id', $companyId)->first();
-        $logo = $branch?->receipt_template['logo_base64'] ?? null;
-
         return [
-            'branding' => [
-                'merchant' => ['name' => $company?->name, 'name_ar' => $company?->name_ar],
-                'branch' => ['name' => $branch?->name, 'name_ar' => $branch?->name_ar],
-                'logo_base64' => is_string($logo) && trim($logo) !== '' ? $logo : null,
-            ],
+            'branding' => app(ReadQrBranding::class)->handle($companyId, $branchId),
             'categories' => $categories->map(function (ProductCategory $category) use ($categoryBindings, $activeGroupSet): array {
                 return [
                     'id' => (int) $category->id,

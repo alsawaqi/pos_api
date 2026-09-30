@@ -7,6 +7,8 @@ namespace Tests\Feature;
 use App\Actions\Qr\BindQrTableSessionAction;
 use App\Actions\Qr\BuildQrBranchMenuAction;
 use App\Actions\Qr\OpenDineInTableAction;
+use App\Actions\Qr\TableCardIdentity;
+use App\Actions\Tables\MoveTableSessionAction;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
@@ -16,6 +18,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
 use Mockery;
 use PDOException;
@@ -253,5 +256,41 @@ class QrTableCardScanTest extends TestCase
             }
         }
         $this->assertDatabaseCount('pos_orders', 0);
+    }
+
+    public function test_fix1_admission_token_owns_company_despite_foreign_session_header(): void
+    {
+        $table = $this->seatingTable();
+        $this->enable();
+        $this->scan($table)->assertOk();
+        $session = QrSession::query()->sole();
+        $this->seatingBranch(20, 200);
+        $foreign = $session->replicate();
+        $foreign->forceFill(['uuid' => (string) Str::uuid(), 'token' => 'foreign-session-token',
+            'company_id' => 200, 'branch_id' => 20, 'table_id' => null, 'table_session_id' => null])->save();
+        DB::table('pos_companies')->where('id', 100)->update(['status' => 'suspended']);
+        $this->withHeader('X-QR-Session', $foreign->uuid)
+            ->getJson('/api/v1/public/qr/table-menu?t='.$table->qr_token)->assertForbidden();
+        $this->withHeader('X-QR-Session', $foreign->uuid)->scan($table)->assertForbidden();
+        $this->postJson('/api/v1/public/qr/bind', ['token' => $session->token, 'client_secret' => 'synthetic-owner'])
+            ->assertForbidden();
+    }
+
+    public function test_fix1_table_move_preserves_bound_card_session(): void
+    {
+        $device = $this->seatingDevice();
+        $table = $this->seatingTable();
+        $target = $this->seatingTable('Moved');
+        $this->enable();
+        $this->scan($table)->assertOk();
+        $session = QrSession::query()->sole();
+        $seat = TableSession::query()->sole();
+        $result = app(MoveTableSessionAction::class)->handle($device, [
+            'seating_key' => (string) Str::uuid(), 'table_id' => $table->id, 'queued_offline' => false, 'from_table_id' => $table->id,
+            'to_table_id' => $target->id, 'moved_at' => now()->toIso8601String(),
+        ], now(), now(), $seat->uuid);
+        $this->assertSame('moved', $result['outcome']);
+        $this->assertTrue(app(TableCardIdentity::class)->valid($session->fresh()));
+        $this->assertSame(hash('sha256', $target->qr_token), $session->fresh()->table_qr_token_hash);
     }
 }

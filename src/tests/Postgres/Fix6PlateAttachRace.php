@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\Support\TableSessionFixtures;
 
+require_once __DIR__.'/P0DisposableDatabase.php';
+
 require __DIR__.'/../../vendor/autoload.php';
 $app = require __DIR__.'/../../bootstrap/app.php';
 $app->make(ConsoleKernel::class)->bootstrap();
@@ -21,7 +23,7 @@ set_exception_handler(function (Throwable $error): never {
     fwrite(STDERR, $error->__toString().PHP_EOL);
     exit(1);
 });
-if (DB::getDriverName() !== 'pgsql' || DB::connection()->getDatabaseName() !== 'qr_fix6_disposable') {
+if (DB::getDriverName() !== 'pgsql' || DB::connection()->getDatabaseName() !== \p0DisposableDatabase('plate', 'qr_fix6_disposable')) {
     throw new RuntimeException('Disposable qr_fix6_disposable PostgreSQL only.');
 }
 [$self, $mode, $label] = $argv;

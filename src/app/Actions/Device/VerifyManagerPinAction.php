@@ -61,7 +61,7 @@ final readonly class VerifyManagerPinAction
      *
      * @return list<string>
      */
-    private function approvalPositions(int $companyId): array
+    public function approvalPositions(int $companyId): array
     {
         $raw = DB::table('pos_company_settings')
             ->where('company_id', $companyId)

@@ -134,8 +134,8 @@ class DeviceKitchenProductionTest extends TestCase
         Device::factory()->paired('mdev_unassigned')->create(['company_id' => null, 'branch_id' => null]);
 
         $this->withToken('mdev_unassigned')->getJson('/api/v1/device/kitchen')
-            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required')
-            ->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            ->assertStatus(401)->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors')
+            ->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
     }
 
     // ------------------------------------------------ start

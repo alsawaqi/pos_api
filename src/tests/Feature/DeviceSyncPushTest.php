@@ -64,7 +64,7 @@ class DeviceSyncPushTest extends TestCase
 
         $this->withToken('mdev_sync_unassigned')
             ->postJson('/api/v1/device/sync/push', ['events' => [$this->event()]])
-            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            ->assertStatus(401)->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
 
         $this->assertDatabaseCount('pos_sync_events', 0);
     }

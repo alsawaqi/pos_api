@@ -110,7 +110,7 @@ final class ReviewQuickPaymentAction
                 $order->update($updates);
                 $card = $input['method'] === Payment::METHOD_CARD;
                 $payEvent = SyncEvent::query()->create([
-                    'client_event_id' => (string) Str::uuid(), 'device_id' => $device->id, 'event_type' => 'order.pay',
+                    'client_event_id' => (string) Str::uuid(), 'device_id' => $device->id, 'company_id' => $device->company_id, 'branch_id' => $device->branch_id, 'event_type' => 'order.pay',
                     'payload_json' => array_filter([
                         'order_uuid' => $order->uuid, 'paid_at' => $at->toIso8601String(),
                         // A card taken elsewhere is recorded for the bank-file match, not as confirmed money.
@@ -151,7 +151,7 @@ final class ReviewQuickPaymentAction
                 'receipt_number' => $order->receipt_number, 'temp_reference' => $order->temp_reference,
                 'payment_ids' => $paid['payment_ids'] ?? [], 'pay_event_id' => $payEvent?->client_event_id,
                 'approved_by_staff_id' => (int) $approver->id, 'approved_by' => $approver->name, 'replayed' => false];
-            SyncEvent::query()->create(['client_event_id' => $input['client_request_id'], 'device_id' => $device->id,
+            SyncEvent::query()->create(['client_event_id' => $input['client_request_id'], 'device_id' => $device->id, 'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
                 'event_type' => self::EVENT_TYPE, 'payload_json' => $payload, 'client_timestamp' => $at,
                 'server_received_at' => $at, 'processed_at' => $at, 'ack_status' => SyncEvent::STATUS_PROCESSED,
                 'result_json' => $result]);

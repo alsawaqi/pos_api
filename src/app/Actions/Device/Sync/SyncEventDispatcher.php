@@ -121,7 +121,7 @@ class SyncEventDispatcher
         return isset($this->handlers()[$eventType]);
     }
 
-    public function dispatch(SyncEvent $event, Device $device): void
+    public function dispatch(SyncEvent $event, Device $device, ?int $reviewId = null): void
     {
         $handler = $this->handlers()[$event->event_type] ?? null;
 
@@ -130,7 +130,7 @@ class SyncEventDispatcher
         }
 
         try {
-            $settlement = DB::transaction(function () use ($handler, $event, $device): ?array {
+            $settlement = DB::transaction(function () use ($handler, $event, &$device, $reviewId): ?array {
                 // The cache lease used by recovery callers is only an admission
                 // optimization: it can expire, and initial ingest does not own
                 // one. The ledger row is the durable serialization boundary for
@@ -141,10 +141,14 @@ class SyncEventDispatcher
                     ->lockForUpdate()
                     ->first();
 
+                if ($lockedEvent !== null && $reviewId !== null) {
+                    $device = app(ReviewedSyncReplay::class)->device($lockedEvent, $reviewId);
+                }
                 if ($lockedEvent === null
                     || ! in_array($lockedEvent->ack_status, [
                         SyncEvent::STATUS_RECEIVED,
                         SyncEvent::STATUS_FAILED,
+                        ...($reviewId === null ? [] : [SyncEvent::STATUS_NEEDS_REVIEW]),
                     ], true)) {
                     return null;
                 }
@@ -154,8 +158,8 @@ class SyncEventDispatcher
                 $current = Device::withTrashed()->whereKey($device->id)->lockForUpdate()->first();
                 if ($current === null || (int) $lockedEvent->device_id !== (int) $device->id
                     || $lockedEvent->company_id === null || $lockedEvent->branch_id === null
-                    || (int) $current->company_id !== (int) $lockedEvent->company_id
-                    || (int) $current->branch_id !== (int) $lockedEvent->branch_id
+                    || ($reviewId === null && ((int) $current->company_id !== (int) $lockedEvent->company_id
+                        || (int) $current->branch_id !== (int) $lockedEvent->branch_id))
                     || (int) $device->company_id !== (int) $lockedEvent->company_id
                     || (int) $device->branch_id !== (int) $lockedEvent->branch_id) {
                     $lockedEvent->update(['ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,

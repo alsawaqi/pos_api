@@ -23,7 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
     // as /api/v1/broadcasting/auth, behind the `pos_device` guard + JSON
     // middleware, so it lives on the device API contract (not the default
     // web-session /broadcasting/auth, which this token-only API has no use for).
-    ->withBroadcasting(__DIR__.'/../routes/channels.php')
+    ->withBroadcasting(__DIR__.'/../routes/channels.php', ['middleware' => ['api', 'auth:pos_device']])
     ->withMiddleware(function (Middleware $middleware): void {
         // QR client secrets and checkout idempotency keys are opaque values.
         // Preserve their exact bytes so JSON binding and later header checks
@@ -56,16 +56,15 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(function (AuthenticationException $e, Request $request) {
-            if ($request->is('api/*')) {
+            if ($request->is('api/*', 'broadcasting/auth')) {
                 return response()->json([
-                    'data' => null,
                     'message' => 'Unauthenticated.',
-                    'errors' => [['code' => 'device_reactivation_required', 'message' => 'This device needs activation.']],
+                    'code' => 'device_reactivation_required',
                 ], 401);
             }
         });
         $exceptions->shouldRenderJsonWhen(
-            fn (Request $request) => $request->is('api/*'),
+            fn (Request $request) => $request->is('api/*', 'broadcasting/auth'),
         );
 
         // Phase D1 — report unhandled exceptions to Sentry (blueprint §9.12

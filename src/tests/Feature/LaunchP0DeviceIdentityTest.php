@@ -47,7 +47,7 @@ class LaunchP0DeviceIdentityTest extends TestCase
         ] as [$method, $path]) {
             Auth::forgetGuards();
             $this->withToken($raw)->json(strtoupper($method), '/api/v1/'.$path)
-                ->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+                ->assertUnauthorized()->assertJsonPath('code', 'device_reactivation_required');
         }
     }
 
@@ -63,7 +63,7 @@ class LaunchP0DeviceIdentityTest extends TestCase
             DB::table('pos_devices')->where('id', $device->id)->update(['status' => $status]);
             Auth::forgetGuards();
             $this->withToken($raw)->postJson('/api/v1/device/heartbeat')
-                ->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+                ->assertUnauthorized()->assertJsonPath('code', 'device_reactivation_required');
         }
     }
 }

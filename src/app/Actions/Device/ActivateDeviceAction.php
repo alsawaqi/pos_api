@@ -40,6 +40,10 @@ final readonly class ActivateDeviceAction
                 throw new RuntimeException('Activation failed: invalid or expired code.');
             }
 
+            if ($device !== null && $device->assigned_at !== null
+                && ($token->created_at === null || $token->created_at->lt($device->assigned_at))) {
+                throw new RuntimeException('Activation failed: invalid or expired code.');
+            }
             if ($device === null || ! $device->isAssigned()) {
                 throw new RuntimeException('Activation failed: device is not assigned to a branch.');
             }

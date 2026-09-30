@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1\PublicQr;
 use App\Actions\Qr\DineInRoundMode;
 use App\Actions\Qr\PublicTableLoyalty;
 use App\Actions\Qr\QrChargeRecoveryGuard;
+use App\Actions\Qr\ReadQrBranding;
 use App\Actions\Qr\TableQrIdentity;
 use App\Actions\Tables\TableBillAdjustmentView;
 use App\Models\Device;
@@ -37,6 +38,7 @@ class QrStatusController
         $order = $session->orders()->latest('id')->first();
 
         $data = [
+            'branding' => app(ReadQrBranding::class)->handle((int) $session->company_id, (int) $session->branch_id),
             'session_uuid' => $session->uuid,
             'status' => $session->status,
             'expires_at' => $session->expires_at?->toIso8601String(),

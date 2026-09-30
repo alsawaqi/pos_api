@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync;
 
+use App\Actions\Device\VerifyManagerPinAction;
 use App\Models\Device;
 use App\Models\PosStaff;
 use RuntimeException;
@@ -30,12 +31,33 @@ final class TenantReferenceGuard
      */
     public static function assertStaffInTenant(Device $device, ?int $staffId, string $message): void
     {
-        if ($staffId !== null
-            && ! PosStaff::query()->where('company_id', $device->company_id)->where('status', 'active')
-                ->where(function ($query) use ($device): void {
-                    $query->where('branch_id', $device->branch_id)
-                        ->orWhere(fn ($q) => $q->whereNull('branch_id')->where('position', 'manager'));
-                })->whereKey($staffId)->exists()) {
+        if ($staffId !== null && ! PosStaff::withTrashed()
+            ->where('company_id', $device->company_id)->whereKey($staffId)->exists()) {
+            throw new RuntimeException($message);
+        }
+    }
+
+    public static function assertCashier(Device $device, ?int $staffId, string $message): void
+    {
+        self::assertStaffInTenant($device, $staffId, $message);
+        if ($staffId === null) {
+            return;
+        }
+        $staff = PosStaff::withTrashed()->findOrFail($staffId);
+        $positions = app(VerifyManagerPinAction::class)->approvalPositions((int) $device->company_id);
+        if ((int) $staff->branch_id !== (int) $device->branch_id && ! in_array($staff->position, $positions, true)) {
+            throw new RuntimeException($message);
+        }
+    }
+
+    public static function assertApprover(Device $device, ?int $staffId, string $message): void
+    {
+        self::assertStaffInTenant($device, $staffId, $message);
+        if ($staffId === null) {
+            return;
+        }
+        $positions = app(VerifyManagerPinAction::class)->approvalPositions((int) $device->company_id);
+        if (! PosStaff::withTrashed()->whereKey($staffId)->whereIn('position', $positions)->exists()) {
             throw new RuntimeException($message);
         }
     }

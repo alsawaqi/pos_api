@@ -53,12 +53,32 @@ class IngestSyncEventsAction
         $duplicates = 0;
 
         foreach ($events as $event) {
+            $existing = SyncEvent::query()->where('device_id', $device->getKey())
+                ->where('client_event_id', $event['client_event_id'])->first();
+            // An acknowledged settlement is terminal. Never replay it or turn
+            // a historical processed ACK into a permanent refusal.
+            if ($existing?->ack_status === SyncEvent::STATUS_PROCESSED) {
+                $ack = $this->ack($existing, duplicate: true);
+                if ($existing->company_id === null || $existing->branch_id === null
+                    || (int) $existing->company_id !== (int) $device->company_id
+                    || (int) $existing->branch_id !== (int) $device->branch_id) {
+                    $ack['result'] = null; // Do not expose another assignment's receipt.
+                }
+                $results[] = $ack;
+                $duplicates++;
+
+                continue;
+            }
             $identity = $event['identity'] ?? null;
-            if ($identity !== null && (
+            // Legacy APKs carry no identity tag. Allow at most five minutes
+            // of clock skew, never a backlog preceding this credential epoch.
+            $predatesCredential = $identity === null && $device->token_issued_at !== null
+                && Carbon::parse($event['client_timestamp'])->lt(Carbon::parse($device->token_issued_at)->subMinutes(5));
+            if ($predatesCredential || ($identity !== null && (
                 (int) ($identity['company_id'] ?? 0) !== (int) $device->company_id
                 || (int) ($identity['branch_id'] ?? 0) !== (int) $device->branch_id
                 || ($identity['device_uuid'] ?? null) !== $device->uuid
-            )) {
+            ))) {
                 $results[] = [
                     'client_event_id' => $event['client_event_id'], 'duplicate' => false,
                     'status' => 'failed', 'event_id' => null,

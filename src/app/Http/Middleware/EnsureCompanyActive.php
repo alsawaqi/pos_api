@@ -21,18 +21,19 @@ final class EnsureCompanyActive
     {
         $companyId = null;
         if ($request->is('api/v1/public/qr/*')) {
-            $uuid = $request->header('X-QR-Session');
-            $session = is_string($uuid) && Str::isUuid($uuid)
-                ? QrSession::query()->where('uuid', $uuid)->first() : null;
-            if ($session === null && $request->is('api/v1/public/qr/bind')) {
-                $session = QrSession::query()->where('token', (string) $request->input('token'))->first();
-            }
-            $companyId = $session?->company_id;
-            if ($companyId === null) {
+            // Admission is scoped by the submitted credential, never an
+            // unrelated existing browser session header.
+            if ($request->is('api/v1/public/qr/table-menu', 'api/v1/public/qr/table-bind')) {
                 $tableToken = $request->input('table_token', $request->query('t'));
                 if (is_string($tableToken) && $tableToken !== '') {
                     $companyId = Table::query()->where('qr_token', trim($tableToken))->value('company_id');
                 }
+            } elseif ($request->is('api/v1/public/qr/bind')) {
+                $companyId = QrSession::query()->where('token', (string) $request->input('token'))->value('company_id');
+            } else {
+                $uuid = $request->header('X-QR-Session');
+                $companyId = is_string($uuid) && Str::isUuid($uuid)
+                    ? QrSession::query()->where('uuid', $uuid)->value('company_id') : null;
             }
         } else {
             $companyId = Auth::guard('pos_device')->user()?->company_id;
@@ -45,10 +46,15 @@ final class EnsureCompanyActive
             }
         }
         if ($companyId !== null && ! DB::table('pos_companies')->where('id', $companyId)
-            ->where('status', 'active')->whereNull('deleted_at')->exists()) {
+            ->whereNotIn('status', ['suspended', 'inactive'])->whereNull('deleted_at')->exists()) {
+            // Old APKs permanently park deterministic 4xx after five tries.
+            // A 503 preserves their financial queue; new APKs still show the
+            // suspended gate from the code. Public browsers retain 403.
+            $public = $request->is('api/v1/public/qr/*');
+
             return response()->json(['data' => null, 'errors' => [
                 ['code' => 'company_suspended', 'message' => 'Account suspended.'],
-            ]], 403);
+            ]], $public ? 403 : 503, $public ? [] : ['Retry-After' => '60']);
         }
 
         return $next($request);

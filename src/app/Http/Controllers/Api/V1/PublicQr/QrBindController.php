@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1\PublicQr;
 
 use App\Actions\Qr\BindQrSessionAction;
+use App\Actions\Qr\ReadQrBranding;
 use App\Http\Requests\Api\V1\PublicQr\BindQrSessionRequest;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -32,6 +33,7 @@ class QrBindController
         }
 
         return QrApiResponse::success([
+            'branding' => app(ReadQrBranding::class)->handle((int) $session->company_id, (int) $session->branch_id),
             'session_uuid' => $session->uuid,
             'status' => $session->status,
             'expires_at' => $session->expires_at?->toIso8601String(),

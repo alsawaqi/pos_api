@@ -43,6 +43,7 @@ return new class extends Migration
         Schema::create('pos_devices', function (Blueprint $table): void {
             $table->unsignedBigInteger('token_company_id')->nullable();
             $table->unsignedBigInteger('token_branch_id')->nullable();
+            $table->timestamp('token_issued_at')->nullable();
             $table->unsignedInteger('pending_outbox_count')->nullable();
             $table->unsignedInteger('quarantined_count')->default(0);
             $table->timestamp('outbox_reported_at')->nullable();

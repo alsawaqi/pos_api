@@ -243,7 +243,7 @@ final class ReadTableDraftProofAction
     public function legacyAccountingEvidence(Order $order, array $snapshot, array $owners): array
     {
         $event = $order->client_event_id === null ? null : SyncEvent::query()
-            ->where('client_event_id', $order->client_event_id)->first();
+            ->where('client_event_id', $order->client_event_id)->where('device_id', $order->device_id)->first();
         $owner = $event === null ? null : Device::withTrashed()->whereKey($event->device_id)
             ->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)->first();
         if ($owner === null || ((int) $order->device_id !== (int) $owner->id && ! $this->stationAdopted($order, $owner))) {

@@ -288,7 +288,17 @@ final class QrPublicCustomerPrivacyTest extends TestCase
         // Catalogue product/category/add-on names are deliberately public.
         // Identity-bearing responses must not carry any generic customer name.
         foreach ([$bind, $checkout, $status] as $identityResponse) {
-            $this->assertNotContains('name', $this->nestedKeys($identityResponse->json()));
+            $public = $identityResponse->json();
+            // Merchant/branch trade names are now explicitly public at bind/status.
+            // The whole-response PII value and key checks above still apply.
+            if (isset($public['data']['branding'])) {
+                $this->assertEqualsCanonicalizing(['merchant', 'branch', 'logo_base64'], array_keys($public['data']['branding']));
+                foreach (['merchant', 'branch'] as $kind) {
+                    $this->assertSame(['name', 'name_ar'], array_keys($public['data']['branding'][$kind]));
+                }
+                unset($public['data']['branding']);
+            }
+            $this->assertNotContains('name', $this->nestedKeys($public));
         }
     }
 

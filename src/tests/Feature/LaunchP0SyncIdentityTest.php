@@ -75,9 +75,9 @@ class LaunchP0SyncIdentityTest extends TestCase
         $device = Device::factory()->paired('p0-suspended')->create();
         DB::table('pos_companies')->where('id', $device->company_id)->update(['status' => 'suspended']);
         $this->withToken('p0-suspended')->getJson('/api/v1/device/config')
-            ->assertForbidden()->assertJsonPath('errors.0.code', 'company_suspended');
+            ->assertStatus(503)->assertJsonPath('errors.0.code', 'company_suspended');
         $this->withToken('p0-suspended')->postJson('/api/v1/device/sync/push', ['events' => [$this->expense()]])
-            ->assertForbidden()->assertJsonPath('errors.0.code', 'company_suspended');
+            ->assertStatus(503)->assertJsonPath('errors.0.code', 'company_suspended');
         $this->assertDatabaseCount('pos_expenses', 0);
     }
 }

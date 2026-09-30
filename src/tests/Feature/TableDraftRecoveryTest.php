@@ -617,4 +617,23 @@ final class TableDraftRecoveryTest extends TestCase
         $this->finalize($device, $table, $intent)->assertStatus(409)->assertJsonPath('errors.0.code', 'draft_proof_evidence_changed');
         $this->assertSame($before, $this->rows());
     }
+
+    public function test_b13_heartbeat_between_preview_and_apply_does_not_change_signature(): void
+    {
+        [$device,$table,$seat,$product,$event,$order,$input] = $this->fixture();
+        $intent = $this->intent($device, $table, $input);
+        $this->withToken($device->plainTextToken)->postJson('/api/v1/device/heartbeat', [
+            'pending_outbox_count' => 3, 'quarantined_count' => 2, 'printer_status' => 'ready'])->assertOk();
+        $this->finalize($device, $table, $intent)->assertOk()->assertJsonPath('data.result.outcome', 'draft_recovered');
+    }
+
+    public function test_fix1_legacy_hold_proof_is_scoped_to_originating_device(): void
+    {
+        [$device,$table,$seat,$product,$event,$order,$input] = $this->fixture('handheld', true);
+        $other = $this->seatingDevice();
+        $foreign = $event->replicate();
+        $foreign->forceFill(['id' => 0, 'device_id' => $other->id, 'payload_json' => ['order' => ['uuid' => 'not-this-order']]])->save();
+        $intent = $this->intent($device, $table, $input);
+        $this->finalize($device, $table, $intent)->assertOk()->assertJsonPath('data.result.outcome','draft_recovered');
+    }
 }

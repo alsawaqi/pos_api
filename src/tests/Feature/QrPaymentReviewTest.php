@@ -210,4 +210,13 @@ final class QrPaymentReviewTest extends QrPendingTestCase
             ->assertJsonPath('data.status', 'paid');
         $this->assertSame(1, Payment::query()->count());
     }
+
+    public function test_fix1_server_created_events_retain_receipt_identity(): void
+    {
+        $this->test_money_taken_in_cash_is_recorded_through_the_normal_pay_path_once();
+        $this->assertGreaterThan(0, DB::table('pos_sync_events')->count());
+        $this->assertSame(0, DB::table('pos_sync_events')->where(function ($q) {
+            $q->whereNull('company_id')->orWhereNull('branch_id')->orWhere('company_id', '!=', 100)->orWhere('branch_id', '!=', 10);
+        })->count());
+    }
 }

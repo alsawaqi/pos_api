@@ -187,4 +187,13 @@ final class QrQuickWorkspaceTest extends QrPendingTestCase
         $this->change($order, $payload)->assertConflict();
         $this->assertSame($before, $this->snapshot());
     }
+
+    public function test_fix1_server_created_events_retain_receipt_identity(): void
+    {
+        $this->test_grouped_quantity_and_delete_are_atomic_and_replayable();
+        $this->assertGreaterThan(0, DB::table('pos_sync_events')->count());
+        $this->assertSame(0, DB::table('pos_sync_events')->where(function ($q) {
+            $q->whereNull('company_id')->orWhereNull('branch_id')->orWhere('company_id', '!=', 100)->orWhere('branch_id', '!=', 10);
+        })->count());
+    }
 }

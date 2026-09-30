@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1\PublicQr;
 
 use App\Actions\Qr\BindQrTableSessionAction;
 use App\Actions\Qr\QrDineInException;
+use App\Actions\Qr\ReadQrBranding;
 use App\Http\Requests\Api\V1\PublicQr\BindQrTableSessionRequest;
 use App\Support\Qr\ForwardedCustomerIp;
 use App\Support\QrApiResponse;
@@ -45,6 +46,7 @@ final class QrTableBindController
         }
 
         return QrApiResponse::success([
+            'branding' => app(ReadQrBranding::class)->handle((int) $session->company_id, (int) $session->branch_id),
             'session_uuid' => $session->uuid,
             'status' => $session->status,
             'expires_at' => $session->expires_at?->toIso8601String(),

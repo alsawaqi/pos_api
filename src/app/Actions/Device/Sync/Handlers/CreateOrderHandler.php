@@ -401,7 +401,7 @@ class CreateOrderHandler implements SyncEventHandler
         // withTrashed: a since-terminated cashier's offline-queued order still
         // settles.
         $staffId = isset($order['staff_id']) ? (int) $order['staff_id'] : null;
-        TenantReferenceGuard::assertStaffInTenant($device, $staffId, 'order references a staff member outside the device tenant');
+        TenantReferenceGuard::assertCashier($device, $staffId, 'order references a staff member outside the device tenant');
 
         // Joined dine-in tables (v2) — every EXTRA table the shared order
         // covered must also belong to the device's company (same guard as the
@@ -579,7 +579,7 @@ class CreateOrderHandler implements SyncEventHandler
             // must not attribute a comp approval to an arbitrary staff number.
             // Same tenant + withTrashed guard as the order's cashier.
             $approverId = isset($c['staff_id']) ? (int) $c['staff_id'] : null;
-            TenantReferenceGuard::assertStaffInTenant($device, $approverId, 'comp references an approver outside the device tenant: '.$approverId);
+            TenantReferenceGuard::assertApprover($device, $approverId, 'comp references an approver outside the device tenant: '.$approverId);
 
             $lineIndex = isset($c['line_index']) ? (int) $c['line_index'] : null;
             $qty = filter_var($c['qty'] ?? null, FILTER_VALIDATE_INT);

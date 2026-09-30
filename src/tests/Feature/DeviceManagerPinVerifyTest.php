@@ -186,8 +186,8 @@ class DeviceManagerPinVerifyTest extends TestCase
 
         $this->withToken('mdev_unassigned_mgr')
             ->postJson(self::URL, ['pin' => '123456'])
-            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required')
-            ->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            ->assertStatus(401)->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors')
+            ->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
     }
 
     public function test_the_pin_must_be_4_to_8_digits(): void

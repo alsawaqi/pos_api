@@ -34,6 +34,7 @@ class DeviceSyncCompVoidReasonTest extends TestCase
         // Phase 4 — the order cashier (7) + the comp approver (9) both belong
         // to the device tenant (company 100).
         $this->seedPosStaff([7, 9]);
+        DB::table('pos_staff')->where('id', 9)->update(['position' => 'manager']);
     }
 
     private function device(string $token = 'mdev_cv', int $company = 100, int $branch = 10): Device
@@ -530,5 +531,25 @@ class DeviceSyncCompVoidReasonTest extends TestCase
 
         $category = collect($res->json('data.categories'))->firstWhere('id', 5);
         $this->assertSame([3], $category['addon_group_ids']);
+    }
+
+    public function test_b5_visiting_manager_can_approve_an_offline_comp(): void
+    {
+        DB::table('pos_staff')->where('id', 9)->update(['branch_id' => 20, 'status' => 'inactive', 'deleted_at' => now()]);
+        $this->test_order_create_persists_comps_and_caches_comp_total();
+    }
+
+    public function test_b5_cashier_cannot_be_used_as_manager_approver(): void
+    {
+        $this->device();
+        $this->seedCatalogue();
+        $this->seedReasons();
+        DB::table('pos_staff')->where('id', 9)->update(['position' => 'cashier']);
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_cv', [$this->createEvent($uuid, [
+            'comp_total_baisas' => 1500, 'grand_total_baisas' => 1500,
+            'comps' => [['comp_reason_id' => 2, 'amount_baisas' => 1500, 'staff_id' => 9]],
+        ])])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+        $this->assertDatabaseMissing('pos_orders', ['uuid' => $uuid]);
     }
 }

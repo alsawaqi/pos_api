@@ -10,6 +10,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
+require_once __DIR__.'/P0DisposableDatabase.php';
+
 require __DIR__.'/../../vendor/autoload.php';
 $app = require __DIR__.'/../../bootstrap/app.php';
 $app->make(ConsoleKernel::class)->bootstrap();
@@ -17,7 +19,9 @@ set_exception_handler(function (Throwable $e): never {
     fwrite(STDERR, $e->__toString().PHP_EOL);
     exit(1);
 });
-if (DB::getDriverName() !== 'pgsql' || ! str_starts_with(DB::connection()->getDatabaseName(), 'qr_fix4')) {
+if (DB::getDriverName() !== 'pgsql' || (getenv('LAUNCH_P0_DISPOSABLE') === '1'
+    ? DB::connection()->getDatabaseName() !== \p0DisposableDatabase('core', 'qr_fix4_p0')
+    : ! str_starts_with(DB::connection()->getDatabaseName(), 'qr_fix4'))) {
     throw new RuntimeException('This contract runs only on a disposable qr_fix4 PostgreSQL database.');
 }
 if (($argv[1] ?? '') === 'worker') {

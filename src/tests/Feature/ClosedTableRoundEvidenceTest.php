@@ -43,7 +43,7 @@ final class ClosedTableRoundEvidenceTest extends TestCase
         $device->forceFill(['branch_id' => $device->branch_id + 1])->save();
         $this->app['auth']->forgetGuards();
         $this->withToken($device->plainTextToken)->getJson('/api/v1/device/orders/history?include_table_rounds=1')
-            ->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            ->assertUnauthorized()->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
         $device->issueCredential();
         $this->app['auth']->forgetGuards();
         $this->withToken($device->plainTextToken)->getJson('/api/v1/device/orders/history?include_table_rounds=1')

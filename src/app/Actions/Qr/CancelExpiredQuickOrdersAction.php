@@ -109,7 +109,7 @@ final class CancelExpiredQuickOrdersAction
         return DB::transaction(function () use ($device, $approver, $input, $payload): array {
             $device = Device::query()->whereKey($device->id)->lockForUpdate()->firstOrFail();
             $this->present->assertAttended($device);
-            $prior = SyncEvent::query()->where('client_event_id', $input['client_request_id'])->lockForUpdate()->first();
+            $prior = SyncEvent::query()->where('device_id', $device->id)->where('client_event_id', $input['client_request_id'])->lockForUpdate()->first();
             if ($prior !== null) {
                 if ((int) $prior->device_id !== (int) $device->id || $prior->event_type !== 'qr.quick.cancel_expired'
                     || $prior->payload_json != $payload || ($prior->result_json['company_id'] ?? null) !== (int) $device->company_id
@@ -156,7 +156,7 @@ final class CancelExpiredQuickOrdersAction
             }
             $result = ['company_id' => (int) $device->company_id, 'branch_id' => (int) $device->branch_id, 'orders' => $results, 'count' => count($results), 'replayed' => false,
                 'approved_by_staff_id' => (int) $approver->id, 'approved_by' => $approver->name];
-            SyncEvent::query()->create(['client_event_id' => $input['client_request_id'], 'device_id' => $device->id,
+            SyncEvent::query()->create(['client_event_id' => $input['client_request_id'], 'device_id' => $device->id, 'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
                 'event_type' => 'qr.quick.cancel_expired', 'payload_json' => $payload, 'client_timestamp' => now(),
                 'server_received_at' => now(), 'processed_at' => now(), 'ack_status' => SyncEvent::STATUS_PROCESSED,
                 'result_json' => $result]);

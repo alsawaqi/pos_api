@@ -13,6 +13,7 @@ use App\Models\Payment;
 use App\Models\RoundupDonation;
 use App\Models\StockMovement;
 use App\Models\SyncEvent;
+use App\Support\SyncReceiptFingerprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -631,19 +632,19 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertDatabaseCount('pos_orders', 0);
     }
 
-    public function test_order_create_refuses_a_soft_deleted_staff_member(): void
+    public function test_order_create_accepts_a_soft_deleted_staff_member(): void
     {
         $this->seedCatalogue();
         $this->device();
-        // W13 requires active, assigned staff even for offline attribution.
+        // An offline order queued by a since-terminated cashier must still
+        // settle â€” the guard is withTrashed-tolerant.
         DB::table('pos_staff')->where('id', 7)->update(['deleted_at' => now()]);
 
         $uuid = (string) Str::uuid();
         $r = $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk()->json('data.results.0');
 
-        $this->assertSame('failed', $r['status']);
-        $this->assertStringContainsString('staff member', $r['result']['error']);
-        $this->assertDatabaseCount('pos_orders', 0);
+        $this->assertSame('processed', $r['status']);
+        $this->assertSame(7, (int) Order::firstWhere('uuid', $uuid)->staff_id);
     }
 
     public function test_order_create_accepts_a_soft_deleted_product_and_addon(): void
@@ -1127,7 +1128,7 @@ class DeviceSyncOrderTest extends TestCase
         $this->assertSame(1, DB::table('pos_sale_commissions')->where('order_id', $order->id)->where('party_type', 'merchant')->count());
     }
 
-    public function test_w13_rejects_same_company_other_branch_tables_and_inactive_or_other_branch_staff(): void
+    public function test_w13_rejects_same_company_other_branch_tables_and_other_branch_cashier(): void
     {
         $this->seedCatalogue();
         $this->device();
@@ -1136,7 +1137,7 @@ class DeviceSyncOrderTest extends TestCase
         foreach ([['table_id' => 55], ['joined_table_ids' => [55]]] as $attributes) {
             $this->push('mdev_ord', [$this->createEvent((string) Str::uuid(), $attributes)])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
         }
-        foreach ([['status' => 'inactive'], ['status' => 'active', 'branch_id' => 20]] as $attributes) {
+        foreach ([['status' => 'active', 'branch_id' => 20]] as $attributes) {
             DB::table('pos_staff')->where('id', 7)->update($attributes);
             $this->push('mdev_ord', [$this->createEvent((string) Str::uuid())])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
         }
@@ -1157,5 +1158,43 @@ class DeviceSyncOrderTest extends TestCase
         }
         $this->assertDatabaseCount('pos_orders', 2);
         $this->assertSame(2, Order::where('client_event_id', $eventId)->distinct()->count('device_id'));
+    }
+
+    public function test_b5_inactive_cashier_offline_sale_still_lands(): void
+    {
+        $this->seedCatalogue();
+        $this->device();
+        DB::table('pos_staff')->where('id', 7)->update(['status' => 'inactive']);
+        $uuid = (string) Str::uuid();
+        $this->push('mdev_ord', [$this->createEvent($uuid)])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+        $this->assertDatabaseHas('pos_orders', ['uuid' => $uuid, 'staff_id' => 7]);
+    }
+
+    public function test_fix1_b6_audited_replay_uses_original_merchant_after_device_moves(): void
+    {
+        $this->seedCatalogue();
+        $device = $this->device();
+        $uuid = (string) Str::uuid();
+        $wire = $this->createEvent($uuid);
+        $event = SyncEvent::create(['device_id' => $device->id, 'company_id' => 100, 'branch_id' => 10,
+            'client_event_id' => $wire['client_event_id'], 'event_type' => $wire['event_type'],
+            'client_timestamp' => $wire['client_timestamp'], 'server_received_at' => now(),
+            'payload_json' => $wire['payload'], 'ack_status' => 'needs_review']);
+        $review = DB::table('pos_sync_event_reviews')->insertGetId([
+            'sync_event_id' => $event->id, 'actor_user_id' => 1, 'company_id' => 100, 'branch_id' => 10,
+            'fingerprint' => SyncReceiptFingerprint::fingerprint((object) $event->fresh()->getRawOriginal()),
+            'reason' => 'Original terminal assignment and receipt verified',
+            'device_snapshot' => json_encode(['company_id' => 100, 'branch_id' => 10,
+                'bank_id' => 1, 'terminal_id' => 'ORIGINAL-TID', 'commission_profile_id' => null,
+                'organization_id' => null, 'device_type' => 'pos_terminal']),
+            'status' => 'queued', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $device->forceFill(['company_id' => 200, 'branch_id' => 20, 'bank_id' => 2, 'terminal_id' => 'NEW-TID'])->save();
+        $this->artisan('sync:replay-reviewed', ['--review' => $review])->assertSuccessful();
+        $this->assertDatabaseHas('pos_orders', ['uuid' => $uuid, 'company_id' => 100, 'branch_id' => 10]);
+        $this->assertDatabaseHas('pos_devices', ['id' => $device->id, 'company_id' => 200, 'branch_id' => 20, 'terminal_id' => 'NEW-TID']);
+        $this->assertDatabaseHas('pos_audit_logs', ['event' => 'sync.history.replay_completed', 'company_id' => 100]);
+        $this->artisan('sync:replay-reviewed', ['--review' => $review])->assertFailed();
+        $this->assertSame(1, Order::where('uuid', $uuid)->count());
     }
 }

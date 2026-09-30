@@ -24,13 +24,15 @@ use Tests\Feature\QrDineInConcurrencyTest;
 use Tests\TestCase;
 use Throwable;
 
+require_once __DIR__.'/P0DisposableDatabase.php';
+
 /** Explicit-only suite: refuses SQLite and any database outside the disposable harness. */
 final class StaffRoundSettlementRaceTest extends TestCase
 {
     public function test_staff_round_and_settlement_are_serialized_on_real_postgresql(): void
     {
         $this->assertSame('pgsql', DB::connection()->getDriverName());
-        $this->assertSame('qrfix2_test', DB::connection()->getDatabaseName());
+        $this->assertSame(\p0DisposableDatabase('staff', 'qrfix2_test'), DB::connection()->getDatabaseName());
         $this->assertSame('qrfix2-pg', config('database.connections.pgsql.host'));
         $this->assertTrue(function_exists('pcntl_fork'));
         // The W11 runner has already applied the authoritative admin schema.

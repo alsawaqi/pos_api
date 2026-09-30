@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
+require_once __DIR__.'/P0DisposableDatabase.php';
+
 /** Uses only the disposable database built by pos_admin's real migrations. */
 final class LaunchP0RealSchemaTest extends TestCase
 {
@@ -21,7 +23,7 @@ final class LaunchP0RealSchemaTest extends TestCase
     {
         parent::setUp();
         $this->assertSame('pgsql', DB::getDriverName());
-        $this->assertSame('qr_fix4_p0', DB::connection()->getDatabaseName());
+        $this->assertSame(\p0DisposableDatabase('core', 'qr_fix4_p0'), DB::connection()->getDatabaseName());
         $this->assertTrue(DB::table('pos_admin_migrations')->where('migration', '2026_09_30_000001_bind_and_hash_pos_device_credentials')->exists());
         $this->assertGreaterThan(50, (int) DB::selectOne("SELECT count(*) AS n FROM pg_constraint WHERE contype = 'f'")->n);
     }
@@ -45,7 +47,7 @@ final class LaunchP0RealSchemaTest extends TestCase
         DB::table('pos_devices')->where('id', $device->id)->update(['company_id' => $b, 'branch_id' => $bb]);
         foreach ([['GET', 'device/config'], ['GET', 'device/customers/search?q=90000001'], ['GET', 'device/reports/branch'], ['GET', 'device/orders/history'], ['POST', 'device/sync/push'], ['POST', 'broadcasting/auth']] as [$method, $route]) {
             Auth::forgetGuards();
-            $this->withToken($raw)->json($method, '/api/v1/'.$route)->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            $this->withToken($raw)->json($method, '/api/v1/'.$route)->assertUnauthorized()->assertJsonPath('code', 'device_reactivation_required');
         }
         DeviceActivationToken::factory()->for($device)->forPlaintext('p0-real-code')->create();
         Auth::forgetGuards();
@@ -70,7 +72,7 @@ final class LaunchP0RealSchemaTest extends TestCase
         foreach ([['GET', 'device/config'], ['POST', 'device/sync/push']] as [$method,$path]) {
             Auth::forgetGuards();
             $this->withToken($device->plainTextToken)->json($method, '/api/v1/'.$path)
-                ->assertForbidden()->assertJsonPath('errors.0.code', 'company_suspended');
+                ->assertStatus(503)->assertJsonPath('errors.0.code', 'company_suspended');
         }
     }
 

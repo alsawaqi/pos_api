@@ -112,7 +112,7 @@ final class QuickQrWorkspaceAction
             $order->refresh()->load(['items.addons', 'comps']);
             $result = ['order' => $this->present->handle($order, $order->qr_session_id === null ? null : QrSession::find($order->qr_session_id), $order->customer_id === null ? null : Customer::withTrashed()->whereKey($order->customer_id)->where('company_id', $device->company_id)->value('phone'), now(), true), 'replayed' => false];
             SyncEvent::query()->create([
-                'client_event_id' => $payload['client_request_id'], 'device_id' => $device->id,
+                'client_event_id' => $payload['client_request_id'], 'device_id' => $device->id, 'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
                 'event_type' => 'qr.quick.workspace', 'payload_json' => $input,
                 'client_timestamp' => now(), 'server_received_at' => now(), 'processed_at' => now(),
                 'ack_status' => SyncEvent::STATUS_PROCESSED, 'result_json' => $result + ['before' => $before],

@@ -145,7 +145,7 @@ final class RecoverTableDraftAction
             ->orderBy('client_event_id')->get()->map->getRawOriginal()->all();
 
         return ['proof' => $proof, 'order' => $order, 'seat' => $seat,
-            'signed' => [Arr::except($device->getRawOriginal(), ['last_seen_at', 'updated_at', 'last_ip', 'last_lat', 'last_lng', 'last_battery', 'app_version']), $table->getRawOriginal(), $seat->getRawOriginal(),
+            'signed' => [Arr::except($device->getRawOriginal(), ['last_seen_at', 'updated_at', 'last_ip', 'last_lat', 'last_lng', 'last_battery', 'app_version', 'pending_outbox_count', 'quarantined_count', 'outbox_reported_at', 'printer_status']), $table->getRawOriginal(), $seat->getRawOriginal(),
                 $credentials, $this->frozen->snapshot($order), $evidence, $proof]];
     }
 

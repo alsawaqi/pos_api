@@ -51,7 +51,11 @@ final class MoveTableSessionAction
             }
             foreach ($sessions as $session) {
                 if ((int) $session->table_session_id === (int) $primary->id) {
-                    $session->update(['table_id' => $targetId]);
+                    $changes = ['table_id' => $targetId];
+                    if ($session->origin === 'table_card') {
+                        $changes['table_qr_token_hash'] = hash('sha256', (string) $tables->get($targetId)->qr_token);
+                    }
+                    $session->update($changes);
                 }
             }
             $primary->update(['table_id' => $targetId]);

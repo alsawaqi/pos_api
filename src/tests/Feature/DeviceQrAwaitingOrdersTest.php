@@ -318,12 +318,8 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
         $this->getAs($unassigned)
             ->assertStatus(401)
             ->assertExactJson([
-                'data' => null,
                 'message' => 'Unauthenticated.',
-                'errors' => [[
-                    'code' => 'device_reactivation_required',
-                    'message' => 'This device needs activation.',
-                ]],
+                'code' => 'device_reactivation_required',
             ]);
 
         $assigned = $this->device('station-read-assigned', attributes: [
@@ -332,12 +328,8 @@ final class DeviceQrAwaitingOrdersTest extends TestCase
         $this->getAs($assigned)
             ->assertStatus(401)
             ->assertExactJson([
-                'data' => null,
                 'message' => 'Unauthenticated.',
-                'errors' => [[
-                    'code' => 'device_reactivation_required',
-                    'message' => 'This device needs activation.',
-                ]],
+                'code' => 'device_reactivation_required',
             ]);
     }
 

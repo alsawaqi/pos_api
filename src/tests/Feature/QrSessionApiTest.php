@@ -9,6 +9,7 @@ use App\Models\QrSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Illuminate\Testing\TestResponse;
@@ -87,6 +88,19 @@ class QrSessionApiTest extends TestCase
             'X-QR-Session' => $session->uuid,
             'X-QR-Client-Secret' => $clientSecret,
         ])->getJson('/api/v1/public/qr/session-probe');
+    }
+
+    public function test_fix1_bind_and_status_include_the_same_public_branding_without_loading_menu(): void
+    {
+        $device = $this->device('brand-release');
+        DB::table('pos_companies')->where('id', 100)->update(['name' => 'Binding Bakery', 'status' => 'onboarding']);
+        $session = $this->qrSession($device);
+        $secret = str_repeat('a', 64);
+        $bound = $this->bind($session->token, $secret)->assertOk();
+        $bound->assertJsonPath('data.branding.merchant.name', 'Binding Bakery');
+        $this->withHeaders(['X-QR-Session' => $session->uuid, 'X-QR-Client-Secret' => $secret])
+            ->getJson('/api/v1/public/qr/status')->assertOk()
+            ->assertJsonPath('data.branding', $bound->json('data.branding'));
     }
 
     public function test_default_quick_lifetime_is_two_hours_with_one_minute_token_rotation(): void

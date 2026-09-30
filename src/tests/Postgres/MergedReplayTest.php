@@ -13,6 +13,8 @@ use Illuminate\Support\Str;
 use Tests\Support\TableSessionFixtures;
 use Tests\TestCase;
 
+require_once __DIR__.'/P0DisposableDatabase.php';
+
 // Run after the merchant's MergeEarnRace on the same disposable admin schema.
 final class MergedReplayTest extends TestCase
 {
@@ -21,7 +23,11 @@ final class MergedReplayTest extends TestCase
     public function test_real_merge_then_queued_create_redeem_attach_and_delta(): void
     {
         $this->assertSame('pgsql', DB::getDriverName());
-        $this->assertStringStartsWith('qr_fix4', DB::connection()->getDatabaseName());
+        if (getenv('LAUNCH_P0_DISPOSABLE') === '1') {
+            $this->assertSame(\p0DisposableDatabase('core', 'qr_fix4_p0'), DB::connection()->getDatabaseName());
+        } else {
+            $this->assertStringStartsWith('qr_fix4', DB::connection()->getDatabaseName());
+        }
         $company = DB::table('pos_companies')->where('name', 'FIX4 MERGE RACE')->orderByDesc('id')->first();
         $this->assertNotNull($company);
         $source = Customer::withTrashed()->where('company_id', $company->id)->whereNotNull('merged_into_customer_id')->sole();

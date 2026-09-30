@@ -32,6 +32,7 @@ use Illuminate\Support\Str;
     'device_token',
     'token_company_id',
     'token_branch_id',
+    'token_issued_at',
     'pending_outbox_count',
     'quarantined_count',
     'outbox_reported_at',
@@ -63,6 +64,7 @@ class Device extends Model implements Authenticatable
             'device_token' => hash('sha256', $this->plainTextToken),
             'token_company_id' => $this->company_id,
             'token_branch_id' => $this->branch_id,
+            'token_issued_at' => now(),
             'status' => 'active',
             'last_seen_at' => now(),
             'pending_outbox_count' => null,
@@ -78,6 +80,7 @@ class Device extends Model implements Authenticatable
         return [
             'last_seen_at' => 'datetime',
             'assigned_at' => 'datetime',
+            'token_issued_at' => 'datetime',
             'last_lat' => 'decimal:7',
             'last_lng' => 'decimal:7',
             'last_battery' => 'integer',

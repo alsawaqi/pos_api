@@ -528,7 +528,7 @@ class DeviceBranchReportTest extends TestCase
         Device::factory()->paired('mdev_rpt_unassigned')->create(['company_id' => null, 'branch_id' => null]);
 
         $this->withToken('mdev_rpt_unassigned')->getJson(self::URL)
-            ->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required')
-            ->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            ->assertStatus(401)->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors')
+            ->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
@@ -170,7 +171,7 @@ final class QrExpiredOrdersCancelTest extends QrPendingTestCase
         $this->cancel($input)->assertOk();
         $this->till->forceFill(['branch_id' => 20])->save();
         $this->assertSame(20, (int) $this->till->fresh()->branch_id);
-        $this->cancel($input)->assertUnauthorized()->assertJsonPath('errors.0.code', 'device_reactivation_required');
+        $this->cancel($input)->assertUnauthorized()->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
         $this->till->issueCredential();
         $this->cancel($input)->assertConflict()->assertJsonPath('errors.0.code', 'idempotency_conflict');
         $this->assertDatabaseCount('pos_sync_events', 1);
@@ -191,5 +192,26 @@ final class QrExpiredOrdersCancelTest extends QrPendingTestCase
         $this->assertSame(-3.0, (float) DB::table('pos_branch_product')->value('stock_qty'));
         $this->assertSame(-1.0, (float) DB::table('pos_product_stock_movements')->value('quantity'));
         $this->assertDatabaseCount('pos_payments', 0);
+    }
+
+    public function test_fix1_server_created_events_retain_receipt_identity(): void
+    {
+        $this->test_cancel_one_is_audited_idempotent_and_does_not_take_payment();
+        $this->assertGreaterThan(0, DB::table('pos_sync_events')->count());
+        $this->assertSame(0, DB::table('pos_sync_events')->where(function ($q) {
+            $q->whereNull('company_id')->orWhereNull('branch_id')->orWhere('company_id', '!=', 100)->orWhere('branch_id', '!=', 10);
+        })->count());
+    }
+
+    public function test_fix1_cancel_idempotency_is_scoped_to_device(): void
+    {
+        $order = $this->order([], 'closed');
+        $input = $this->input($this->preview($order)->assertOk()->json('data'));
+        $other = Device::factory()->paired()->create();
+        SyncEvent::create(['device_id' => $other->id, 'client_event_id' => $input['client_request_id'],
+            'event_type' => 'qr.quick.cancel_expired', 'payload_json' => [], 'result_json' => [],
+            'client_timestamp' => now(), 'server_received_at' => now(), 'ack_status' => 'processed']);
+        $this->cancel($input)->assertOk()->assertJsonPath('data.orders.0.status', 'void');
+        $this->assertDatabaseCount('pos_sync_events', 2);
     }
 }

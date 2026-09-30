@@ -214,7 +214,7 @@ class Pay002ReversalsTest extends TestCase
         }
         $before = $this->states();
         if (in_array($case, ['inactive', 'unassigned'], true)) {
-            $this->reserve($payload)->assertUnauthorized()->assertJsonPath('message', 'Unauthenticated.')->assertJsonPath('errors.0.code', 'device_reactivation_required');
+            $this->reserve($payload)->assertUnauthorized()->assertJsonPath('message', 'Unauthenticated.')->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
         } else {
             $this->reserve($payload)->assertStatus($http)->assertJsonPath('errors.0.code', $code);
         }

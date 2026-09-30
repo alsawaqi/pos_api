@@ -185,8 +185,8 @@ class DeviceOrderNumberTest extends TestCase
     {
         Device::factory()->paired('mdev_num_un')->create(['company_id' => null, 'branch_id' => null]);
 
-        $res = $this->allocate('mdev_num_un')->assertStatus(401)->assertJsonPath('errors.0.code', 'device_reactivation_required');
-        $this->assertSame('device_reactivation_required', $res->json('errors.0.code'));
+        $res = $this->allocate('mdev_num_un')->assertStatus(401)->assertJsonPath('code', 'device_reactivation_required')->assertJsonMissingPath('errors');
+        $this->assertSame('device_reactivation_required', $res->json('code'));
     }
 
     public function test_requires_a_device_token(): void

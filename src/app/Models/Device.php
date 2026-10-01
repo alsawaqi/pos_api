@@ -97,6 +97,7 @@ class Device extends Model implements Authenticatable
             'serial_verified_at' => 'datetime',
             'location_mode_since' => 'datetime',
             'location_any_started_at' => 'datetime',
+            'location_any_windows' => 'array',
             'last_lat' => 'decimal:7',
             'last_lng' => 'decimal:7',
             'last_battery' => 'integer',

@@ -23,8 +23,9 @@ use RuntimeException;
  * Every refusal is HTTP 422 carrying a top-level { message, code } (the
  * LAUNCH-P1 app contract) AND the legacy errors[] envelope older APKs parse:
  *   activation_serial_missing | activation_device_mismatch |
- *   activation_app_mismatch   | activation_failed (bad/expired/used code,
- *   unassigned or blocked device).
+ *   activation_app_missing    | activation_app_mismatch |
+ *   activation_failed (bad/expired/used/revoked code, unassigned or blocked
+ *   device). A code refused 5 times is revoked.
  */
 class DeviceActivateController
 {

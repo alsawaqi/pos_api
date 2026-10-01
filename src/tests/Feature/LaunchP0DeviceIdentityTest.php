@@ -17,9 +17,9 @@ class LaunchP0DeviceIdentityTest extends TestCase
 
     public function test_activation_stores_only_hash_and_binds_both_identity_fields(): void
     {
-        $device = Device::factory()->create();
+        $device = Device::factory()->create(['device_type' => 'fixed_pos']);
         DeviceActivationToken::factory()->for($device)->forPlaintext('p0-code')->create();
-        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'p0-code', 'serial' => $device->serial_number])
+        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'p0-code', 'serial' => $device->serial_number, 'app' => 'till'])
             ->assertOk()->json('data.device_token');
 
         $stored = DB::table('pos_devices')->where('id', $device->id)->first();
@@ -35,9 +35,9 @@ class LaunchP0DeviceIdentityTest extends TestCase
 
     public function test_old_token_is_refused_on_every_surface_after_identity_change(): void
     {
-        $device = Device::factory()->create();
+        $device = Device::factory()->create(['device_type' => 'fixed_pos']);
         DeviceActivationToken::factory()->for($device)->forPlaintext('move-code')->create();
-        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'move-code', 'serial' => $device->serial_number])
+        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'move-code', 'serial' => $device->serial_number, 'app' => 'till'])
             ->assertOk()->json('data.device_token');
         DB::table('pos_devices')->where('id', $device->id)->update(['branch_id' => 999]);
         foreach ([
@@ -54,11 +54,11 @@ class LaunchP0DeviceIdentityTest extends TestCase
     public function test_inactive_or_unassigned_device_is_never_authenticated(): void
     {
         foreach (['registered', 'assigned', 'inactive', 'blocked'] as $status) {
-            $device = Device::factory()->create();
+            $device = Device::factory()->create(['device_type' => 'fixed_pos']);
             $code = 'status-'.$status;
             DeviceActivationToken::factory()->for($device)->forPlaintext($code)->create();
             Auth::forgetGuards();
-            $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => $code, 'serial' => $device->serial_number])
+            $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => $code, 'serial' => $device->serial_number, 'app' => 'till'])
                 ->assertOk()->json('data.device_token');
             DB::table('pos_devices')->where('id', $device->id)->update(['status' => $status]);
             Auth::forgetGuards();

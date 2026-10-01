@@ -258,4 +258,24 @@ class LaunchP1DeviceLocationModeTest extends TestCase
         $this->assertSame(GeofenceGuard::ENFORCE, $guard->requirement($switched, $fenced, now()->subHours(3)));
         $this->assertSame(GeofenceGuard::ENFORCE, $guard->requirement($switched, $fenced));
     }
+
+    public function test_every_closed_any_period_is_remembered_not_only_the_latest(): void
+    {
+        // any 08:00-08:30, branch, any 10:00-11:00, branch since 11:00.
+        $device = $this->device('branch', [
+            'location_any_windows' => [['from' => '2026-10-01T08:00:00+00:00', 'until' => '2026-10-01T08:30:00+00:00']],
+            'location_any_started_at' => Carbon::parse('2026-10-01 10:00:00', 'UTC'),
+            'location_mode_since' => Carbon::parse('2026-10-01 11:00:00', 'UTC'),
+        ]);
+        $at = fn (string $time): Carbon => Carbon::parse('2026-10-01 '.$time, 'UTC');
+
+        $response = $this->push($device, [
+            $this->createEvent((string) Str::uuid(), self::OUTSIDE, $at('08:15:00')),
+            $this->createEvent((string) Str::uuid(), self::OUTSIDE, $at('08:30:00')),
+            $this->createEvent((string) Str::uuid(), self::OUTSIDE, $at('09:00:00')),
+            $this->createEvent((string) Str::uuid(), self::OUTSIDE, $at('10:30:00')),
+        ]);
+
+        $this->assertSame(['processed', 'failed', 'failed', 'processed'], $this->statuses($response));
+    }
 }

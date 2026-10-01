@@ -18,13 +18,14 @@ class DevicePairTest extends TestCase
 
     public function test_pairs_with_a_valid_activation_token(): void
     {
-        $device = Device::factory()->create(['kiosk_id' => 'KIOSK-AAA']);
+        $device = Device::factory()->create(['kiosk_id' => 'KIOSK-AAA', 'device_type' => 'fixed_pos']);
         $token = DeviceActivationToken::factory()->for($device)->forPlaintext('mithqal_secret')->create();
 
         $res = $this->postJson('/api/v1/auth/device/pair', [
             'kiosk_id' => 'KIOSK-AAA',
             'activation_token' => 'mithqal_secret',
             'serial' => $device->serial_number,
+            'app' => 'till',
         ])->assertOk();
 
         $this->assertNotEmpty($res->json('data.device_token'));
@@ -91,10 +92,10 @@ class DevicePairTest extends TestCase
 
     public function test_a_token_cannot_be_reused_after_a_successful_pair(): void
     {
-        $device = Device::factory()->create(['kiosk_id' => 'KIOSK-ONCE']);
+        $device = Device::factory()->create(['kiosk_id' => 'KIOSK-ONCE', 'device_type' => 'fixed_pos']);
         DeviceActivationToken::factory()->for($device)->forPlaintext('once_tok')->create();
 
-        $claim = ['kiosk_id' => 'KIOSK-ONCE', 'activation_token' => 'once_tok', 'serial' => $device->serial_number];
+        $claim = ['kiosk_id' => 'KIOSK-ONCE', 'activation_token' => 'once_tok', 'serial' => $device->serial_number, 'app' => 'till'];
         $this->postJson('/api/v1/auth/device/pair', $claim)->assertOk();
         // Second attempt with the now-consumed token must fail.
         $this->postJson('/api/v1/auth/device/pair', $claim)->assertStatus(422);

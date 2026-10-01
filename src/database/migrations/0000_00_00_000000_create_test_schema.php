@@ -50,6 +50,8 @@ return new class extends Migration
             $table->string('location_mode', 16)->default('branch');
             $table->timestamp('location_mode_since')->nullable();
             $table->timestamp('location_any_started_at')->nullable();
+            // pos_admin 2026_10_01_100400: every closed 'any' period, newest last.
+            $table->json('location_any_windows')->nullable();
             $table->unsignedInteger('pending_outbox_count')->nullable();
             $table->unsignedInteger('quarantined_count')->default(0);
             $table->timestamp('outbox_reported_at')->nullable();
@@ -101,6 +103,8 @@ return new class extends Migration
             $table->string('outcome', 16);
             $table->string('reason', 48);
             $table->string('binding_mode', 8);
+            // pos_admin 2026_10_01_100300: the full normalised reported serial.
+            $table->string('reported_serial', 128)->nullable();
             $table->string('reported_serial_masked', 32)->nullable();
             $table->string('reported_serial_hash', 64)->nullable();
             $table->string('app', 32)->nullable();

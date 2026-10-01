@@ -7,6 +7,7 @@ namespace App\Actions\Device;
 use App\Models\Branch;
 use App\Models\Device;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Carbon;
 use RuntimeException;
 
 /**
@@ -52,7 +53,8 @@ final class GeofenceGuard
      *
      *  - location_mode 'any'  → SKIP: the device may work anywhere.
      *  - location_mode 'branch' (default) → today's rule, EXCEPT an event made
-     *    while the device was still 'any' (client timestamp inside
+     *    while the device was still 'any' (client timestamp inside any closed
+     *    'any' period of this assignment: location_any_windows, plus
      *    [location_any_started_at, location_mode_since)) is not refused.
      *  - a 'branch' device at a branch WITHOUT coordinates → refuse
      *    (BRANCH_LOCATION_MISSING). Admin never lets a device be or stay
@@ -82,6 +84,20 @@ final class GeofenceGuard
 
     private function madeWhileAny(Device $device, CarbonInterface $madeAt): bool
     {
+        // Every closed 'any' period of the current assignment
+        // (location_any_windows, newest last, capped by admin) ...
+        $windows = $device->location_any_windows;
+        foreach (is_array($windows) ? $windows : [] as $window) {
+            if (! is_array($window) || ! isset($window['from'], $window['until'])) {
+                continue;
+            }
+            if ($madeAt->greaterThanOrEqualTo(Carbon::parse((string) $window['from']))
+                && $madeAt->lessThan(Carbon::parse((string) $window['until']))) {
+                return true;
+            }
+        }
+
+        // ... and the latest one as the two columns record it.
         $since = $device->location_mode_since;
         $anyFrom = $device->location_any_started_at;
 

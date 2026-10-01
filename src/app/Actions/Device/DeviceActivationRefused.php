@@ -18,7 +18,10 @@ final class DeviceActivationRefused extends RuntimeException
 
     public const APP_MISMATCH = 'activation_app_mismatch';
 
+    public const APP_MISSING = 'activation_app_missing';
+
     private const MESSAGES = [
+        self::APP_MISSING => 'This app did not say which app it is (till, handheld, station or customer tablet). Update the app, then activate again.',
         self::SERIAL_MISSING => 'This app did not send the device serial number. Update the app, then activate again.',
         self::DEVICE_MISMATCH => 'This activation code was made for a different device. Use the code made for this device.',
         self::APP_MISMATCH => 'This activation code is for a different kind of device. Open the matching app on the matching device.',

@@ -106,6 +106,8 @@ class LaunchP1DeviceEnrollmentTest extends TestCase
         $this->assertSame('refused', $attempt->outcome);
         $this->assertSame('activation_device_mismatch', $attempt->reason);
         $this->assertSame('enforce', $attempt->binding_mode);
+        // The full serial is kept so an admin can correct a mis-typed record.
+        $this->assertSame('G7-SN-9999', $attempt->reported_serial);
         $this->assertSame('******9999', $attempt->reported_serial_masked);
         $this->assertSame(hash('sha256', 'G7-SN-9999'), $attempt->reported_serial_hash);
         $this->assertSame(['till', 'ZCS', 'G7', '198.51.100.7'], [$attempt->app, $attempt->manufacturer, $attempt->model, $attempt->ip_address]);
@@ -196,13 +198,14 @@ class LaunchP1DeviceEnrollmentTest extends TestCase
         config(['pos.device_serial_binding' => 'report']);
         $this->liveTill('report-code');
         $this->activate('report-code')->assertOk();
-        $this->assertSame('activation_serial_missing', DB::table('pos_device_activation_attempts')->sole()->reason);
+        $this->assertEqualsCanonicalizing(['activation_serial_missing', 'activation_app_missing'],
+            DB::table('pos_device_activation_attempts')->pluck('reason')->all());
 
         config(['pos.device_serial_binding' => 'off']);
         $other = Device::factory()->create(['device_type' => 'handheld']);
         DeviceActivationToken::factory()->for($other)->forPlaintext('off-code')->create();
         $this->activate('off-code', ['serial' => 'NOT-THIS-ONE', 'app' => 'till'])->assertOk();
-        $this->assertDatabaseCount('pos_device_activation_attempts', 1);
+        $this->assertDatabaseCount('pos_device_activation_attempts', 2);
         $this->assertNull($other->fresh()->serial_verified_at);
     }
 
@@ -262,5 +265,54 @@ class LaunchP1DeviceEnrollmentTest extends TestCase
 
         $this->assertCodeUnused('fresh-code');
         $this->assertLiveTokenStillWorks($device);
+    }
+
+    public function test_a_missing_app_is_refused_under_enforce_and_recorded_under_report(): void
+    {
+        $device = $this->liveTill();
+
+        $this->activate('fresh-code', ['serial' => 'T3-SN-0042'])
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'activation_app_missing')
+            ->assertJsonPath('errors.0.code', 'activation_app_missing')
+            ->assertJsonPath('data', null);
+        $this->assertCodeUnused('fresh-code');
+        $this->assertLiveTokenStillWorks($device);
+        $this->assertSame('activation_app_missing', DB::table('pos_device_activation_attempts')->sole()->reason);
+
+        config(['pos.device_serial_binding' => 'report']);
+        $this->activate('fresh-code', ['serial' => 'T3-SN-0042'])->assertOk();
+        $this->assertSame(['refused', 'reported'], DB::table('pos_device_activation_attempts')
+            ->where('reason', 'activation_app_missing')->orderBy('id')->pluck('outcome')->all());
+    }
+
+    public function test_a_code_refused_five_times_is_revoked_audited_and_listed(): void
+    {
+        $device = $this->liveTill();
+        $wrong = ['serial' => 'G7-SN-9999', 'app' => 'till', 'manufacturer' => 'ZCS', 'model' => 'G7'];
+
+        foreach (range(1, 4) as $attempt) {
+            $this->activate('fresh-code', $wrong)->assertStatus(422)->assertJsonPath('code', 'activation_device_mismatch');
+        }
+        $this->assertCodeUnused('fresh-code');
+
+        $this->activate('fresh-code', $wrong)->assertStatus(422)->assertJsonPath('code', 'activation_device_mismatch');
+        $token = DeviceActivationToken::query()->where('token_hash', DeviceActivationToken::hash('fresh-code'))->firstOrFail();
+        $this->assertNotNull($token->revoked_at);
+        $this->assertNull($token->used_at);
+        $this->assertSame(5, DB::table('pos_device_activation_attempts')->where('outcome', 'refused')->count());
+        $revocation = DB::table('pos_device_activation_attempts')->where('outcome', 'code_revoked')->sole();
+        $this->assertSame(['too_many_refusals', (int) $token->id, (int) $device->id, 'G7-SN-9999'],
+            [$revocation->reason, (int) $revocation->activation_token_id, (int) $revocation->device_id, $revocation->reported_serial]);
+        $audit = DB::table('pos_audit_logs')->where('event', 'device.activation_token.revoked')->sole();
+        $this->assertSame((int) $token->id, (int) $audit->auditable_id);
+        $this->assertSame(['device_id' => (int) $device->id, 'reason' => 'too_many_refused_activations', 'refused_attempts' => 5],
+            json_decode((string) $audit->metadata, true));
+
+        // The code is dead even for the right device; the live token is untouched.
+        $this->activate('fresh-code', ['serial' => 'T3-SN-0042', 'app' => 'till'])
+            ->assertStatus(422)->assertJsonPath('code', 'activation_failed');
+        $this->assertLiveTokenStillWorks($device);
+        $this->assertSame(1, DB::table('pos_audit_logs')->where('event', 'device.activation_token.revoked')->count());
     }
 }

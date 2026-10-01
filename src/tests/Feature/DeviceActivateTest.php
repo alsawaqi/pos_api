@@ -22,13 +22,14 @@ class DeviceActivateTest extends TestCase
     public function test_activates_with_a_valid_code(): void
     {
         $device = Device::factory()->withSoftPos()->create([
+            'device_type' => 'fixed_pos',
             'kiosk_id' => 'KIOSK-ACT',
             'terminal_id' => 'TERM-ACT',
             'terminal_pin' => '4821',
         ]);
         DeviceActivationToken::factory()->for($device)->forPlaintext('code_abc')->create();
 
-        $res = $this->postJson('/api/v1/auth/device/activate', ['code' => 'code_abc', 'serial' => $device->serial_number])->assertOk();
+        $res = $this->postJson('/api/v1/auth/device/activate', ['code' => 'code_abc', 'serial' => $device->serial_number, 'app' => 'till'])->assertOk();
 
         $this->assertNotEmpty($res->json('data.device_token'));
         $this->assertSame('KIOSK-ACT', $res->json('data.device.kiosk_id'));
@@ -139,10 +140,10 @@ class DeviceActivateTest extends TestCase
 
     public function test_a_code_cannot_be_reused_after_a_successful_activation(): void
     {
-        $device = Device::factory()->create();
+        $device = Device::factory()->create(['device_type' => 'handheld']);
         DeviceActivationToken::factory()->for($device)->forPlaintext('once_code')->create();
 
-        $claim = ['code' => 'once_code', 'serial' => $device->serial_number];
+        $claim = ['code' => 'once_code', 'serial' => $device->serial_number, 'app' => 'handheld'];
         $this->postJson('/api/v1/auth/device/activate', $claim)->assertOk();
         $this->postJson('/api/v1/auth/device/activate', $claim)->assertStatus(422)
             ->assertJsonPath('code', 'activation_failed');

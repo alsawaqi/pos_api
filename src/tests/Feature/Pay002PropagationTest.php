@@ -72,7 +72,7 @@ class Pay002PropagationTest extends TestCase
                 ->assertJsonPath('meta.terminal_pin', $reason === null ? '4821' : null);
         }
         DeviceActivationToken::factory()->for($device)->forPlaintext('pay002_activate')->create();
-        $this->postJson('/api/v1/auth/device/activate', ['code' => 'pay002_activate', 'serial' => $device->serial_number])->assertOk()
+        $this->postJson('/api/v1/auth/device/activate', ['code' => 'pay002_activate', 'serial' => $device->serial_number, 'app' => 'till'])->assertOk()
             ->assertJsonPath('data.device.softpos.provider', $resolved)
             ->assertJsonPath('data.device.softpos.blocked_reason', $reason)
             ->assertJsonPath('data.device.terminal_id', $reason === null ? 'T901' : null);

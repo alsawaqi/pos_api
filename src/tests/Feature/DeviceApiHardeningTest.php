@@ -87,13 +87,14 @@ class DeviceApiHardeningTest extends TestCase
 
     public function test_a_legitimate_pair_succeeds_within_the_limit(): void
     {
-        $device = Device::factory()->create(['kiosk_id' => 'KIOSK-OK']);
+        $device = Device::factory()->create(['kiosk_id' => 'KIOSK-OK', 'device_type' => 'fixed_pos']);
         DeviceActivationToken::factory()->for($device)->forPlaintext('good_tok')->create();
 
         $this->postJson('/api/v1/auth/device/pair', [
             'kiosk_id' => 'KIOSK-OK',
             'activation_token' => 'good_tok',
             'serial' => $device->serial_number,
+            'app' => 'till',
         ])->assertOk();
     }
 

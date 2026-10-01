@@ -25,12 +25,15 @@ use RuntimeException;
  * LAUNCH-P1 decision 1a: the code works only on the physical device it was
  * made for. The device reports its hardware serial (and which app it runs);
  * under config('pos.device_serial_binding') = enforce a missing or different
- * serial, or an app that does not match the device type, is refused BEFORE
- * anything is written: the code stays usable, the device's live token and
- * identity are untouched, and a refusal row is recorded for the admin.
+ * serial, a missing app, or an app that does not match the device type, is
+ * refused BEFORE anything is written: the code stays usable, the device's
+ * live token and identity are untouched, and a refusal row is recorded for
+ * the admin. After MAX_REFUSALS_PER_CODE refusals the code is revoked.
  */
 final readonly class ActivateDeviceAction
 {
+    public const MAX_REFUSALS_PER_CODE = 5;
+
     public function handle(string $code, ?DeviceActivationClaim $claim = null): Device
     {
         $claim ??= new DeviceActivationClaim;
@@ -86,11 +89,41 @@ final readonly class ActivateDeviceAction
         foreach ($issues as $reason) {
             self::record($device, $tokenId, $reason, $mode === 'enforce' ? 'refused' : 'reported', $mode, $claim);
             if ($mode === 'enforce') {
+                self::revokeAfterRepeatedRefusals($device, $tokenId, $claim);
                 throw new DeviceActivationRefused($reason);
             }
         }
 
         return $device;
+    }
+
+    /**
+     * A code refused MAX_REFUSALS_PER_CODE times is revoked (audited, and shown
+     * in the device's attempts list) so it cannot be tried indefinitely.
+     */
+    private static function revokeAfterRepeatedRefusals(Device $device, int $tokenId, DeviceActivationClaim $claim): void
+    {
+        DB::transaction(function () use ($device, $tokenId, $claim): void {
+            $refusals = DB::table('pos_device_activation_attempts')
+                ->where('activation_token_id', $tokenId)->where('outcome', 'refused')->count();
+            if ($refusals < self::MAX_REFUSALS_PER_CODE) {
+                return;
+            }
+            $revoked = DeviceActivationToken::query()->whereKey($tokenId)
+                ->whereNull('used_at')->whereNull('revoked_at')->update(['revoked_at' => now()]);
+            if ($revoked !== 1) {
+                return; // already revoked (or used) by a concurrent request
+            }
+            self::record($device, $tokenId, 'too_many_refusals', 'code_revoked', self::bindingMode(), $claim);
+            DB::table('pos_audit_logs')->insert([
+                'actor_user_id' => null, 'company_id' => $device->company_id, 'branch_id' => $device->branch_id,
+                'event' => 'device.activation_token.revoked',
+                'auditable_type' => 'App\\Models\\DeviceActivationToken', 'auditable_id' => $tokenId,
+                'metadata' => json_encode(['device_id' => (int) $device->getKey(), 'reason' => 'too_many_refused_activations',
+                    'refused_attempts' => $refusals]),
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        });
     }
 
     /** off | report | enforce — anything else fails closed to enforce. */
@@ -114,7 +147,10 @@ final readonly class ActivateDeviceAction
         } elseif ($reported !== DeviceSerial::normalize($device->serial_number)) {
             $issues[] = DeviceActivationRefused::DEVICE_MISMATCH;
         }
-        if ($claim->app !== null && ! $device->acceptsActivationApp($claim->app)) {
+        if ($claim->app === null) {
+            // The new APKs always say which app they are.
+            $issues[] = DeviceActivationRefused::APP_MISSING;
+        } elseif (! $device->acceptsActivationApp($claim->app)) {
             $issues[] = DeviceActivationRefused::APP_MISMATCH;
         }
 
@@ -129,6 +165,9 @@ final readonly class ActivateDeviceAction
             'outcome' => $outcome,
             'reason' => $reason,
             'binding_mode' => $mode,
+            // The hardware serial is not a secret: admins need the full value
+            // to correct a mis-typed record (LAUNCH-P1 review).
+            'reported_serial' => ($reported = DeviceSerial::normalize($claim->serial)) !== null ? mb_substr($reported, 0, 128) : null,
             'reported_serial_masked' => DeviceSerial::mask($claim->serial),
             'reported_serial_hash' => DeviceSerial::hash($claim->serial),
             'app' => $claim->app !== null ? mb_substr($claim->app, 0, 32) : null,

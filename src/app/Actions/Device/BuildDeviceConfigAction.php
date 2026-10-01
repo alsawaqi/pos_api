@@ -409,6 +409,14 @@ class BuildDeviceConfigAction
                 'qr_table_card_enabled' => $this->tableCardEnabled->forBranch($companyId, $branchId) ? 'on' : 'off',
                 'qr_scan_geofence_mode' => $this->scanGeofenceMode->forBranch($companyId, $branchId),
             ],
+            // LAUNCH-P1 2a — this device's own settings (full + delta, a tiny
+            // scalar block like 'settings'). location_mode 'any' turns the
+            // device's branch location lock off; 'branch' keeps it on.
+            'device' => [
+                'uuid' => $device->uuid,
+                'device_type' => $device->device_type,
+                'location_mode' => $device->locationMode(),
+            ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
             'tables' => $tables->map(fn (Table $t): array => $this->mapTable($t))->all(),

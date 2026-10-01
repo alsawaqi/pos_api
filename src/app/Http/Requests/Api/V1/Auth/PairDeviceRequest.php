@@ -28,6 +28,8 @@ class PairDeviceRequest extends FormRequest
         return [
             'kiosk_id' => ['required', 'string', 'max:255'],
             'activation_token' => ['required', 'string', 'max:255'],
+            // Same serial/app lock inputs as /auth/device/activate (LAUNCH-P1 1a).
+            ...ActivateDeviceRequest::deviceClaimRules(),
         ];
     }
 }

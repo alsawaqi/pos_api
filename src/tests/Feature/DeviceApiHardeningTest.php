@@ -93,6 +93,7 @@ class DeviceApiHardeningTest extends TestCase
         $this->postJson('/api/v1/auth/device/pair', [
             'kiosk_id' => 'KIOSK-OK',
             'activation_token' => 'good_tok',
+            'serial' => $device->serial_number,
         ])->assertOk();
     }
 

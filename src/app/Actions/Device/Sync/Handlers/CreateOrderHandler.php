@@ -103,7 +103,7 @@ class CreateOrderHandler implements SyncEventHandler
         $this->validate($order, $event->event_type);
         $this->assertMoneyInvariant($order);
         if ($enforceGeofence) {
-            $this->enforceGeofence($order, $device);
+            $this->enforceGeofence($order, $device, $event);
         }
 
         return DB::transaction(function () use ($order, $device, $event, $status): array {
@@ -622,17 +622,21 @@ class CreateOrderHandler implements SyncEventHandler
 
     /**
      * Reject the order if the device's reported GPS (stamped at order time) is
-     * outside the branch geofence. Skipped when no GPS is supplied (the
-     * device-layer guard is primary) or the branch has no coordinates.
+     * outside the branch geofence. The device's location mode decides whether
+     * a fence applies at all ({@see GeofenceGuard::requirement()}): an 'any'
+     * device, or an order made while the device was 'any', is not fenced; a
+     * 'branch' device at a branch without coordinates is refused.
      *
      * @param  array<string, mixed>  $order
      */
-    private function enforceGeofence(array $order, Device $device): void
+    private function enforceGeofence(array $order, Device $device, SyncEvent $event): void
     {
         $branch = Branch::find($device->branch_id);
-        // No branch row, or the branch has no fence configured -> nothing to
-        // enforce.
-        if ($branch === null || ! $this->geofence->isFenced($branch)) {
+        $requirement = $this->geofence->requirement($device, $branch, $event->client_timestamp);
+        if ($requirement === GeofenceGuard::BRANCH_LOCATION_MISSING) {
+            throw new RuntimeException('order rejected: '.GeofenceGuard::BRANCH_LOCATION_MISSING_MESSAGE);
+        }
+        if ($requirement !== GeofenceGuard::ENFORCE) {
             return;
         }
 

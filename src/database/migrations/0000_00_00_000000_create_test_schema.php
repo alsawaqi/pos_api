@@ -45,6 +45,11 @@ return new class extends Migration
             $table->unsignedBigInteger('token_branch_id')->nullable();
             $table->timestamp('token_issued_at')->nullable();
             $table->timestamp('assignment_activated_at')->nullable();
+            // LAUNCH-P1 B1 mirror (pos_admin 2026_10_01_100000).
+            $table->timestamp('serial_verified_at')->nullable();
+            $table->string('location_mode', 16)->default('branch');
+            $table->timestamp('location_mode_since')->nullable();
+            $table->timestamp('location_any_started_at')->nullable();
             $table->unsignedInteger('pending_outbox_count')->nullable();
             $table->unsignedInteger('quarantined_count')->default(0);
             $table->timestamp('outbox_reported_at')->nullable();
@@ -85,6 +90,24 @@ return new class extends Migration
             $table->timestamp('used_at')->nullable();
             $table->timestamp('revoked_at')->nullable();
             $table->timestamps();
+        });
+
+        // LAUNCH-P1 B1 mirror (pos_admin 2026_10_01_100100): refused or
+        // reported activation attempts (serial/app lock).
+        Schema::create('pos_device_activation_attempts', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('device_id')->index();
+            $table->unsignedBigInteger('activation_token_id')->nullable();
+            $table->string('outcome', 16);
+            $table->string('reason', 48);
+            $table->string('binding_mode', 8);
+            $table->string('reported_serial_masked', 32)->nullable();
+            $table->string('reported_serial_hash', 64)->nullable();
+            $table->string('app', 32)->nullable();
+            $table->string('manufacturer', 128)->nullable();
+            $table->string('model', 128)->nullable();
+            $table->string('ip_address', 45)->nullable();
+            $table->timestamp('created_at')->nullable();
         });
 
         Schema::create('pos_sync_events', function (Blueprint $table): void {
@@ -1712,6 +1735,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_floors');
         Schema::dropIfExists('pos_branches');
         Schema::dropIfExists('pos_sync_events');
+        Schema::dropIfExists('pos_device_activation_attempts');
         Schema::dropIfExists('pos_device_activation_tokens');
         Schema::dropIfExists('pos_devices');
         Schema::dropIfExists('pos_companies');

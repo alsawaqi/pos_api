@@ -1652,4 +1652,30 @@ final class QrChargeProtocolTest extends TestCase
             $this->assertContains('throttle:device-api', $middleware, $name);
         }
     }
+
+    public function test_p1_device_location_mode_decides_the_station_claim_fence(): void
+    {
+        // LAUNCH-P1 2a (ClaimQrChargeAction).
+        Branch::query()->whereKey(10)->update([
+            'latitude' => '23.5800000',
+            'longitude' => '58.3800000',
+            'geofence_radius_m' => 100,
+        ]);
+        $any = $this->device('station-any-location', 'payment_station', ['location_mode' => 'any']);
+        $anyOrder = $this->order($this->qrSession($any));
+        $this->claim($any, $anyOrder, ['gps' => ['lat' => 0, 'lng' => 0]])->assertOk();
+
+        $branchOnly = $this->device('station-branch-location', 'payment_station', ['location_mode' => 'branch']);
+        $order = $this->order($this->qrSession($branchOnly));
+        $this->claim($branchOnly, $order, ['gps' => ['lat' => 0, 'lng' => 0]])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'geofence_outside');
+
+        // A 'branch' station at a branch without coordinates is refused, not unfenced.
+        Branch::query()->whereKey(10)->update(['latitude' => null, 'longitude' => null]);
+        $this->claim($branchOnly, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'branch_location_missing');
+        $this->assertNull($order->fresh()->charge_claimed_at);
+    }
 }

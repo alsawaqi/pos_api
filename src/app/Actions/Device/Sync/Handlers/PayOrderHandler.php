@@ -203,7 +203,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             // geofence cost before the tap. Every other path keeps the legacy
             // settle-time fence unchanged.
             if (! $claimHeldByDevice) {
-                $this->enforceGeofence($device, $payload);
+                $this->enforceGeofence($device, $payload, $event);
             }
 
             $paymentIds = [];
@@ -777,10 +777,15 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
      *
      * @param  array<string, mixed>  $payload
      */
-    private function enforceGeofence(Device $device, array $payload): void
+    private function enforceGeofence(Device $device, array $payload, SyncEvent $event): void
     {
         $branch = Branch::find($device->branch_id);
-        if ($branch === null || ! $this->geofence->isFenced($branch)) {
+        // LAUNCH-P1 2a — the device's location mode decides whether a fence applies.
+        $requirement = $this->geofence->requirement($device, $branch, $event->client_timestamp);
+        if ($requirement === GeofenceGuard::BRANCH_LOCATION_MISSING) {
+            throw new RuntimeException('payment rejected: '.GeofenceGuard::BRANCH_LOCATION_MISSING_MESSAGE);
+        }
+        if ($requirement !== GeofenceGuard::ENFORCE) {
             return;
         }
 

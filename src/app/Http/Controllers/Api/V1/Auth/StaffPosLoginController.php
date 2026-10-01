@@ -43,8 +43,17 @@ class StaffPosLoginController
         // while the device is physically inside its branch fence. Mirrors the
         // fail-closed order.create guard — a fenced branch REQUIRES a GPS fix
         // inside the radius; an unfenced branch skips this entirely.
+        // LAUNCH-P1 2a — an 'any' device skips this; a 'branch' device at a
+        // branch without coordinates is refused rather than silently unfenced.
         $branch = Branch::find($device->branch_id);
-        if ($branch !== null && $this->geofence->isFenced($branch)) {
+        $requirement = $this->geofence->requirement($device, $branch);
+        if ($requirement === GeofenceGuard::BRANCH_LOCATION_MISSING) {
+            return response()->json([
+                'data' => null,
+                'errors' => [['code' => GeofenceGuard::BRANCH_LOCATION_MISSING, 'message' => 'This branch has no location set, and this device may only work at its branch. Ask support to set the branch location.']],
+            ], 422);
+        }
+        if ($branch !== null && $requirement === GeofenceGuard::ENFORCE) {
             $lat = $request->validated('lat');
             $lng = $request->validated('lng');
             if ($lat === null || $lng === null) {

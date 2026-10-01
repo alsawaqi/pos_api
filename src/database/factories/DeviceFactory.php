@@ -24,6 +24,15 @@ class DeviceFactory extends Factory
     public function configure(): static
     {
         return $this->afterMaking(function (Device $device): void {
+            // LAUNCH-P1 2a: mirror the pos_admin migration — a device placed at
+            // an existing branch WITHOUT coordinates is 'any' (a 'branch'
+            // device there is refused). Tests that want 'branch' say so.
+            if (! array_key_exists('location_mode', $device->getAttributes()) && $device->branch_id !== null) {
+                $branch = DB::table('pos_branches')->where('id', $device->branch_id)->first(['latitude', 'longitude']);
+                if ($branch !== null && ($branch->latitude === null || $branch->longitude === null)) {
+                    $device->location_mode = 'any';
+                }
+            }
             if ($device->company_id !== null) {
                 DB::table('pos_companies')->insertOrIgnore([
                     'id' => $device->company_id, 'uuid' => (string) Str::uuid(),

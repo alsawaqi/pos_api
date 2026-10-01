@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1\Auth;
 
 use App\Actions\Device\ActivateDeviceAction;
+use App\Actions\Device\DeviceActivationClaim;
+use App\Actions\Device\DeviceActivationRefused;
 use App\Actions\Device\ResolveDeviceSoftPos;
 use App\Http\Requests\Api\V1\Auth\ActivateDeviceRequest;
 use Illuminate\Http\JsonResponse;
@@ -15,7 +17,14 @@ use RuntimeException;
  *
  * Single-code device activation. Returns the long-lived device_token plus the
  * device's kiosk_id + terminal_id (layer 1 stores both for the Soft POS /
- * Mosambee). Envelope { data, meta, errors }.
+ * Mosambee) and its location_mode ("branch" | "any"). Envelope
+ * { data, meta, errors }.
+ *
+ * Every refusal is HTTP 422 carrying a top-level { message, code } (the
+ * LAUNCH-P1 app contract) AND the legacy errors[] envelope older APKs parse:
+ *   activation_serial_missing | activation_device_mismatch |
+ *   activation_app_mismatch   | activation_failed (bad/expired/used code,
+ *   unassigned or blocked device).
  */
 class DeviceActivateController
 {
@@ -26,12 +35,14 @@ class DeviceActivateController
     public function __invoke(ActivateDeviceRequest $request): JsonResponse
     {
         try {
-            $device = $this->activate->handle((string) $request->validated('code'));
+            $device = $this->activate->handle(
+                (string) $request->validated('code'),
+                DeviceActivationClaim::fromInput($request->validated(), $request->ip()),
+            );
+        } catch (DeviceActivationRefused $e) {
+            return self::refusal($e->reason, $e->getMessage());
         } catch (RuntimeException $e) {
-            return response()->json([
-                'data' => null,
-                'errors' => [['code' => 'activation_failed', 'message' => $e->getMessage()]],
-            ], 422);
+            return self::refusal('activation_failed', $e->getMessage());
         }
 
         return response()->json([
@@ -44,9 +55,20 @@ class DeviceActivateController
                     'kiosk_id' => $device->kiosk_id,
                     ...app(ResolveDeviceSoftPos::class)->clientContract($device, $request->header('X-Mithqal-SoftPos-Capable') === '1'),
                     'name' => $device->name,
+                    'location_mode' => $device->locationMode(),
                 ],
             ],
             'errors' => [],
         ], 200);
+    }
+
+    public static function refusal(string $code, string $message): JsonResponse
+    {
+        return response()->json([
+            'message' => $message,
+            'code' => $code,
+            'data' => null,
+            'errors' => [['code' => $code, 'message' => $message]],
+        ], 422);
     }
 }

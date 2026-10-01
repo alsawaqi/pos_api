@@ -1360,4 +1360,36 @@ final class QrDineInPaymentRecoveryTest extends TestCase
 
         return $this->withToken((string) $device->plainTextToken)->getJson($url);
     }
+
+    public function test_p1_attended_settlement_claim_follows_the_device_location_mode(): void
+    {
+        // LAUNCH-P1 2a (ClaimQrSettlementAction).
+        Branch::query()->whereKey(10)->update([
+            'latitude' => 23.5880,
+            'longitude' => 58.3829,
+            'geofence_radius_m' => 100,
+        ]);
+        $station = $this->device('payment_station');
+        $till = $this->device('fixed_pos');
+        $till->forceFill(['location_mode' => 'branch'])->save();
+        $anywhere = $this->device('fixed_pos');
+        $anywhere->forceFill(['location_mode' => 'any'])->save();
+        $table = $this->table(10, 'P1-LOCATION');
+        $session = $this->qrSession($station, $table, QrSession::STATUS_ACTIVE);
+        $order = $this->order($station, $table, $session, Order::STATUS_OPEN);
+        $this->round($session, $order, QrOrderRound::STATUS_ACCEPTED);
+
+        $this->claimSettlement($till, $order, ['lat' => 24.0, 'lng' => 58.3829])
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'geofence_outside');
+        Branch::query()->whereKey(10)->update(['latitude' => null, 'longitude' => null]);
+        $this->claimSettlement($till, $order)
+            ->assertConflict()
+            ->assertJsonPath('errors.0.code', 'branch_location_missing');
+        $this->assertNull($order->fresh()->charge_claimed_at);
+
+        $this->claimSettlement($anywhere, $order)
+            ->assertOk()
+            ->assertJsonPath('data.charge_amount_baisas', 4750);
+    }
 }

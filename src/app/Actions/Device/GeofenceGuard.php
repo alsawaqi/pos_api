@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Actions\Device;
 
 use App\Models\Branch;
+use App\Models\Device;
+use Carbon\CarbonInterface;
 use RuntimeException;
 
 /**
@@ -26,9 +28,66 @@ final class GeofenceGuard
     /** GPS-jitter tolerance on top of the branch radius (§9.4). */
     public const TOLERANCE_M = 100.0;
 
+    /** No location rule applies to this action. */
+    public const SKIP = 'skip';
+
+    /** Today's rule: a GPS fix inside the branch radius + tolerance. */
+    public const ENFORCE = 'enforce';
+
+    /**
+     * Refuse: the device may only work at its branch, but the branch has no
+     * coordinates, so the fence cannot be checked (fail closed, never silent).
+     */
+    public const BRANCH_LOCATION_MISSING = 'branch_location_missing';
+
+    public const BRANCH_LOCATION_MISSING_MESSAGE = 'this device may only work at its branch, but the branch has no location set; ask support to set the branch location or allow this device at any location';
+
     private const EARTH_RADIUS_M = 6_371_000.0;
 
     private const DEFAULT_RADIUS_M = 500;
+
+    /**
+     * LAUNCH-P1 decision 2a — which location rule applies to an action this
+     * device made at $madeAt (the event's client timestamp; null = now).
+     *
+     *  - location_mode 'any'  → SKIP: the device may work anywhere.
+     *  - location_mode 'branch' (default) → today's rule, EXCEPT an event made
+     *    while the device was still 'any' (client timestamp inside
+     *    [location_any_started_at, location_mode_since)) is not refused.
+     *  - a 'branch' device at a branch WITHOUT coordinates → refuse
+     *    (BRANCH_LOCATION_MISSING). Admin never lets a device be or stay
+     *    'branch' at such a branch; the migration moved existing ones to 'any'.
+     *  - no branch row, or a device object without a location_mode (a reviewed
+     *    historical replay snapshot) → the legacy rule: fence only a branch
+     *    that has coordinates.
+     */
+    public function requirement(Device $device, ?Branch $branch, ?CarbonInterface $madeAt = null): string
+    {
+        $mode = $device->getAttribute('location_mode');
+        if ($mode === 'any') {
+            return self::SKIP;
+        }
+        if ($mode !== null && $madeAt !== null && $this->madeWhileAny($device, $madeAt)) {
+            return self::SKIP;
+        }
+        if ($branch === null) {
+            return self::SKIP;
+        }
+        if ($this->isFenced($branch)) {
+            return self::ENFORCE;
+        }
+
+        return $mode === null ? self::SKIP : self::BRANCH_LOCATION_MISSING;
+    }
+
+    private function madeWhileAny(Device $device, CarbonInterface $madeAt): bool
+    {
+        $since = $device->location_mode_since;
+        $anyFrom = $device->location_any_started_at;
+
+        return $since !== null && $anyFrom !== null
+            && $madeAt->greaterThanOrEqualTo($anyFrom) && $madeAt->lessThan($since);
+    }
 
     /** True when the branch has coordinates configured (an enforceable fence). */
     public function isFenced(Branch $branch): bool

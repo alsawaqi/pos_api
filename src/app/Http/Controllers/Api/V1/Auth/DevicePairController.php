@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1\Auth;
 
+use App\Actions\Device\DeviceActivationClaim;
+use App\Actions\Device\DeviceActivationRefused;
 use App\Actions\Device\PairDeviceAction;
 use App\Http\Requests\Api\V1\Auth\PairDeviceRequest;
 use Illuminate\Http\JsonResponse;
@@ -30,7 +32,10 @@ class DevicePairController
             $device = $this->pair->handle(
                 (string) $request->validated('kiosk_id'),
                 (string) $request->validated('activation_token'),
+                DeviceActivationClaim::fromInput($request->validated(), $request->ip()),
             );
+        } catch (DeviceActivationRefused $e) {
+            return DeviceActivateController::refusal($e->reason, $e->getMessage());
         } catch (RuntimeException $e) {
             return response()->json([
                 'data' => null,

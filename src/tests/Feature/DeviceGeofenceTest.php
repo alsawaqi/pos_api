@@ -23,7 +23,8 @@ class DeviceGeofenceTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function device(string $token = 'mdev_geo'): Device
+    /** @param  array<string, mixed>  $attributes */
+    private function device(string $token = 'mdev_geo', array $attributes = []): Device
     {
         // order.create references product 1; it must belong to the device's
         // company or the tenant guard (correctly) rejects the order.
@@ -31,7 +32,7 @@ class DeviceGeofenceTest extends TestCase
             'id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Item', 'base_price' => 3.000, 'status' => 'active',
             'created_at' => now(), 'updated_at' => now(),
         ]);
-        return Device::factory()->paired($token)->create(['company_id' => 100, 'branch_id' => 10]);
+        return Device::factory()->paired($token)->create(['company_id' => 100, 'branch_id' => 10] + $attributes);
     }
 
     /**
@@ -144,13 +145,16 @@ class DeviceGeofenceTest extends TestCase
         $this->assertNull(Order::firstWhere('uuid', $uuid));
     }
 
-    public function test_a_branch_without_coordinates_skips_enforcement(): void
+    public function test_an_any_location_device_at_a_branch_without_coordinates_is_not_fenced(): void
     {
-        $this->device();
+        // LAUNCH-P1 2a: no coordinates no longer means "no fence" by itself; an
+        // 'any' device is unfenced (a 'branch' device there is refused, see
+        // LaunchP1DeviceLocationModeTest).
+        $this->device('mdev_geo', ['location_mode' => 'any']);
         $this->seedBranch(['latitude' => null, 'longitude' => null]);
         $uuid = (string) Str::uuid();
 
-        // GPS supplied but the branch has no fence configured → accepted.
+        // GPS supplied but the device may work at any location → accepted.
         $res = $this->push($uuid, ['lat' => 0.0, 'lng' => 0.0])->assertOk();
 
         $this->assertSame('processed', $res->json('data.results.0.status'));
@@ -173,9 +177,9 @@ class DeviceGeofenceTest extends TestCase
 
     public function test_an_order_without_gps_at_an_unfenced_branch_has_null_coordinates(): void
     {
-        $this->device();
-        // No coordinates = no fence -> a GPS-less order is still allowed,
-        // and persists null coordinates.
+        $this->device('mdev_geo', ['location_mode' => 'any']);
+        // An 'any' device at a branch without coordinates -> a GPS-less order
+        // is still allowed, and persists null coordinates.
         $this->seedBranch(['latitude' => null, 'longitude' => null]);
         $uuid = (string) Str::uuid();
 

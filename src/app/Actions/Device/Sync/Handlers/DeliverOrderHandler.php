@@ -93,7 +93,7 @@ class DeliverOrderHandler implements SyncEventHandler
 
         // Same fail-closed fence as order.pay: completing a sale (even a
         // no-tender one) must happen at the branch.
-        $this->enforceGeofence($device, $payload);
+        $this->enforceGeofence($device, $payload, $event);
 
         $punchedAt = isset($payload['delivered_at']) ? Carbon::parse((string) $payload['delivered_at']) : now();
 
@@ -159,10 +159,15 @@ class DeliverOrderHandler implements SyncEventHandler
      *
      * @param  array<string, mixed>  $payload
      */
-    private function enforceGeofence(Device $device, array $payload): void
+    private function enforceGeofence(Device $device, array $payload, SyncEvent $event): void
     {
         $branch = Branch::find($device->branch_id);
-        if ($branch === null || ! $this->geofence->isFenced($branch)) {
+        // LAUNCH-P1 2a — the device's location mode decides whether a fence applies.
+        $requirement = $this->geofence->requirement($device, $branch, $event->client_timestamp);
+        if ($requirement === GeofenceGuard::BRANCH_LOCATION_MISSING) {
+            throw new RuntimeException('delivery close rejected: '.GeofenceGuard::BRANCH_LOCATION_MISSING_MESSAGE);
+        }
+        if ($requirement !== GeofenceGuard::ENFORCE) {
             return;
         }
 

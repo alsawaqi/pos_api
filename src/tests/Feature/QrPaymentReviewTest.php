@@ -29,6 +29,10 @@ final class QrPaymentReviewTest extends QrPendingTestCase
             'name' => 'Review synthetic manager', 'pin_hash' => Hash::make('4321'), 'position' => 'manager', 'status' => 'active']);
         Branch::query()->create(['id' => 10, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Review branch',
             'latitude' => null, 'longitude' => null, 'geofence_radius_m' => 500, 'status' => 'active']);
+        // LAUNCH-P1 2a: devices at a branch without coordinates are 'any'.
+        foreach ([$this->till, $this->station] as $device) {
+            $device->forceFill(['location_mode' => 'any'])->save();
+        }
     }
 
     private function review(Order $order, array $input, ?Device $device = null): TestResponse
@@ -197,6 +201,7 @@ final class QrPaymentReviewTest extends QrPendingTestCase
     public function test_money_taken_uses_the_normal_geofence_and_rolls_back_when_refused(): void
     {
         Branch::query()->whereKey(10)->update(['latitude' => '23.5800000', 'longitude' => '58.3800000', 'geofence_radius_m' => 100]);
+        $this->till->forceFill(['location_mode' => 'branch'])->save();
         $order = $this->stuck();
         $before = $this->snapshot();
         $this->review($order, $this->input('paid'))->assertConflict()->assertJsonPath('errors.0.code', 'gps_required');

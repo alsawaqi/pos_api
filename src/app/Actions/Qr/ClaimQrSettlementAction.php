@@ -436,7 +436,12 @@ final class ClaimQrSettlementAction
             ->whereKey((int) $device->branch_id)
             ->where('company_id', (int) $device->company_id)
             ->first();
-        if ($branch === null || ! $this->geofence->isFenced($branch)) {
+        // LAUNCH-P1 2a — a live claim is judged by the device's mode now.
+        $requirement = $this->geofence->requirement($device, $branch);
+        if ($requirement === GeofenceGuard::BRANCH_LOCATION_MISSING) {
+            throw new QrChargeException(GeofenceGuard::BRANCH_LOCATION_MISSING, 409, ucfirst(GeofenceGuard::BRANCH_LOCATION_MISSING_MESSAGE).'.');
+        }
+        if ($requirement !== GeofenceGuard::ENFORCE) {
             return;
         }
         if ($gps === null) {

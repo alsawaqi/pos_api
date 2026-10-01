@@ -28,7 +28,7 @@ class DeviceActivateTest extends TestCase
         ]);
         DeviceActivationToken::factory()->for($device)->forPlaintext('code_abc')->create();
 
-        $res = $this->postJson('/api/v1/auth/device/activate', ['code' => 'code_abc'])->assertOk();
+        $res = $this->postJson('/api/v1/auth/device/activate', ['code' => 'code_abc', 'serial' => $device->serial_number])->assertOk();
 
         $this->assertNotEmpty($res->json('data.device_token'));
         $this->assertSame('KIOSK-ACT', $res->json('data.device.kiosk_id'));
@@ -51,6 +51,8 @@ class DeviceActivateTest extends TestCase
 
         $activation = $this->postJson('/api/v1/auth/device/activate', [
             'code' => 'station_code',
+            'serial' => $device->serial_number,
+            'app' => 'station',
         ])->assertOk();
 
         $deviceToken = $activation->json('data.device_token');
@@ -140,8 +142,10 @@ class DeviceActivateTest extends TestCase
         $device = Device::factory()->create();
         DeviceActivationToken::factory()->for($device)->forPlaintext('once_code')->create();
 
-        $this->postJson('/api/v1/auth/device/activate', ['code' => 'once_code'])->assertOk();
-        $this->postJson('/api/v1/auth/device/activate', ['code' => 'once_code'])->assertStatus(422);
+        $claim = ['code' => 'once_code', 'serial' => $device->serial_number];
+        $this->postJson('/api/v1/auth/device/activate', $claim)->assertOk();
+        $this->postJson('/api/v1/auth/device/activate', $claim)->assertStatus(422)
+            ->assertJsonPath('code', 'activation_failed');
     }
 
     public function test_validation_requires_a_code(): void

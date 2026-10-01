@@ -19,7 +19,7 @@ class LaunchP0DeviceIdentityTest extends TestCase
     {
         $device = Device::factory()->create();
         DeviceActivationToken::factory()->for($device)->forPlaintext('p0-code')->create();
-        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'p0-code'])
+        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'p0-code', 'serial' => $device->serial_number])
             ->assertOk()->json('data.device_token');
 
         $stored = DB::table('pos_devices')->where('id', $device->id)->first();
@@ -37,7 +37,7 @@ class LaunchP0DeviceIdentityTest extends TestCase
     {
         $device = Device::factory()->create();
         DeviceActivationToken::factory()->for($device)->forPlaintext('move-code')->create();
-        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'move-code'])
+        $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => 'move-code', 'serial' => $device->serial_number])
             ->assertOk()->json('data.device_token');
         DB::table('pos_devices')->where('id', $device->id)->update(['branch_id' => 999]);
         foreach ([
@@ -58,7 +58,7 @@ class LaunchP0DeviceIdentityTest extends TestCase
             $code = 'status-'.$status;
             DeviceActivationToken::factory()->for($device)->forPlaintext($code)->create();
             Auth::forgetGuards();
-            $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => $code])
+            $raw = $this->postJson('/api/v1/auth/device/activate', ['code' => $code, 'serial' => $device->serial_number])
                 ->assertOk()->json('data.device_token');
             DB::table('pos_devices')->where('id', $device->id)->update(['status' => $status]);
             Auth::forgetGuards();

@@ -236,6 +236,8 @@ final class StaffTableCheckoutTest extends TestCase
     {
         [$device, , , $order] = $this->fixture();
         DB::table('pos_branches')->where('id', $device->branch_id)->update(['latitude' => 23.6, 'longitude' => 58.4, 'geofence_radius_m' => 100]);
+        // LAUNCH-P1 2a: the branch now has a location; the admin keeps this device to it.
+        $device->forceFill(['location_mode' => 'branch'])->save();
         $before = $this->rows();
         $this->claim($device, $order)->assertConflict()->assertJsonPath('errors.0.code', 'geofence_fix_required');
         $this->assertSame($before, $this->rows());
@@ -288,5 +290,24 @@ final class StaffTableCheckoutTest extends TestCase
             'payload' => ['order_uuid' => $order->uuid, 'paid_at' => now()->toIso8601String(), 'payments' => [['method' => 'cash', 'amount_baisas' => $amount]]]];
         $this->postAs($caller, 'sync/push', ['events' => [$event]])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
         $this->assertSame($before, $this->rows());
+    }
+
+    public function test_p1_table_checkout_follows_the_device_location_mode(): void
+    {
+        // LAUNCH-P1 2a (StaffTableCheckoutAction).
+        [$device, , , $order] = $this->fixture();
+        DB::table('pos_branches')->where('id', $device->branch_id)->update(['latitude' => 23.6, 'longitude' => 58.4, 'geofence_radius_m' => 100]);
+        $device->forceFill(['location_mode' => 'branch'])->save();
+        $before = $this->rows();
+        $this->postAs($device, 'qr/claim-settlement', ['order_uuid' => $order->uuid, 'gps' => ['lat' => 0, 'lng' => 0]])
+            ->assertConflict()->assertJsonPath('errors.0.code', 'geofence_outside');
+        DB::table('pos_branches')->where('id', $device->branch_id)->update(['latitude' => null, 'longitude' => null]);
+        $this->claim($device, $order)->assertConflict()->assertJsonPath('errors.0.code', 'branch_location_missing');
+        $this->assertSame($before, $this->rows());
+
+        DB::table('pos_branches')->where('id', $device->branch_id)->update(['latitude' => 23.6, 'longitude' => 58.4]);
+        $device->forceFill(['location_mode' => 'any'])->save();
+        $this->postAs($device, 'qr/claim-settlement', ['order_uuid' => $order->uuid, 'gps' => ['lat' => 0, 'lng' => 0]])
+            ->assertOk()->assertJsonPath('data.charge_amount_baisas', 2000);
     }
 }

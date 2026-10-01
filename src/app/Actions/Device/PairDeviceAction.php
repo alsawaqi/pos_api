@@ -31,7 +31,7 @@ use RuntimeException;
  */
 final readonly class PairDeviceAction
 {
-    public function handle(string $kioskId, string $activationToken): Device
+    public function handle(string $kioskId, string $activationToken, ?DeviceActivationClaim $claim = null): Device
     {
         $deviceId = Device::query()->where('kiosk_id', $kioskId)->value('id');
         $codeDeviceId = DeviceActivationToken::query()
@@ -40,6 +40,7 @@ final readonly class PairDeviceAction
             throw new RuntimeException('Pairing failed: invalid kiosk or activation token.');
         }
 
-        return app(ActivateDeviceAction::class)->handle($activationToken);
+        // The same serial/app lock as single-code activation (LAUNCH-P1 1a).
+        return app(ActivateDeviceAction::class)->handle($activationToken, $claim);
     }
 }

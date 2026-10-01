@@ -94,6 +94,9 @@ class Device extends Model implements Authenticatable
             'assigned_at' => 'datetime',
             'token_issued_at' => 'datetime',
             'assignment_activated_at' => 'datetime',
+            'serial_verified_at' => 'datetime',
+            'location_mode_since' => 'datetime',
+            'location_any_started_at' => 'datetime',
             'last_lat' => 'decimal:7',
             'last_lng' => 'decimal:7',
             'last_battery' => 'integer',
@@ -124,6 +127,31 @@ class Device extends Model implements Authenticatable
     public function isAssigned(): bool
     {
         return $this->company_id !== null && $this->branch_id !== null;
+    }
+
+    /**
+     * LAUNCH-P1 decision 1a (P1-10) — the app name a device reports at
+     * activation → the only device_type that app may activate.
+     */
+    public const ACTIVATION_APP_TYPES = [
+        'till' => 'fixed_pos',
+        'handheld' => 'handheld',
+        'station' => 'payment_station',
+        'customer_tablet' => 'customer_tablet',
+    ];
+
+    public function acceptsActivationApp(string $app): bool
+    {
+        return (self::ACTIVATION_APP_TYPES[strtolower(trim($app))] ?? null) === $this->device_type;
+    }
+
+    /**
+     * LAUNCH-P1 decision 2a — 'branch' (geofenced to the branch, the default)
+     * or 'any' (may work at any location). Anything unexpected is 'branch'.
+     */
+    public function locationMode(): string
+    {
+        return $this->getAttribute('location_mode') === 'any' ? 'any' : 'branch';
     }
 
     public function isPaymentStation(): bool

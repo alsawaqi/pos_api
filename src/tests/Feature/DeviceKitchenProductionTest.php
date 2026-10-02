@@ -185,20 +185,54 @@ class DeviceKitchenProductionTest extends TestCase
         $this->assertSame(6, $kitchen->json('data.products.0.max_producible')); // floor(3/0.5)
     }
 
-    public function test_start_refuses_when_ingredients_cannot_cover_the_quantity(): void
+    public function test_start_warns_but_never_refuses_when_ingredients_fall_short(): void
+    {
+        // LAUNCH-P2 (owner decision 2026-10-02): production follows the
+        // selling rule — never blocked by the stock numbers.
+        $this->seedKitchen();
+        $this->device();
+
+        // 11 cakes need 5.5 kg flour; the branch has 5. Sugar (2.2 of 4) is fine.
+        $res = $this->start('mdev_kitchen', ['quantity' => 11])->assertCreated();
+
+        $this->assertSame('in_progress', $res->json('data.production.status'));
+        $shortfalls = $res->json('data.ingredient_shortfalls');
+        $this->assertCount(1, $shortfalls);
+        $this->assertSame(self::FLOUR, $shortfalls[0]['ingredient_id']);
+        $this->assertSame('Flour', $shortfalls[0]['name']);
+        $this->assertSame('kg', $shortfalls[0]['unit']);
+        $this->assertEqualsWithDelta(5.5, (float) $shortfalls[0]['needed'], 0.0001);
+        $this->assertEqualsWithDelta(5.0, (float) $shortfalls[0]['available'], 0.0001);
+
+        // The ingredients left the shelf: flour goes below zero, sugar does not.
+        $this->assertEqualsWithDelta(-0.5, $this->balance(self::FLOUR), 0.0001);
+        $this->assertEqualsWithDelta(1.8, $this->balance(self::SUGAR), 0.0001);
+        $this->assertSame(1, DB::table('pos_productions')->count());
+        $this->assertSame(2, DB::table('pos_stock_movements')->where('movement_type', 'production_consumption')->count());
+    }
+
+    public function test_start_works_when_an_ingredient_was_never_stocked_here(): void
+    {
+        $this->seedKitchen();
+        $this->device();
+        DB::table('pos_branch_stock')->where('branch_id', 10)->where('ingredient_id', self::SUGAR)->delete();
+
+        $res = $this->start('mdev_kitchen', ['quantity' => 2])->assertCreated();
+
+        // Sugar had no balance row: 0.4 kg short, and a row now exists at -0.4.
+        $this->assertSame([self::SUGAR], array_column($res->json('data.ingredient_shortfalls'), 'ingredient_id'));
+        $this->assertEqualsWithDelta(-0.4, $this->balance(self::SUGAR), 0.0001);
+        $this->assertEqualsWithDelta(4.0, $this->balance(self::FLOUR), 0.0001);
+    }
+
+    public function test_a_covered_batch_reports_no_shortfall(): void
     {
         $this->seedKitchen();
         $this->device();
 
-        // 11 cakes need 5.5 kg flour; the branch has 5.
-        $this->start('mdev_kitchen', ['quantity' => 11])
-            ->assertStatus(422)
-            ->assertJsonPath('errors.0.code', 'production_rejected');
-
-        // Nothing moved, nothing recorded.
-        $this->assertEqualsWithDelta(5.0, $this->balance(self::FLOUR), 0.001);
-        $this->assertSame(0, DB::table('pos_productions')->count());
-        $this->assertSame(0, DB::table('pos_stock_movements')->count());
+        $this->start('mdev_kitchen', ['quantity' => 4])
+            ->assertCreated()
+            ->assertJsonPath('data.ingredient_shortfalls', []);
     }
 
     public function test_start_refuses_a_non_cooked_product(): void

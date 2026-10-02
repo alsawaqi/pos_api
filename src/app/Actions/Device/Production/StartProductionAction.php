@@ -24,10 +24,12 @@ use RuntimeException;
  * are LOCKED (quantity x recipe — the device cannot tamper with them);
  * anything beyond the recipe arrives as explicit extra lines. On success:
  *
- *   - every required ingredient's branch balance is checked against FRESH
- *     locked rows (production is online-only precisely for this) and the
- *     batch is refused if anything falls short — unlike sales, production
- *     does NOT run negative;
+ *   - every required ingredient's branch balance is read from FRESH locked
+ *     rows (production is online-only precisely for this). LAUNCH-P2 (owner
+ *     decision 2026-10-02): like a sale, a batch is never refused on the
+ *     stock numbers — a shortfall is reported back as a warning
+ *     ({@see start()}) and the balance may go below zero, where the
+ *     merchant portal flags it;
  *   - the ingredients are deducted immediately (they physically left the
  *     shelf; a parallel batch cannot claim them): one signed
  *     'production_consumption' pos_stock_movements row per line + the
@@ -44,6 +46,17 @@ final readonly class StartProductionAction
      * @param  list<array{ingredient_id: int, quantity: float|int|string}>  $extras
      */
     public function handle(Device $device, int $productId, int $quantity, ?int $staffId, array $extras): Production
+    {
+        return $this->start($device, $productId, $quantity, $staffId, $extras)['production'];
+    }
+
+    /**
+     * Start the batch and report what the books could not cover.
+     *
+     * @param  list<array{ingredient_id: int, quantity: float|int|string}>  $extras
+     * @return array{production: Production, shortfalls: list<array{ingredient_id: int, name: string, unit: string, needed: string, available: string}>}
+     */
+    public function start(Device $device, int $productId, int $quantity, ?int $staffId, array $extras): array
     {
         $companyId = (int) $device->company_id;
         $branchId = (int) $device->branch_id;
@@ -105,7 +118,7 @@ final readonly class StartProductionAction
             }
         }
 
-        return DB::transaction(function () use ($device, $product, $quantity, $staffId, $recipeRows, $extraByIngredient, $ingredientIds, $ingredients, $companyId, $branchId): Production {
+        return DB::transaction(function () use ($device, $product, $quantity, $staffId, $recipeRows, $extraByIngredient, $ingredientIds, $ingredients, $companyId, $branchId): array {
             // Total needed per ingredient (std + extra) for the coverage check.
             $needed = [];
             foreach ($recipeRows as $line) {
@@ -116,10 +129,12 @@ final readonly class StartProductionAction
                 $needed[$ingredientId] = ($needed[$ingredientId] ?? 0.0) + $extraQty;
             }
 
-            // Lock the balance rows in a deterministic order, then verify
-            // coverage against the FRESH values. Missing row = balance 0.
+            // Lock the balance rows in a deterministic order and read the
+            // FRESH values. Missing row = balance 0. A shortfall is a
+            // warning, never a refusal (LAUNCH-P2 "sell, but warn").
             sort($ingredientIds);
             $balances = [];
+            $shortfalls = [];
             foreach ($ingredientIds as $ingredientId) {
                 $row = BranchStock::query()
                     ->where('branch_id', $branchId)
@@ -131,14 +146,13 @@ final readonly class StartProductionAction
                 $available = $row !== null ? (float) $row->quantity : 0.0;
                 if ($available + 1e-9 < $needed[$ingredientId]) {
                     $ingredient = $ingredients->get($ingredientId);
-
-                    throw new RuntimeException(sprintf(
-                        'Not enough %s: need %s %s, have %s.',
-                        $ingredient->name,
-                        StockDecimal::format($needed[$ingredientId], 0, 4),
-                        $ingredient->unit,
-                        StockDecimal::format($available, 0, 4),
-                    ));
+                    $shortfalls[] = [
+                        'ingredient_id' => (int) $ingredientId,
+                        'name' => (string) $ingredient->name,
+                        'unit' => (string) $ingredient->unit,
+                        'needed' => StockDecimal::quantity($needed[$ingredientId]),
+                        'available' => StockDecimal::quantity($available),
+                    ];
                 }
             }
 
@@ -202,7 +216,7 @@ final readonly class StartProductionAction
                 $consume($ingredientId, $extraQty, true, null);
             }
 
-            return $production;
+            return ['production' => $production, 'shortfalls' => $shortfalls];
         });
     }
 

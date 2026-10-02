@@ -55,7 +55,7 @@ class DeviceProductionsController
         }
 
         try {
-            $production = $this->start->handle(
+            $started = $this->start->start(
                 $device,
                 (int) $request->validated('product_id'),
                 (int) $request->validated('quantity'),
@@ -65,11 +65,18 @@ class DeviceProductionsController
         } catch (RuntimeException $e) {
             return $this->domainError($e);
         }
+        $production = $started['production'];
 
         $this->broadcast($device, $production, 'production.start');
 
         return response()->json([
-            'data' => ['production' => DeviceKitchenController::productionPayload($production)],
+            'data' => [
+                'production' => DeviceKitchenController::productionPayload($production),
+                // LAUNCH-P2: what the books could not cover (a warning; the
+                // batch started and those balances went below zero). Older
+                // apps ignore this field.
+                'ingredient_shortfalls' => $started['shortfalls'],
+            ],
             'errors' => [],
         ], 201);
     }

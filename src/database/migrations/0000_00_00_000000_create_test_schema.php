@@ -346,8 +346,27 @@ return new class extends Migration
             $table->decimal('min_stock_threshold', 14, 4)->nullable();
             $table->unsignedBigInteger('primary_supplier_id')->nullable();
             $table->string('status', 32)->default('active');
+            // LAUNCH-P3 data contract (pos_admin owns the migration): a prep
+            // item (sauce, dough) has its own recipe and yield, no stock.
+            $table->boolean('is_prep')->default(false);
+            $table->decimal('prep_yield_quantity', 14, 4)->nullable();
             $table->timestamps();
             $table->softDeletes();
+        });
+
+        // LAUNCH-P3 data contract — a prep item's recipe: per ONE batch
+        // (prep_yield_quantity of the prep's base unit), each component in
+        // its own base unit; a component may itself be a prep item.
+        Schema::create('pos_ingredient_recipes', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('prep_ingredient_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->decimal('quantity', 14, 4);
+            $table->string('entered_unit', 32)->nullable();
+            $table->decimal('entered_quantity', 14, 4)->nullable();
+            $table->integer('sort_order')->default(0);
+            $table->timestamps();
+            $table->unique(['prep_ingredient_id', 'ingredient_id'], 'pos_ingredient_recipes_prep_ingredient_unique');
         });
 
         Schema::create('pos_product_recipes', function (Blueprint $table): void {
@@ -356,8 +375,25 @@ return new class extends Migration
             $table->unsignedBigInteger('ingredient_id');
             $table->decimal('quantity', 14, 4);
             $table->string('unit_at_set', 16);
+            // LAUNCH-P3 data contract: what the editor typed ("5 g"); the
+            // device API keeps reading quantity + unit_at_set (base unit).
+            $table->string('entered_unit', 32)->nullable();
+            $table->decimal('entered_quantity', 14, 4)->nullable();
             $table->unsignedSmallInteger('sort_order')->default(0);
             $table->timestamps();
+        });
+
+        // Phase 5b (pos_admin 2026_05_30_010100) — append-only recipe history:
+        // each row is the recipe BEFORE an edit, dated at the edit. LAUNCH-P3
+        // P3-6 reads it to copy the recipe in force at a device sale's time.
+        Schema::create('pos_product_recipe_versions', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('product_id');
+            $table->text('recipe_json');
+            $table->unsignedBigInteger('edited_by_user_id')->nullable();
+            $table->text('note')->nullable();
+            $table->timestamp('edited_at')->useCurrent();
+            $table->index(['product_id', 'edited_at'], 'pos_product_recipe_versions_product_edited_idx');
         });
 
         Schema::create('pos_branch_product', function (Blueprint $table): void {
@@ -394,6 +430,9 @@ return new class extends Migration
             $table->string('direction', 8)->default('add');
             $table->decimal('quantity', 14, 4);
             $table->string('unit', 16)->nullable();
+            // LAUNCH-P3 data contract: the entered unit of an ingredient line.
+            $table->string('entered_unit', 32)->nullable();
+            $table->decimal('entered_quantity', 14, 4)->nullable();
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->timestamps();
             $table->unique(['add_on_id', 'ingredient_id', 'direction'], 'pos_addon_consumptions_ing_dir_unique');
@@ -1731,7 +1770,9 @@ return new class extends Migration
         Schema::dropIfExists('pos_ingredient_stock');
         Schema::dropIfExists('pos_product_stock_movements');
         Schema::dropIfExists('pos_product_stock');
+        Schema::dropIfExists('pos_product_recipe_versions');
         Schema::dropIfExists('pos_product_recipes');
+        Schema::dropIfExists('pos_ingredient_recipes');
         Schema::dropIfExists('pos_ingredients');
         Schema::dropIfExists('pos_addon_group_products');
         Schema::dropIfExists('pos_addons');

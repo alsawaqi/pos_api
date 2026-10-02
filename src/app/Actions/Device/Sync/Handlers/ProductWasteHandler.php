@@ -14,6 +14,8 @@ use App\Models\ProductStockMovement;
 use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSessionEvent;
+use App\Support\Recipes\PrepExploder;
+use App\Support\Recipes\RecipeInForce;
 use App\Support\StockDecimal;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -256,7 +258,8 @@ class ProductWasteHandler implements SyncEventHandler
     /**
      * The per-unit cost frozen at waste time: cost_price when set, else (for a
      * cooked item) its recipe cost = Σ(recipe.quantity × ingredient cost). A
-     * unit product with no recipe falls back to 0.
+     * unit product with no recipe falls back to 0. LAUNCH-P3 — a prep item in
+     * the recipe is costed through its own recipe (the explode rule).
      */
     private function unitCost(Product $product): string
     {
@@ -265,13 +268,9 @@ class ProductWasteHandler implements SyncEventHandler
             return number_format($costPrice, 3, '.', '');
         }
 
-        $recipeCost = (float) (DB::table('pos_product_recipes as r')
-            ->join('pos_ingredients as i', 'i.id', '=', 'r.ingredient_id')
-            ->where('r.product_id', $product->id)
-            ->selectRaw('COALESCE(SUM(r.quantity * COALESCE(i.default_unit_cost, 0)), 0) AS c')
-            ->value('c') ?? 0);
-
         // LAUNCH-P2 — a frozen per-piece (production) cost keeps 6 decimals.
-        return (string) StockDecimal::unitCost($recipeCost);
+        return (string) StockDecimal::unitCost(
+            (new PrepExploder((int) $product->company_id))->cost((new RecipeInForce)->lines((int) $product->id)),
+        );
     }
 }

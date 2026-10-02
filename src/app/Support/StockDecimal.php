@@ -32,6 +32,31 @@ final class StockDecimal
         return self::format($value, 3, self::UNIT_COST_SCALE);
     }
 
+    /**
+     * LAUNCH-P3 — an exact decimal string (for Brick\Math) from whatever the
+     * database driver returned: Postgres numeric strings, sqlite ints and
+     * floats. Stored values have at most 6 decimals, so 10 recover a float
+     * exactly. Anything non-numeric reads as "0".
+     */
+    public static function exact(mixed $value): string
+    {
+        if (is_int($value)) {
+            return (string) $value;
+        }
+        if (is_float($value)) {
+            $fixed = rtrim(rtrim(number_format($value, 10, '.', ''), '0'), '.');
+
+            return $fixed === '' || $fixed === '-0' ? '0' : $fixed;
+        }
+        $text = is_string($value) ? trim($value) : '';
+        if (preg_match('/^[+-]?\d+(\.\d+)?$/', $text) === 1) {
+            return $text;
+        }
+
+        // Other numeric spellings ("1.5E-5", ".5") go through the float path.
+        return is_numeric($text) ? self::exact((float) $text) : '0';
+    }
+
     /** Half-up rounding to $max decimals, trailing zeros trimmed down to $min. */
     public static function format(float|int|string|null $value, int $min, int $max): ?string
     {

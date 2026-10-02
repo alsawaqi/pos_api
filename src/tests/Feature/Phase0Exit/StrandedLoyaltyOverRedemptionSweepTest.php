@@ -92,6 +92,9 @@ class StrandedLoyaltyOverRedemptionSweepTest extends TestCase
     {
         $t = ['created_at' => now(), 'updated_at' => now()];
 
+        // LAUNCH-P3 P3-7: the recipe product is made-to-order (an untracked
+        // product never deducts a leftover recipe).
+        DB::table('pos_products')->where('id', 1)->update(['stock_mode' => 'ingredient']);
         DB::table('pos_ingredients')->insert([
             'id' => 1,
             'uuid' => (string) Str::uuid(),

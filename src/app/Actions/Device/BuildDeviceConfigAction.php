@@ -34,6 +34,7 @@ use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
 use App\Support\OrderNumbering;
+use App\Support\Recipes\RecipeCopy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
@@ -158,11 +159,26 @@ class BuildDeviceConfigAction
         $products = $productsQuery->get();
         $productIds = $products->pluck('id')->all();
 
-        $recipesByProduct = DB::table('pos_product_recipes')
+        $recipeRowsByProduct = DB::table('pos_product_recipes')
             ->whereIn('product_id', $productIds ?: [0])
             ->orderBy('sort_order')
             ->get()
             ->groupBy('product_id');
+
+        // LAUNCH-P3 P3-4 — the device sees every recipe as raw ingredient
+        // lines: prep items explode into what they are made of (one batched
+        // read of the prep graph for the whole bundle). The recipe shape and
+        // units are unchanged, so older apps read it as before.
+        $recipeCopy = new RecipeCopy($companyId);
+        $exploder = $recipeCopy->exploder();
+        $exploder->preload($recipeRowsByProduct->flatten(1)->pluck('ingredient_id')->all());
+        $recipesByProduct = $recipeRowsByProduct->map(fn (Collection $rows): array => $exploder->explode(
+            $rows->map(static fn (object $row): array => [
+                'ingredient_id' => (int) $row->ingredient_id,
+                'quantity' => $row->quantity,
+                'unit' => $row->unit_at_set,
+            ])->all(),
+        ));
 
         // ---- Phase D2 — LOW STOCK badge inputs. A unit-mode product is low
         // when its branch unit stock is at/below its own low_stock_threshold;
@@ -171,6 +187,7 @@ class BuildDeviceConfigAction
         // (the same semantics as the merchant dashboard's low-stock count).
         // Queried directly — NOT from the delta-filtered $ingredients /
         // $branchStock collections — so delta responses compute correctly.
+        // LAUNCH-P3: over the exploded raw lines (a prep item has no stock).
         $recipeIngredientIds = $recipesByProduct
             ->flatten(1)
             ->pluck('ingredient_id')
@@ -214,6 +231,8 @@ class BuildDeviceConfigAction
             ->orderBy('id')
             ->get()
             ->groupBy('add_on_id');
+        // LAUNCH-P3 — option lines naming a prep item explode too (one batched read).
+        $exploder->preload($consumptionByAddon->flatten(1)->pluck('ingredient_id')->filter()->all());
 
         // ---- Delivery providers + per-product price overrides (§6.3). The POS
         // shows the provider picker on a delivery order; each product's price
@@ -235,6 +254,18 @@ class BuildDeviceConfigAction
             Ingredient::query()->where('company_id', $companyId),
             $since
         )->get();
+        // LAUNCH-P3 — a prep item has no stock of its own, so it never reaches
+        // the device's ingredient list (restock picker, day-end count). One
+        // that became a prep item since the cursor is purged via
+        // deleted.ingredients. Read as an attribute: no P3 column, no prep.
+        $prepIngredientIds = $ingredients
+            ->filter(static fn (Ingredient $i): bool => (bool) ($i->is_prep ?? false))
+            ->map(static fn (Ingredient $i): int => (int) $i->id)
+            ->values()
+            ->all();
+        $ingredients = $ingredients
+            ->reject(static fn (Ingredient $i): bool => (bool) ($i->is_prep ?? false))
+            ->values();
 
         // ---- Branch stock ----
         $branchStock = $this->changed(
@@ -438,6 +469,7 @@ class BuildDeviceConfigAction
                 $g,
                 $addonsByGroup->get($g->id),
                 $consumptionByAddon,
+                $recipeCopy,
             ))->all(),
             'ingredients' => $ingredients->map(fn (Ingredient $i): array => $this->mapIngredient($i))->all(),
             'branch_stock' => $branchStock->map(fn (BranchStock $s): array => $this->mapBranchStock($s))->all(),
@@ -461,7 +493,7 @@ class BuildDeviceConfigAction
             'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
             'void_reasons' => $voidReasons->map(fn (VoidReason $r): array => $this->mapVoidReason($r))->all(),
             'comp_reasons' => $compReasons->map(fn (CompReason $r): array => $this->mapCompReason($r))->all(),
-            'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since),
+            'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since, $prepIngredientIds),
         ];
 
         return [
@@ -612,9 +644,10 @@ class BuildDeviceConfigAction
      * Empty in full mode.
      *
      * @param  array<int>  $branchFloorIds
+     * @param  list<int>  $prepIngredientIds  changed ingredients that are prep items (LAUNCH-P3)
      * @return array<string, array<int>>
      */
-    private function deletedMap(int $companyId, int $branchId, array $branchFloorIds, ?Carbon $since): array
+    private function deletedMap(int $companyId, int $branchId, array $branchFloorIds, ?Carbon $since, array $prepIngredientIds = []): array
     {
         $empty = [
             'floors' => [], 'tables' => [], 'categories' => [], 'products' => [],
@@ -673,7 +706,12 @@ class BuildDeviceConfigAction
             ))),
             'addon_groups' => $this->trashedIds(AddOnGroup::query()->where('company_id', $companyId), $since),
             'addons' => $this->trashedIds(AddOn::query()->where('company_id', $companyId), $since),
-            'ingredients' => $this->trashedIds(Ingredient::query()->where('company_id', $companyId), $since),
+            // LAUNCH-P3 — plus ingredients that became prep items since the
+            // cursor: they leave the device's ingredient list.
+            'ingredients' => array_values(array_unique(array_merge(
+                $this->trashedIds(Ingredient::query()->where('company_id', $companyId), $since),
+                $prepIngredientIds,
+            ))),
             'discounts' => $this->trashedIds(Discount::query()->where('company_id', $companyId), $since),
             'offers' => $this->trashedIds(Offer::query()->where('company_id', $companyId), $since),
             // P-G6 — portal-retracted announcements purge from devices.
@@ -891,7 +929,7 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * @param  Collection<int, \stdClass>|null  $recipeRows
+     * @param  list<array{ingredient_id: int, quantity: string, unit: string|null}>|null  $recipeRows  exploded raw lines (LAUNCH-P3)
      * @param  Collection<int, \stdClass>|null  $groupRows
      * @param  Collection<int|string, mixed>  $minThresholdByIngredient
      * @param  Collection<int|string, mixed>  $branchBalanceByIngredient
@@ -947,12 +985,14 @@ class BuildDeviceConfigAction
             'addon_group_ids' => $groupRows
                 ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all()
                 : [],
+            // LAUNCH-P3 — raw ingredient lines (prep items exploded), per ONE
+            // unit, in the ingredient's base unit: the same shape as before.
             'recipe' => $recipeRows
-                ? $recipeRows->map(fn ($r): array => [
-                    'ingredient_id' => (int) $r->ingredient_id,
-                    'quantity' => (float) $r->quantity,
-                    'unit' => $r->unit_at_set,
-                ])->values()->all()
+                ? array_map(static fn (array $line): array => [
+                    'ingredient_id' => $line['ingredient_id'],
+                    'quantity' => (float) $line['quantity'],
+                    'unit' => $line['unit'],
+                ], $recipeRows)
                 : [],
             // Per-branch unit stock for the device's branch: null = not
             // unit-tracked here (unlimited / recipe-depleted); a number = the
@@ -985,7 +1025,10 @@ class BuildDeviceConfigAction
      *                §5.5.3; mirrors the merchant dashboard low-stock count).
      *   untracked  → never.
      *
-     * @param  Collection<int, \stdClass>|null  $recipeRows
+     * LAUNCH-P3: the recipe lines are the exploded raw ones, so a dish made
+     * with a sauce warns when an ingredient of the sauce runs short.
+     *
+     * @param  list<array{ingredient_id: int, quantity: string, unit: string|null}>|null  $recipeRows
      * @param  Collection<int|string, mixed>|null  $minThresholdByIngredient
      * @param  Collection<int|string, mixed>|null  $branchBalanceByIngredient
      */
@@ -1004,12 +1047,12 @@ class BuildDeviceConfigAction
 
         if ($p->stock_mode === 'ingredient' && $recipeRows !== null) {
             foreach ($recipeRows as $line) {
-                $balance = (float) ($branchBalanceByIngredient?->get($line->ingredient_id) ?? 0);
+                $balance = (float) ($branchBalanceByIngredient?->get($line['ingredient_id']) ?? 0);
                 // Not enough for one portion: the recipe can make nothing.
-                if ((float) $line->quantity > 0 && $balance < (float) $line->quantity) {
+                if ((float) $line['quantity'] > 0 && $balance < (float) $line['quantity']) {
                     return true;
                 }
-                $threshold = $minThresholdByIngredient?->get($line->ingredient_id);
+                $threshold = $minThresholdByIngredient?->get($line['ingredient_id']);
                 if ($threshold !== null && $balance < (float) $threshold) {
                     return true;
                 }
@@ -1038,7 +1081,7 @@ class BuildDeviceConfigAction
      * @param  Collection<int|string, mixed>|null  $consumptionByAddon
      * @return array<string, mixed>
      */
-    private function mapAddOnGroup(AddOnGroup $g, $addons, $consumptionByAddon = null): array
+    private function mapAddOnGroup(AddOnGroup $g, $addons, $consumptionByAddon = null, ?RecipeCopy $recipeCopy = null): array
     {
         return [
             'id' => (int) $g->id,
@@ -1054,7 +1097,7 @@ class BuildDeviceConfigAction
             'display_order' => (int) $g->display_order,
             'status' => $g->status,
             'addons' => $addons
-                ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a, $consumptionByAddon?->get($a->id)))->values()->all()
+                ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a, $consumptionByAddon?->get($a->id), $recipeCopy))->values()->all()
                 : [],
         ];
     }
@@ -1063,7 +1106,7 @@ class BuildDeviceConfigAction
      * @param  Collection<int, mixed>|null  $consumptionLines
      * @return array<string, mixed>
      */
-    private function mapAddOn(AddOn $a, $consumptionLines = null): array
+    private function mapAddOn(AddOn $a, $consumptionLines = null, ?RecipeCopy $recipeCopy = null): array
     {
         return [
             'id' => (int) $a->id,
@@ -1083,15 +1126,16 @@ class BuildDeviceConfigAction
             // PD3b — the option's stock-usage lines (ingredient XOR product,
             // direction add|remove, qty per ONE parent line unit, ingredient
             // qty in the ingredient's BASE unit). The device gates option
-            // availability on the 'add' lines it can see.
-            'consumption' => $consumptionLines === null ? [] : $consumptionLines->map(static fn ($c): array => [
-                'type' => $c->ingredient_id !== null ? 'ingredient' : 'product',
-                'ingredient_id' => $c->ingredient_id !== null ? (int) $c->ingredient_id : null,
-                'product_id' => $c->component_product_id !== null ? (int) $c->component_product_id : null,
-                'direction' => (string) $c->direction,
-                'qty' => (float) $c->quantity,
-                'unit' => $c->unit,
-            ])->values()->all(),
+            // availability on the 'add' lines it can see. LAUNCH-P3: prep
+            // ingredient lines are exploded into raw ones (same shape).
+            'consumption' => $consumptionLines === null ? [] : array_map(static fn (array $c): array => [
+                'type' => $c['type'],
+                'ingredient_id' => $c['type'] === 'ingredient' ? $c['ingredient_id'] : null,
+                'product_id' => $c['type'] === 'product' ? $c['product_id'] : null,
+                'direction' => $c['direction'],
+                'qty' => $c['qty'],
+                'unit' => $c['type'] === 'ingredient' ? $c['unit'] : null,
+            ], ($recipeCopy ?? new RecipeCopy((int) $a->company_id))->consumptionLines($consumptionLines)),
             'display_order' => (int) $a->display_order,
             'status' => $a->status,
         ];

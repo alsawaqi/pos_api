@@ -41,8 +41,10 @@ class LaunchP2StockTest extends TestCase
     private function seedCatalogue(): void
     {
         $t = ['created_at' => now(), 'updated_at' => now()];
+        // LAUNCH-P3 P3-7: a recipe product is made-to-order; an untracked
+        // product never deducts a leftover recipe.
         DB::table('pos_products')->insert([
-            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Saffron bun', 'base_price' => 1.500, 'status' => 'active'] + $t,
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Saffron bun', 'base_price' => 1.500, 'status' => 'active', 'stock_mode' => 'ingredient'] + $t,
         ]);
         DB::table('pos_ingredients')->insert([
             ['id' => self::SAFFRON, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Saffron', 'unit' => 'kg', 'default_unit_cost' => '1200.000', 'status' => 'active'] + $t,

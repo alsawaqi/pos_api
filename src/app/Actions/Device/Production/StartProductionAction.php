@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
 use App\Models\StockMovement;
+use App\Support\Recipes\PrepExploder;
 use App\Support\StockDecimal;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -101,9 +102,40 @@ final readonly class StartProductionAction
             $extraByIngredient[$ingredientId] = ($extraByIngredient[$ingredientId] ?? 0.0) + $extraQty;
         }
 
-        $ingredientIds = array_values(array_unique(array_merge(
-            $recipeRows->pluck('ingredient_id')->map(fn ($id): int => (int) $id)->all(),
+        // The extras the device named must be this company's (a prep item
+        // included) before anything is exploded.
+        $named = Ingredient::query()
+            ->where('company_id', $companyId)
+            ->whereIn('id', array_keys($extraByIngredient) ?: [0])
+            ->pluck('id')
+            ->map(fn ($id): int => (int) $id)
+            ->all();
+        if (array_diff(array_keys($extraByIngredient), $named) !== []) {
+            throw new RuntimeException('Unknown ingredient.');
+        }
+
+        // LAUNCH-P3 P3-4 — prep items (in the recipe or declared as extras)
+        // explode into their raw ingredients: the batch deducts those, exact
+        // until the end (recipe x pieces, then 4 decimals), and a prep item
+        // never gets a stock row. Std and extra lines stay apart.
+        $exploder = new PrepExploder($companyId);
+        $stdLines = $exploder->explode($recipeRows->map(static fn (object $row): array => [
+            'ingredient_id' => (int) $row->ingredient_id,
+            'quantity' => $row->quantity,
+            'unit' => $row->unit_at_set,
+        ])->all(), $quantity);
+        $extraLines = $exploder->explode(array_map(
+            static fn (int $ingredientId, float $extraQty): array => [
+                'ingredient_id' => $ingredientId,
+                'quantity' => StockDecimal::exact($extraQty),
+            ],
             array_keys($extraByIngredient),
+            array_values($extraByIngredient),
+        ));
+
+        $ingredientIds = array_values(array_unique(array_merge(
+            array_column($stdLines, 'ingredient_id'),
+            array_column($extraLines, 'ingredient_id'),
         )));
 
         $ingredients = Ingredient::query()
@@ -118,15 +150,11 @@ final readonly class StartProductionAction
             }
         }
 
-        return DB::transaction(function () use ($device, $product, $quantity, $staffId, $recipeRows, $extraByIngredient, $ingredientIds, $ingredients, $companyId, $branchId): array {
+        return DB::transaction(function () use ($device, $product, $quantity, $staffId, $stdLines, $extraLines, $ingredientIds, $ingredients, $companyId, $branchId): array {
             // Total needed per ingredient (std + extra) for the coverage check.
             $needed = [];
-            foreach ($recipeRows as $line) {
-                $needed[(int) $line->ingredient_id] = ($needed[(int) $line->ingredient_id] ?? 0.0)
-                    + ((float) $line->quantity * $quantity);
-            }
-            foreach ($extraByIngredient as $ingredientId => $extraQty) {
-                $needed[$ingredientId] = ($needed[$ingredientId] ?? 0.0) + $extraQty;
+            foreach ([...$stdLines, ...$extraLines] as $line) {
+                $needed[$line['ingredient_id']] = ($needed[$line['ingredient_id']] ?? 0.0) + (float) $line['quantity'];
             }
 
             // Lock the balance rows in a deterministic order and read the
@@ -204,16 +232,12 @@ final readonly class StartProductionAction
                 $stock->save();
             };
 
-            foreach ($recipeRows as $line) {
-                $consume(
-                    (int) $line->ingredient_id,
-                    (float) $line->quantity * $quantity,
-                    false,
-                    (string) $line->unit_at_set,
-                );
+            foreach ($stdLines as $line) {
+                $consume($line['ingredient_id'], (float) $line['quantity'], false, $line['unit']);
             }
-            foreach ($extraByIngredient as $ingredientId => $extraQty) {
-                $consume($ingredientId, $extraQty, true, null);
+            foreach ($extraLines as $line) {
+                // An extra keeps the ingredient's own unit, as before.
+                $consume($line['ingredient_id'], (float) $line['quantity'], true, null);
             }
 
             return ['production' => $production, 'shortfalls' => $shortfalls];

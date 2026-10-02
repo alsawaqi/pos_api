@@ -9,6 +9,7 @@ use App\Models\Ingredient;
 use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
+use App\Support\Recipes\PrepExploder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -88,24 +89,32 @@ class DeviceKitchenController
             ->where('branch_id', $branchId)
             ->pluck('quantity', 'ingredient_id');
 
-        $ingredientName = $ingredients->keyBy('id');
+        // LAUNCH-P3 P3-4 — a batch deducts the raw ingredients behind a prep
+        // item, so the screen lists those (per piece), and "can make up to N"
+        // is computed over them; a prep item has no balance of its own.
+        $exploder = new PrepExploder($companyId);
+        $exploder->preload($recipesByProduct->flatten(1)->pluck('ingredient_id')->all());
 
-        $mapProduct = function (Product $p) use ($recipesByProduct, $branchRows, $branchId, $balances, $ingredientName): array {
-            $recipeRows = $recipesByProduct->get($p->id) ?? collect();
+        $mapProduct = function (Product $p) use ($recipesByProduct, $branchRows, $branchId, $balances, $exploder): array {
+            $recipeRows = $exploder->explode(($recipesByProduct->get($p->id) ?? collect())->map(static fn (object $r): array => [
+                'ingredient_id' => (int) $r->ingredient_id,
+                'quantity' => $r->quantity,
+                'unit' => $r->unit_at_set,
+            ])->all());
 
             $max = null;
             $recipe = [];
             foreach ($recipeRows as $r) {
-                $perPiece = (float) $r->quantity;
-                $balance = (float) ($balances[$r->ingredient_id] ?? 0);
-                $ingredient = $ingredientName->get((int) $r->ingredient_id);
+                $perPiece = (float) $r['quantity'];
+                $balance = (float) ($balances[$r['ingredient_id']] ?? 0);
+                $ingredient = $exploder->ingredient($r['ingredient_id']);
 
                 $recipe[] = [
-                    'ingredient_id' => (int) $r->ingredient_id,
-                    'name' => $ingredient?->name ?? ('#'.$r->ingredient_id),
+                    'ingredient_id' => $r['ingredient_id'],
+                    'name' => $ingredient?->name ?? ('#'.$r['ingredient_id']),
                     'name_ar' => $ingredient?->name_ar,
                     'quantity' => $perPiece,
-                    'unit' => $r->unit_at_set,
+                    'unit' => $r['unit'],
                     'branch_balance' => $balance,
                 ];
 
@@ -147,12 +156,16 @@ class DeviceKitchenController
         return response()->json([
             'data' => [
                 'products' => $products->map($mapProduct)->all(),
+                // The extras picker. A prep item may be declared as an extra
+                // (the batch then deducts its raw ingredients); it has no
+                // balance of its own. is_prep is additive: older apps ignore it.
                 'ingredients' => $ingredients->map(fn (Ingredient $i): array => [
                     'id' => (int) $i->id,
                     'name' => $i->name,
                     'name_ar' => $i->name_ar,
                     'unit' => $i->unit,
                     'branch_balance' => (float) ($balances[$i->id] ?? 0),
+                    'is_prep' => (bool) ($i->is_prep ?? false),
                 ])->all(),
                 'active' => $active->map(fn (Production $p): array => $this->mapProduction($p))->all(),
             ],

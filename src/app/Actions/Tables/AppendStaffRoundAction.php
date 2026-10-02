@@ -18,6 +18,7 @@ use App\Models\QrSession;
 use App\Models\TableSession;
 use App\Support\Money;
 use App\Support\Pricing\Totals;
+use App\Support\Recipes\RecipeInForce;
 use Carbon\CarbonInterface;
 use DateTimeImmutable;
 use Illuminate\Support\Carbon;
@@ -111,6 +112,10 @@ final class AppendStaffRoundAction
                     ], $requestedLines, array_keys($requestedLines));
                 }
             }
+            // LAUNCH-P3 P3-6 — a staff round may have been queued offline: its
+            // lines copy the recipe in force when it was taken on the device
+            // (the client moment clamped to now), even if confirmed later.
+            $recipeAt = RecipeInForce::saleMoment($clientAt, $now);
             $merged = $row->status === TableSession::STATUS_MERGED && $row->close_reason === TableSession::CLOSE_MERGED;
             $needsReview = $merged || $held !== [];
             $reviewReasons = array_merge($merged ? ['merged'] : [], $held !== [] ? ['catalogue'] : []);
@@ -166,7 +171,7 @@ final class AppendStaffRoundAction
                 'needs_review' => $needsReview,
                 'kitchen_printed_at' => $printedAt,
                 'priced_lines' => $this->storedLines((int) $device->company_id, $requestedLines, $held, $loaded === null ? [] : $this->freeze->handle($loaded, $price)),
-                'confirm_payload' => $needsReview && $loaded !== null ? $this->append->buildPayload($pricingContext, $loaded, $price, $now) : null,
+                'confirm_payload' => $needsReview && $loaded !== null ? $this->append->buildPayload($pricingContext, $loaded, $price, $now, $recipeAt) : null,
                 'subtotal_baisas' => $price?->rawSubtotalBaisas ?? 0,
                 'tax_baisas' => $price?->taxTotalBaisas ?? 0,
                 'total_baisas' => $price?->grandTotalBaisas ?? 0,
@@ -176,7 +181,7 @@ final class AppendStaffRoundAction
                 'accepted_seq' => null,
             ]);
             if (! $needsReview) {
-                $itemIds = $this->append->handle($order, $pricingContext, $loaded, $price, $now);
+                $itemIds = $this->append->handle($order, $pricingContext, $loaded, $price, $now, $recipeAt);
                 $lines = $round->priced_lines;
                 $pricedIndex = 0;
                 foreach ($lines as &$line) {

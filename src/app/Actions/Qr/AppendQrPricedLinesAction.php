@@ -21,17 +21,22 @@ final class AppendQrPricedLinesAction
 {
     public function __construct(private readonly OrderLineSnapshotter $snapshots) {}
 
-    /** @return array<int, int> */
+    /**
+     * @param  CarbonInterface|null  $recipeAt  LAUNCH-P3 P3-6: a device staff
+     *                                          round's sale moment; null = live
+     * @return array<int, int>
+     */
     public function handle(
         Order $order,
         QrSession $session,
         QrPricingLoadResult $loaded,
         PriceResult $price,
         CarbonInterface $appliedAt,
+        ?CarbonInterface $recipeAt = null,
     ): array {
         $itemIds = [];
         foreach ($loaded->resolvedLines as $index => $resolved) {
-            $productSnapshots = $this->snapshots->product($resolved->product);
+            $productSnapshots = $this->snapshots->product($resolved->product, $recipeAt);
             $item = OrderItem::query()->create([
                 'order_id' => $order->id,
                 'product_id' => $resolved->product->id,
@@ -51,6 +56,7 @@ final class AppendQrPricedLinesAction
                 $addonSnapshots = $this->snapshots->addon(
                     $resolvedAddon->addon,
                     (int) $session->company_id,
+                    $recipeAt,
                 );
                 OrderItemAddon::query()->create([
                     'order_item_id' => $item->id,
@@ -70,6 +76,8 @@ final class AppendQrPricedLinesAction
      * Freeze every private child-row field needed to append this priced round
      * later without resolving catalogue, inventory, discounts, or offers again.
      *
+     * @param  CarbonInterface|null  $recipeAt  LAUNCH-P3 P3-6: a device staff
+     *                                          round's sale moment; null = live
      * @return array{
      *   version: 1,
      *   items: list<array{attributes: array<string, mixed>, addons: list<array<string, mixed>>}>,
@@ -81,10 +89,11 @@ final class AppendQrPricedLinesAction
         QrPricingLoadResult $loaded,
         PriceResult $price,
         CarbonInterface $appliedAt,
+        ?CarbonInterface $recipeAt = null,
     ): array {
         $items = [];
         foreach ($loaded->resolvedLines as $index => $resolved) {
-            $productSnapshots = $this->snapshots->product($resolved->product);
+            $productSnapshots = $this->snapshots->product($resolved->product, $recipeAt);
             $addons = [];
             foreach ($resolved->addons as $resolvedAddon) {
                 $addons[] = [
@@ -94,6 +103,7 @@ final class AppendQrPricedLinesAction
                 ] + $this->snapshots->addon(
                     $resolvedAddon->addon,
                     (int) $session->company_id,
+                    $recipeAt,
                 );
             }
 

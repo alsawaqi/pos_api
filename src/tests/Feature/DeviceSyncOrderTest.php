@@ -51,8 +51,10 @@ class DeviceSyncOrderTest extends TestCase
         $t = ['created_at' => now(), 'updated_at' => now()];
         DB::table('pos_floors')->insertOrIgnore(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Main', 'status' => 'active'] + $t);
 
+        // LAUNCH-P3 P3-7: a recipe product is made-to-order; an untracked
+        // product never deducts a leftover recipe.
         DB::table('pos_products')->insert([
-            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Latte', 'base_price' => 1.500, 'status' => 'active'] + $t,
+            ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Latte', 'base_price' => 1.500, 'status' => 'active', 'stock_mode' => 'ingredient'] + $t,
         ]);
         DB::table('pos_ingredients')->insert([
             ['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Milk', 'unit' => 'l', 'default_unit_cost' => 0.400, 'status' => 'active'] + $t,

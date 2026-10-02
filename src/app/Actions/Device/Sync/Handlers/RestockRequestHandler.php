@@ -54,12 +54,21 @@ class RestockRequestHandler implements SyncEventHandler
             ]);
 
             $sort = 0;
+            $skippedPrep = [];
             foreach ($payload['lines'] as $line) {
                 $ingredient = Ingredient::query()
                     ->where('company_id', $device->company_id)
                     ->find((int) $line['ingredient_id']);
                 if ($ingredient === null) {
                     throw new RuntimeException('unknown ingredient in restock.request: '.$line['ingredient_id']);
+                }
+                // LAUNCH-P3 — a prep item is made from its raw ingredients and
+                // is never stocked, so it cannot be restocked: a line from a
+                // stale device list is skipped (the raw ones are requested).
+                if ((bool) ($ingredient->is_prep ?? false)) {
+                    $skippedPrep[] = (int) $ingredient->id;
+
+                    continue;
                 }
 
                 RestockRequestLine::create([
@@ -71,8 +80,13 @@ class RestockRequestHandler implements SyncEventHandler
                     'sort_order' => $sort++,
                 ]);
             }
+            if ($sort === 0) {
+                // Rolls the header back: nothing here can be restocked.
+                throw new RuntimeException('restock.request names only prep items, which are never stocked');
+            }
 
-            return ['restock_request_id' => (int) $request->id, 'status' => 'submitted', 'lines' => count($payload['lines'])];
+            return ['restock_request_id' => (int) $request->id, 'status' => 'submitted', 'lines' => $sort]
+                + ($skippedPrep === [] ? [] : ['skipped_prep_ingredient_ids' => $skippedPrep]);
         });
     }
 }

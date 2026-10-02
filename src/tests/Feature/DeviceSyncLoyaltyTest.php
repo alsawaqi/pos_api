@@ -62,7 +62,9 @@ class DeviceSyncLoyaltyTest extends TestCase
     {
         $t = ['created_at' => now(), 'updated_at' => now()];
 
-        DB::table('pos_products')->where('id', 1)->update(['base_price' => 8.000]);
+        // LAUNCH-P3 P3-7: the recipe product is made-to-order (an untracked
+        // product never deducts a leftover recipe).
+        DB::table('pos_products')->where('id', 1)->update(['base_price' => 8.000, 'stock_mode' => 'ingredient']);
         DB::table('pos_ingredients')->insert([
             'id' => 1,
             'uuid' => (string) Str::uuid(),

@@ -81,12 +81,21 @@ class StockCountHandler implements SyncEventHandler
         // Resolve + convert every line BEFORE writing anything, so a
         // bad line fails the whole event (atomic, like the merchant flow).
         $resolved = [];
+        $skippedPrep = [];
         foreach ($payload['lines'] as $line) {
             $ingredient = Ingredient::query()
                 ->where('company_id', $device->company_id)
                 ->find((int) $line['ingredient_id']);
             if ($ingredient === null) {
                 throw new RuntimeException('unknown ingredient in stock.count: '.$line['ingredient_id']);
+            }
+            // LAUNCH-P3 — a prep item has no stock of its own (its raw
+            // ingredients are counted). The device list leaves prep items
+            // out; a line from a stale list is skipped, never booked.
+            if ((bool) ($ingredient->is_prep ?? false)) {
+                $skippedPrep[] = (int) $ingredient->id;
+
+                continue;
             }
 
             $countedPieces = isset($line['counted_pieces']) && $line['counted_pieces'] !== null
@@ -118,8 +127,11 @@ class StockCountHandler implements SyncEventHandler
                 'counted_units' => round((float) $countedUnits, StockDecimal::QUANTITY_SCALE),
             ];
         }
+        if ($resolved === []) {
+            throw new RuntimeException('stock.count names only prep items, which have no stock of their own');
+        }
 
-        return DB::transaction(function () use ($resolved, $device, $staffId, $note, $countedAt): array {
+        return DB::transaction(function () use ($resolved, $device, $staffId, $note, $countedAt, $skippedPrep): array {
             $count = StockCount::create([
                 'uuid' => (string) Str::uuid(),
                 'company_id' => $device->company_id,
@@ -209,7 +221,7 @@ class StockCountHandler implements SyncEventHandler
                 'stock_count_id' => (int) $count->id,
                 'lines' => count($resolved),
                 'lines_with_variance' => $linesWithVariance,
-            ];
+            ] + ($skippedPrep === [] ? [] : ['skipped_prep_ingredient_ids' => $skippedPrep]);
         });
     }
 

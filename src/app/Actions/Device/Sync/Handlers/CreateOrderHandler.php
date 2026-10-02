@@ -13,7 +13,6 @@ use App\Models\CompReason;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Discount;
-use App\Models\Ingredient;
 use App\Models\Offer;
 use App\Models\Order;
 use App\Models\OrderComp;
@@ -27,6 +26,8 @@ use App\Models\Table;
 use App\Models\TableSession;
 use App\Support\CustomerIdentity;
 use App\Support\Money;
+use App\Support\Recipes\RecipeCopy;
+use App\Support\Recipes\RecipeInForce;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -40,9 +41,15 @@ use RuntimeException;
  * (subtotal/discount/tax/totals, per-line prices) is trusted and frozen
  * as-is — this handler validates the invariant but does NOT re-run discount
  * evaluation. It DOES own the recipe snapshot (§9.9): each line freezes the
- * product's current recipe so the pay-time stock deduction is immune to
- * later recipe edits. Wire money is integer baisas → decimal OMR via
+ * product's recipe so the pay-time stock deduction is immune to later
+ * recipe edits. Wire money is integer baisas → decimal OMR via
  * {@see Money}.
+ *
+ * LAUNCH-P3 — the recipe copied is the one in force at the device's sale
+ * time (P3-6: the event's client timestamp, clamped to now), prep items are
+ * exploded into raw ingredients (P3-4) and only a made-to-order product
+ * copies a recipe (P3-7); see {@see RecipeCopy}. A re-sent open order keeps
+ * the copies its unchanged lines already had ({@see keptLineCopies()}).
  */
 class CreateOrderHandler implements SyncEventHandler
 {
@@ -180,6 +187,11 @@ class CreateOrderHandler implements SyncEventHandler
                 'receipt_number' => $this->receiptNumber($order),
             ];
 
+            // LAUNCH-P3 P3-6 — recipes are copied as they were at the device's
+            // sale time: this event's client timestamp, clamped to now.
+            $copy = new RecipeCopy((int) $device->company_id, RecipeInForce::saleMoment($event->client_timestamp));
+            $keptCopies = [];
+
             if ($existing !== null) {
                 if ($existing->qr_session_id !== null) {
                     // QR-001 P2 — a till finalising a held QR order re-emits
@@ -195,6 +207,8 @@ class CreateOrderHandler implements SyncEventHandler
                     }
                 }
 
+                // Read before the purge: unchanged lines keep these copies.
+                $keptCopies = $this->keptLineCopies($existing);
                 $this->purgeOrderChildren($existing);
                 $existing->update($columns);
                 $model = $existing;
@@ -214,6 +228,11 @@ class CreateOrderHandler implements SyncEventHandler
                 // in a device's offline outbox.
                 $product = Product::withTrashed()->where('company_id', $device->company_id)->find($productId);
 
+                // LAUNCH-P3 P3-6 — a re-sent open order keeps the copy a line
+                // already had unless the line changed (another product, qty
+                // or add-on set); a new or changed line copies at this sale.
+                $kept = $this->takeKeptLineCopy($keptCopies, $line);
+
                 $item = OrderItem::create([
                     'order_id' => $model->id,
                     'product_id' => $productId,
@@ -222,8 +241,8 @@ class CreateOrderHandler implements SyncEventHandler
                     'unit_price_snapshot' => Money::toOmr((int) $line['unit_price_baisas']),
                     'line_discount' => Money::toOmr((int) ($line['line_discount_baisas'] ?? 0)),
                     'line_total' => Money::toOmr((int) $line['line_total_baisas']),
-                    'recipe_snapshot_json' => $this->snapshotRecipe($productId, $product),
-                    'component_snapshot_json' => $this->snapshotComponents($productId),
+                    'recipe_snapshot_json' => $kept !== null ? $kept['recipe'] : $copy->productRecipe($product),
+                    'component_snapshot_json' => $kept !== null ? $kept['components'] : $this->snapshotComponents($productId),
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $line['notes'] ?? null,
                 ]);
@@ -232,21 +251,29 @@ class CreateOrderHandler implements SyncEventHandler
                 foreach ($line['addons'] ?? [] as $addon) {
                     $addOnId = (int) $addon['add_on_id'];
                     $addOn = AddOn::withTrashed()->where('company_id', $device->company_id)->find($addOnId);
+                    $keptAddon = $kept !== null && ($kept['addons'][$addOnId] ?? []) !== []
+                        ? array_shift($kept['addons'][$addOnId])
+                        : null;
                     // PD3b — per-option stock-usage lines, frozen at create.
                     // When present they SUPERSEDE the legacy single-ingredient
                     // trio for this addon (never both — no double-count).
-                    $consumption = $this->snapshotAddonConsumption($addOn);
+                    $stockUse = $keptAddon ?? ($addOn !== null
+                        ? $copy->addonStockUse($addOn) + [
+                            // P-G3 — product-as-add-on freeze: id for reporting,
+                            // snapshot for consumption by the product's type.
+                            'linked_product_id' => $addOn->linked_product_id !== null ? (int) $addOn->linked_product_id : null,
+                            'product_snapshot_json' => $this->snapshotAddonProduct($addOn, $device->company_id, $copy),
+                        ]
+                        : ['ingredient_snapshot_json' => null, 'consumption_snapshot_json' => null, 'linked_product_id' => null, 'product_snapshot_json' => null]);
                     OrderItemAddon::create([
                         'order_item_id' => $item->id,
                         'add_on_id' => $addOnId,
                         'add_on_name_snapshot' => $addOn?->name ?? ('#'.$addOnId),
                         'price_delta_snapshot' => Money::toOmr((int) ($addon['price_delta_baisas'] ?? 0)),
-                        'ingredient_snapshot_json' => $consumption === null ? $this->snapshotAddonIngredient($addOn) : null,
-                        // P-G3 — product-as-add-on freeze: id for reporting,
-                        // snapshot for consumption by the product's type.
-                        'linked_product_id' => $addOn?->linked_product_id !== null ? (int) $addOn->linked_product_id : null,
-                        'product_snapshot_json' => $this->snapshotAddonProduct($addOn, $device->company_id),
-                        'consumption_snapshot_json' => $consumption,
+                        'ingredient_snapshot_json' => $stockUse['ingredient_snapshot_json'],
+                        'linked_product_id' => $stockUse['linked_product_id'],
+                        'product_snapshot_json' => $stockUse['product_snapshot_json'],
+                        'consumption_snapshot_json' => $stockUse['consumption_snapshot_json'],
                     ]);
                 }
             }
@@ -729,47 +756,73 @@ class CreateOrderHandler implements SyncEventHandler
     }
 
     /**
-     * The product's current recipe, frozen for COGS + stock deduction.
+     * LAUNCH-P3 P3-6 — the frozen inventory copies of an order being
+     * re-written (re-hold, finalize, transfer), keyed by line identity
+     * ({@see lineKey()}): the recipe and component copies, and each add-on's
+     * stock-use copies. Read before the purge; a re-sent line that matches
+     * takes one ({@see takeKeptLineCopy()}), so an unchanged line keeps the
+     * recipe it was sold with even after a later recipe edit.
      *
-     * P-G1: cooked products consume their recipe at PRODUCTION (the kitchen
-     * batch already deducted the ingredients when it started); at sale only
-     * the branch shelf count moves. Freezing NO recipe here keeps pay/void
-     * from double-consuming the ingredients.
-     *
-     * PD2: unit (ready / bought-in) products are PURCHASED, never made — their
-     * cost reaches net profit through the stock-purchase expense booked at
-     * receive, and only the shelf count moves at sale. A stale recipe left
-     * over from a made-to-order past must not freeze here: it would consume
-     * ingredients that were never used AND double-count the goods' cost
-     * (recipe COGS at sale + the purchase expense).
-     *
-     * @return list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null
+     * @return array<string, list<array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}>>
      */
-    private function snapshotRecipe(int $productId, ?Product $product): ?array
+    private function keptLineCopies(Order $order): array
     {
-        if ($product?->stock_mode === 'cooked' || $product?->stock_mode === 'unit') {
-            return null;
+        $copies = [];
+        $items = OrderItem::query()->where('order_id', $order->id)->with('addons')->orderBy('id')->get();
+        foreach ($items as $item) {
+            $addons = [];
+            foreach ($item->addons->sortBy('id') as $addon) {
+                $addons[(int) $addon->add_on_id][] = [
+                    'ingredient_snapshot_json' => $addon->ingredient_snapshot_json,
+                    'linked_product_id' => $addon->linked_product_id !== null ? (int) $addon->linked_product_id : null,
+                    'product_snapshot_json' => $addon->product_snapshot_json,
+                    'consumption_snapshot_json' => $addon->consumption_snapshot_json,
+                ];
+            }
+
+            $key = $this->lineKey((int) $item->product_id, $item->qty, $item->addons->pluck('add_on_id')->all());
+            $copies[$key][] = [
+                'recipe' => $item->recipe_snapshot_json,
+                'components' => $item->component_snapshot_json,
+                'addons' => $addons,
+            ];
         }
 
-        $rows = DB::table('pos_product_recipes')
-            ->where('product_id', $productId)
-            ->orderBy('sort_order')
-            ->get();
+        return $copies;
+    }
 
-        if ($rows->isEmpty()) {
-            return null;
-        }
+    /**
+     * The kept copy for this incoming line (first unused match), or null when
+     * the line is new or changed.
+     *
+     * @param  array<string, list<array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}>>  $kept
+     * @param  array<string, mixed>  $line
+     * @return array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}|null
+     */
+    private function takeKeptLineCopy(array &$kept, array $line): ?array
+    {
+        $key = $this->lineKey(
+            (int) $line['product_id'],
+            $line['qty'],
+            array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $line['addons'] ?? []),
+        );
 
-        $costs = Ingredient::query()
-            ->whereIn('id', $rows->pluck('ingredient_id')->all())
-            ->pluck('default_unit_cost', 'id');
+        return ($kept[$key] ?? []) !== [] ? array_shift($kept[$key]) : null;
+    }
 
-        return $rows->map(fn ($r): array => [
-            'ingredient_id' => (int) $r->ingredient_id,
-            'qty' => (float) $r->quantity,
-            'unit' => $r->unit_at_set,
-            'unit_cost' => (float) ($costs[$r->ingredient_id] ?? 0),
-        ])->all();
+    /**
+     * A line's identity for the re-send rule: what its stock use depends on —
+     * the product, the quantity and the add-on set. Price, discount and note
+     * edits leave the line "unchanged".
+     *
+     * @param  list<int|string>  $addOnIds
+     */
+    private function lineKey(int $productId, mixed $qty, array $addOnIds): string
+    {
+        $ids = array_map('intval', $addOnIds);
+        sort($ids);
+
+        return $productId.'|'.number_format((float) $qty, 3, '.', '').'|'.implode(',', $ids);
     }
 
     /**
@@ -801,13 +854,14 @@ class CreateOrderHandler implements SyncEventHandler
      * frozen stock_mode — cooked/unit: branch shelf -1 per parent unit;
      * ingredient (made-to-order): the frozen recipe; untracked: nothing.
      * Cooked deliberately freezes NO recipe (production already consumed
-     * the ingredients — the same rule as snapshotRecipe).
+     * the ingredients — the same rule as the line's own recipe copy, which
+     * also explodes prep items and reads the recipe at the sale moment).
      *
-     * @return array{product_id: int, stock_mode: string, recipe: list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null}|null
+     * @return array{product_id: int, stock_mode: string, recipe: list<array{ingredient_id: int, qty: float, unit: string|null, unit_cost: float}>|null}|null
      */
-    private function snapshotAddonProduct(?AddOn $addOn, int|string|null $companyId): ?array
+    private function snapshotAddonProduct(AddOn $addOn, int|string|null $companyId, RecipeCopy $copy): ?array
     {
-        if ($addOn === null || $addOn->linked_product_id === null) {
+        if ($addOn->linked_product_id === null) {
             return null;
         }
 
@@ -821,9 +875,7 @@ class CreateOrderHandler implements SyncEventHandler
         return [
             'product_id' => (int) $product->id,
             'stock_mode' => (string) $product->stock_mode,
-            'recipe' => $product->stock_mode === 'ingredient'
-                ? $this->snapshotRecipe((int) $product->id, $product)
-                : null,
+            'recipe' => $copy->productRecipe($product),
             // PD3b — the linked product's OWN components (its packaging:
             // a side-fries product's box) now ride the freeze and leave
             // branch stock at pay. Frozen, unlike the parent line's live
@@ -836,76 +888,6 @@ class CreateOrderHandler implements SyncEventHandler
                     'qty' => (float) $c->quantity,
                 ])
                 ->all() ?: null,
-        ];
-    }
-
-    /**
-     * PD3b — freeze an option's stock-usage lines at create time. Each line
-     * is ingredient XOR product, direction add|remove, quantity per ONE
-     * parent line unit (ingredient quantities already in the ingredient's
-     * BASE unit — the portal converts at entry). Ingredient lines freeze
-     * the live default_unit_cost like recipe lines do. NULL when the option
-     * has no lines (legacy options keep the trio path).
-     *
-     * @return list<array{type: string, ingredient_id?: int, product_id?: int, direction: string, qty: float, unit?: string|null, unit_cost?: float}>|null
-     */
-    private function snapshotAddonConsumption(?AddOn $addOn): ?array
-    {
-        if ($addOn === null) {
-            return null;
-        }
-
-        $rows = DB::table('pos_addon_consumptions')
-            ->where('add_on_id', (int) $addOn->id)
-            ->orderBy('display_order')
-            ->orderBy('id')
-            ->get();
-        if ($rows->isEmpty()) {
-            return null;
-        }
-
-        $ingredientIds = $rows->pluck('ingredient_id')->filter()->all();
-        $costs = $ingredientIds === []
-            ? collect()
-            : Ingredient::query()->whereIn('id', $ingredientIds)->pluck('default_unit_cost', 'id');
-
-        return $rows->map(static function ($row) use ($costs): array {
-            if ($row->ingredient_id !== null) {
-                return [
-                    'type' => 'ingredient',
-                    'ingredient_id' => (int) $row->ingredient_id,
-                    'direction' => (string) $row->direction,
-                    'qty' => (float) $row->quantity,
-                    'unit' => $row->unit,
-                    'unit_cost' => (float) ($costs[$row->ingredient_id] ?? 0),
-                ];
-            }
-
-            return [
-                'type' => 'product',
-                'product_id' => (int) $row->component_product_id,
-                'direction' => (string) $row->direction,
-                'qty' => (float) $row->quantity,
-            ];
-        })->all();
-    }
-
-    /**
-     * @return array{ingredient_id: int, qty: float, unit: string|null, unit_cost: float}|null
-     */
-    private function snapshotAddonIngredient(?AddOn $addOn): ?array
-    {
-        if ($addOn === null || $addOn->ingredient_id === null) {
-            return null;
-        }
-
-        $cost = Ingredient::query()->whereKey($addOn->ingredient_id)->value('default_unit_cost');
-
-        return [
-            'ingredient_id' => (int) $addOn->ingredient_id,
-            'qty' => (float) $addOn->ingredient_qty,
-            'unit' => $addOn->ingredient_unit,
-            'unit_cost' => (float) ($cost ?? 0),
         ];
     }
 }

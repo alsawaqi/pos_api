@@ -10,6 +10,10 @@ use App\Models\PosStaff;
 use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductStockMovement;
+use App\Models\StockMovement;
+use App\Support\StockDecimal;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -23,6 +27,12 @@ use RuntimeException;
  * 0, the merchant WriteProductStockMovementAction convention) plus a
  * signed 'produced' row in the PRODUCT ledger so the batch shows up in
  * the merchant Stock dialog history.
+ *
+ * LAUNCH-P3 P3-5 — the 'produced' row carries the batch's cost per piece
+ * (unit_cost, 6 decimals): what the ingredients consumed at start cost,
+ * extras included — Σ |quantity| × unit_cost_at_time of the batch's
+ * production_consumption movements — divided by the pieces. The portal's
+ * cost of goods for a cooked product reads it.
  *
  * The caller broadcasts after commit so every till's tile un-greys via
  * the live config-delta refresh (stock 0 -> N wakes the product up).
@@ -91,6 +101,7 @@ final readonly class FinishProductionAction
                 'branch_id' => $branchId,
                 'movement_type' => ProductStockMovement::TYPE_PRODUCED,
                 'quantity' => number_format($qty, 3, '.', ''),
+                'unit_cost' => $this->costPerPiece($production),
                 'reference_type' => 'pos_productions',
                 'reference_id' => (int) $production->id,
                 'recorded_by_pos_staff_id' => $staffId,
@@ -124,5 +135,34 @@ final readonly class FinishProductionAction
 
             return $production->refresh();
         });
+    }
+
+    /**
+     * LAUNCH-P3 P3-5 — the batch cost per piece, 6 decimals: the ingredients
+     * consumed at start (std + extras, at the cost each left with) ÷ pieces.
+     * Exact until the final rounding.
+     */
+    private function costPerPiece(Production $production): string
+    {
+        $total = BigDecimal::zero();
+        $consumed = StockMovement::query()
+            ->where('reference_type', 'pos_productions')
+            ->where('reference_id', (int) $production->id)
+            ->where('movement_type', StockMovement::TYPE_PRODUCTION_CONSUMPTION)
+            ->toBase()
+            ->get(['quantity', 'unit_cost_at_time']);
+        foreach ($consumed as $movement) {
+            $total = $total->plus(
+                BigDecimal::of(StockDecimal::exact($movement->quantity))->abs()
+                    ->multipliedBy(StockDecimal::exact($movement->unit_cost_at_time)),
+            );
+        }
+
+        $pieces = BigDecimal::of(StockDecimal::exact($production->quantity));
+        if ($pieces->isNegativeOrZero()) {
+            return (string) StockDecimal::unitCost(0);
+        }
+
+        return (string) StockDecimal::unitCost((string) $total->dividedBy($pieces, StockDecimal::UNIT_COST_SCALE, RoundingMode::HALF_UP));
     }
 }

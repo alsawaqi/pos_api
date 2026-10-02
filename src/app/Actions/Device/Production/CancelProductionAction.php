@@ -23,7 +23,8 @@ use RuntimeException;
  * exact gate the comp/void flows use); the approver is recorded on the
  * batch. Every production line (std + extra) returns to the branch shelf:
  * one signed positive 'production_return' pos_stock_movements row per line
- * + the pos_branch_stock balance move, atomically.
+ * + the pos_branch_stock balance move, atomically — at the unit cost the
+ * ingredient left with at start (LAUNCH-P3 P3-5), not today's average.
  *
  * InvalidPinException-equivalent: VerifyManagerPinAction throws
  * RuntimeException('Invalid PIN.') — the controller maps it to the same
@@ -73,7 +74,22 @@ final readonly class CancelProductionAction
             $now = now();
             $lines = $production->lines()->orderBy('ingredient_id')->get();
 
-            $costs = Ingredient::query()
+            // LAUNCH-P3 P3-5 — ingredients come back at the cost they left
+            // with: the unit cost frozen on this batch's production_consumption
+            // movement (the live average may have moved since the start). A
+            // batch with no such movement falls back to the live cost.
+            $leftWith = [];
+            $consumed = StockMovement::query()
+                ->where('reference_type', 'pos_productions')
+                ->where('reference_id', (int) $production->id)
+                ->where('movement_type', StockMovement::TYPE_PRODUCTION_CONSUMPTION)
+                ->orderBy('id')
+                ->toBase()
+                ->get(['ingredient_id', 'unit_cost_at_time']);
+            foreach ($consumed as $movement) {
+                $leftWith[(int) $movement->ingredient_id] ??= $movement->unit_cost_at_time;
+            }
+            $liveCosts = Ingredient::query()
                 ->whereIn('id', $lines->pluck('ingredient_id')->all() ?: [0])
                 ->pluck('default_unit_cost', 'id');
 
@@ -86,7 +102,7 @@ final readonly class CancelProductionAction
                     'ingredient_id' => $ingredientId,
                     'movement_type' => StockMovement::TYPE_PRODUCTION_RETURN,
                     'quantity' => StockDecimal::quantity($qty),
-                    'unit_cost_at_time' => StockDecimal::unitCost($costs[$ingredientId] ?? 0),
+                    'unit_cost_at_time' => StockDecimal::unitCost($leftWith[$ingredientId] ?? $liveCosts[$ingredientId] ?? 0),
                     'reference_type' => 'pos_productions',
                     'reference_id' => (int) $production->id,
                     'recorded_by_pos_staff_id' => $staffId,

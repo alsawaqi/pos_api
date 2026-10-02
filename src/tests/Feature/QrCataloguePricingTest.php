@@ -72,8 +72,9 @@ final class QrCataloguePricingTest extends TestCase
         $this->assertSame('branch_unavailable', $products[$branchUnavailable]['unavailable_reason']);
         $this->assertFalse($products[$outOfWindow]['available']);
         $this->assertSame('outside_availability_window', $products[$outOfWindow]['unavailable_reason']);
-        $this->assertFalse($products[$zeroStock]['available']);
-        $this->assertSame('out_of_stock', $products[$zeroStock]['unavailable_reason']);
+        // LAUNCH-P2 P2-7 — sell, but warn: a zero shelf count no longer hides it.
+        $this->assertTrue($products[$zeroStock]['available']);
+        $this->assertNull($products[$zeroStock]['unavailable_reason']);
         $this->assertFalse($products[$inactive]['available']);
         $this->assertSame('inactive', $products[$inactive]['unavailable_reason']);
         $this->assertFalse($products->has($internal));

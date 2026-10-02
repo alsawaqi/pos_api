@@ -28,7 +28,6 @@ final class SubmitDineInQrRoundAction
 
     public function __construct(
         private readonly LoadQrPricingInputAction $pricing,
-        private readonly AssertQrStockAvailableAction $stock,
         private readonly ResolveQrCustomerAction $customers,
         private readonly DistinctQrPhoneGuard $phoneGuard,
         private readonly AllocateQrTempReferenceAction $tempReferences,
@@ -223,7 +222,7 @@ final class SubmitDineInQrRoundAction
                 DateTimeImmutable::createFromInterface($now),
             );
             $price = Totals::priceOrder($loaded->pricingInput);
-            $this->stock->handle((int) $session->company_id, (int) $session->branch_id, $loaded->resolvedLines);
+            // LAUNCH-P2 P2-7 — sell, but warn: the shelf count never refuses a round.
 
             $customer = null;
             $plate = $order?->plate_number;

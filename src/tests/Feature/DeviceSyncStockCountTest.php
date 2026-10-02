@@ -166,11 +166,12 @@ class DeviceSyncStockCountTest extends TestCase
             'lines' => [['ingredient_id' => 1, 'counted_pieces' => 4]],
         ])])->assertOk();
 
-        // 4 × 1428.5714 = 5714.286 → variance −628.574.
+        // 4 × 1428.5714 = 5714.2856 → variance −628.5744 (ingredient
+        // quantities keep 4 decimals since LAUNCH-P2).
         $this->assertDatabaseHas('pos_stock_count_lines', [
             'ingredient_id' => 1,
-            'counted_units' => '5714.286',
-            'variance_units' => '-628.574',
+            'counted_units' => '5714.2856',
+            'variance_units' => '-628.5744',
         ]);
     }
 

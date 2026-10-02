@@ -358,9 +358,10 @@ class DeviceSyncOrderTest extends TestCase
         $this->device();
         $uuid = (string) Str::uuid();
 
-        // 0.25 qty x 0.25 L recipe = 0.0625 → rounds to 0.063. The movement row
-        // and the branch_stock balance must use the SAME rounded value, so
-        // Σ(movements) == balance exactly (no sub-0.001 drift).
+        // 0.25 qty x 0.25 L recipe = 0.0625 — kept exactly since LAUNCH-P2 moved
+        // ingredient quantities to 4 decimals. The movement row and the
+        // branch_stock balance must use the SAME rounded value, so
+        // Σ(movements) == balance exactly (no sub-0.0001 drift).
         $create = $this->createEvent($uuid, [
             'subtotal_baisas' => 375,
             'grand_total_baisas' => 375,
@@ -380,8 +381,8 @@ class DeviceSyncOrderTest extends TestCase
 
         // The ledger invariant: start + Σ(movements) == balance.
         $this->assertEqualsWithDelta(5.0 + $movementSum, $balance, 1e-9);
-        // Pinned: rounded once to 0.063 (a raw-float balance would store 4.938).
-        $this->assertEqualsWithDelta(4.937, $balance, 1e-9);
+        // Pinned: 0.0625 at ledger precision (was 0.063 at 3 decimals).
+        $this->assertEqualsWithDelta(4.9375, $balance, 1e-9);
     }
 
     public function test_a_failed_pay_event_is_retried_on_re_push(): void
@@ -1142,8 +1143,8 @@ class DeviceSyncOrderTest extends TestCase
         $wire = json_decode(file_get_contents(base_path('tests/Fixtures/launch-p0-fix2/pos_machine/payloads.json')), true)[0];
         // This existing catalogue has no comp reason; seed the release's reason
         // without changing any staff role or merchant policy.
-        DB::table('pos_comp_reasons')->insert(['id'=>2,'uuid'=>Str::uuid(),'company_id'=>100,
-            'code'=>'staff_meal','name'=>'Staff meal','is_active'=>true]);
+        DB::table('pos_comp_reasons')->insert(['id' => 2, 'uuid' => Str::uuid(), 'company_id' => 100,
+            'code' => 'staff_meal', 'name' => 'Staff meal', 'is_active' => true]);
         $this->push('mdev_ord', [$wire])->assertOk()
             ->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.integrity_flags.0', 'staff_branch_changed:7');

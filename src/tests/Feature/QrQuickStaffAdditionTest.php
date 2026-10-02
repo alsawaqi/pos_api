@@ -201,7 +201,7 @@ final class QrQuickStaffAdditionTest extends QrPendingTestCase
         }
     }
 
-    public function test_stock_counts_original_order_and_additions_but_not_replays_twice(): void
+    public function test_additions_replay_once_and_are_never_refused_on_the_shelf_count(): void
     {
         $order = $this->order();
         DB::table('pos_order_items')->where('order_id', $order->id)->update(['product_id' => 105, 'qty' => '2.000']);
@@ -210,8 +210,8 @@ final class QrQuickStaffAdditionTest extends QrPendingTestCase
         $before = $this->allRows();
         $this->append($order, $payload)->assertOk()->assertJsonPath('data.replayed', true);
         $this->assertSame($before, $this->allRows());
-        $this->append($order, $this->payload())->assertUnprocessable()->assertJsonPath('errors.0.code', 'product_unavailable');
-        $this->assertSame($before, $this->allRows());
+        // LAUNCH-P2 P2-7 — sell, but warn: past the shelf count is still added.
+        $this->append($order, $this->payload())->assertOk();
     }
 
     public function test_staff_hidden_product_does_not_become_publicly_orderable(): void

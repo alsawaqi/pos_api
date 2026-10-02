@@ -14,6 +14,7 @@ use App\Models\ProductStockMovement;
 use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSessionEvent;
+use App\Support\StockDecimal;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -270,6 +271,7 @@ class ProductWasteHandler implements SyncEventHandler
             ->selectRaw('COALESCE(SUM(r.quantity * COALESCE(i.default_unit_cost, 0)), 0) AS c')
             ->value('c') ?? 0);
 
-        return number_format($recipeCost, 3, '.', '');
+        // LAUNCH-P2 — a frozen per-piece (production) cost keeps 6 decimals.
+        return (string) StockDecimal::unitCost($recipeCost);
     }
 }

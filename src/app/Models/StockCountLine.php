@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Casts\ScaledDecimal;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -25,11 +26,13 @@ class StockCountLine extends Model
     protected function casts(): array
     {
         return [
-            'counted_pieces' => 'decimal:3',
-            'counted_units' => 'decimal:3',
-            'expected_units' => 'decimal:3',
-            'variance_units' => 'decimal:3',
-            'unit_cost_at_time' => 'decimal:3',
+            'counted_pieces' => ScaledDecimal::class.':3,4',
+            'counted_units' => ScaledDecimal::class.':3,4',
+            'expected_units' => ScaledDecimal::class.':3,4',
+            'variance_units' => ScaledDecimal::class.':3,4',
+            'unit_cost_at_time' => ScaledDecimal::class.':3,6',
+            // LAUNCH-P2 P2-6 — late pre-count movements folded into the line.
+            'late_movement_units' => ScaledDecimal::class.':3,4',
         ];
     }
 }

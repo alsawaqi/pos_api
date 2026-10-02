@@ -237,8 +237,9 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
         $this->assertSame($branchDisabled, $addons[60]['linked_product_id']);
         $this->assertFalse($addons[60]['available']);
         $this->assertSame('branch_unavailable', $addons[60]['unavailable_reason']);
-        $this->assertFalse($addons[61]['available']);
-        $this->assertSame('out_of_stock', $addons[61]['unavailable_reason']);
+        // LAUNCH-P2 P2-7 — sell, but warn: a cup at zero no longer blocks the option.
+        $this->assertTrue($addons[61]['available']);
+        $this->assertNull($addons[61]['unavailable_reason']);
         $this->assertTrue($addons[62]['available']);
         $this->assertNull($addons[62]['unavailable_reason']);
         $this->assertTrue($addons[63]['available']);
@@ -250,7 +251,12 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
         $this->assertFalse($addons[66]['available']);
         $this->assertSame('outside_availability_window', $addons[66]['unavailable_reason']);
 
-        foreach ([60, 61, 64, 65, 66] as $addonId) {
+        // LAUNCH-P2 P2-7 — 61 (a cup at zero) is orderable now.
+        $this->qrPost($session, '/api/v1/public/qr/quote', [
+            'lines' => [$this->line($parent, [61])],
+        ])->assertOk();
+
+        foreach ([60, 64, 65, 66] as $addonId) {
             foreach (['/api/v1/public/qr/quote', '/api/v1/public/qr/checkout'] as $endpoint) {
                 $payload = str_ends_with($endpoint, '/quote')
                     ? ['lines' => [$this->line($parent, [$addonId])]]

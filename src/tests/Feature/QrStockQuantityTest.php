@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Actions\Qr\ConfirmDineInQrRoundAction;
-use App\Actions\Qr\RejectDineInQrRoundAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Floor;
@@ -50,6 +49,14 @@ final class QrStockQuantityTest extends TestCase
         ]);
     }
 
+    /*
+     * LAUNCH-P2 P2-7 — sell, but warn. A QR quick order, a dine-in round and
+     * a staff addition are never refused because of the branch shelf count
+     * (QR-003's stock admission is gone): the order lands, the books may go
+     * negative at payment, and the merchant sees it on the stock page. As
+     * before, admission writes no stock — inventory moves once, at payment.
+     */
+
     public static function oversizedCarts(): array
     {
         return ['one line' => [[25]], 'duplicate product lines' => [[12, 12]],
@@ -57,70 +64,42 @@ final class QrStockQuantityTest extends TestCase
     }
 
     #[DataProvider('oversizedCarts')]
-    public function test_oversized_quick_checkout_is_rejected_without_any_order_or_stock_write(array $quantities): void
+    public function test_a_quick_checkout_above_the_shelf_count_is_accepted_without_any_stock_write(array $quantities): void
     {
-        $session = $this->qrSession();
-        $before = $this->rows();
-        $this->submit($session, $quantities)->assertStatus(422)
-            ->assertJsonPath('errors.0.code', 'product_unavailable');
-        $this->assertSame($before, $this->rows());
-        $this->assertDatabaseCount('pos_orders', 0);
-        $this->assertDatabaseCount('pos_order_items', 0);
+        $this->submit($this->qrSession(), $quantities)->assertCreated();
+
+        $this->assertDatabaseCount('pos_orders', 1);
+        $this->assertSame((float) array_sum($quantities), (float) DB::table('pos_order_items')->sum('qty'));
+        $this->assertSame(23.0, (float) DB::table('pos_branch_product')->value('stock_qty'));
         $this->assertDatabaseCount('pos_product_stock_movements', 0);
     }
 
-    public function test_exact_stock_is_accepted_and_idempotent_replay_does_not_reserve_twice(): void
+    public function test_idempotent_replay_returns_the_same_order(): void
     {
         $session = $this->qrSession();
         $first = $this->submit($session, [12, 11], 'same')->assertCreated();
         $before = $this->rows();
         $this->submit($session, [12, 11], 'same')->assertCreated()->assertExactJson($first->json());
         $this->assertSame($before, $this->rows());
-        $this->assertSame(23.0, (float) DB::table('pos_order_items')->sum('qty'));
-        $this->assertSame(23.0, (float) DB::table('pos_branch_product')->value('stock_qty'));
-        $this->assertDatabaseCount('pos_product_stock_movements', 0);
-        $this->submit($this->qrSession(), [1])->assertStatus(422)
-            ->assertJsonPath('errors.0.code', 'product_unavailable');
     }
 
-    public static function untrackedBalances(): array
+    public function test_a_shelf_at_or_below_zero_still_sells_for_unit_and_cooked_products(): void
     {
-        return ['untracked product' => ['untracked', '23.000'],
-            'null branch stock' => ['unit', null]];
+        foreach (['unit', 'cooked'] as $mode) {
+            DB::table('pos_products')->update(['stock_mode' => $mode]);
+            foreach (['0.000', '-4.000'] as $balance) {
+                DB::table('pos_branch_product')->update(['stock_qty' => $balance]);
+                $this->submit($this->qrSession(), [2])->assertCreated();
+            }
+        }
+        $this->assertDatabaseCount('pos_orders', 4);
     }
 
-    #[DataProvider('untrackedBalances')]
-    public function test_untracked_and_null_balances_keep_existing_behavior(string $mode, ?string $balance): void
-    {
-        DB::table('pos_products')->update(['stock_mode' => $mode]);
-        DB::table('pos_branch_product')->update(['stock_qty' => $balance]);
-        $this->submit($this->qrSession(), [25])->assertCreated();
-    }
-
-    public function test_cooked_product_uses_branch_quantity_too(): void
-    {
-        DB::table('pos_products')->update(['stock_mode' => 'cooked']);
-        $this->submit($this->qrSession(), [24])->assertStatus(422)
-            ->assertJsonPath('errors.0.code', 'product_unavailable');
-        $this->submit($this->qrSession(), [23])->assertCreated();
-    }
-
-    public function test_fractional_balance_is_not_rounded_up_to_a_whole_unit(): void
-    {
-        DB::table('pos_branch_product')->update(['stock_qty' => '22.999']);
-        $this->submit($this->qrSession(), [23])->assertStatus(422);
-        $this->submit($this->qrSession(), [22])->assertCreated();
-    }
-
-    public function test_two_customers_cannot_spend_the_same_unpaid_stock(): void
+    public function test_unpaid_orders_do_not_hold_back_other_customers(): void
     {
         $this->submit($this->qrSession(), [20])->assertCreated();
-        $second = $this->qrSession();
-        $before = $this->rows();
-        $this->submit($second, [4])->assertStatus(422)->assertJsonPath('errors.0.code', 'product_unavailable');
-        $this->assertSame($before, $this->rows());
-        $this->submit($second, [3])->assertCreated();
-        $this->assertSame(23.0, (float) DB::table('pos_order_items')->sum('qty'));
+        $this->submit($this->qrSession(), [20])->assertCreated();
+        $this->assertSame(40.0, (float) DB::table('pos_order_items')->sum('qty'));
     }
 
     public static function roundModes(): array
@@ -129,72 +108,28 @@ final class QrStockQuantityTest extends TestCase
     }
 
     #[DataProvider('roundModes')]
-    public function test_dine_in_accumulates_all_rounds_and_replays_without_double_counting(string $mode): void
+    public function test_dine_in_rounds_above_the_shelf_count_are_accepted_and_replay_once(string $mode): void
     {
         $session = $this->qrSession(true, $mode);
         $this->submit($session, [20], 'round-1')->assertCreated();
-        $before = $this->rows();
-        $this->submit($session, [4], 'round-2')->assertStatus(422)
-            ->assertJsonPath('errors.0.code', 'product_unavailable');
-        $this->assertSame($before, $this->rows());
-        $this->submit($session, [3], 'round-2')->assertCreated();
-        $this->submit($session, [3], 'round-2')->assertSuccessful();
+        $this->submit($session, [30], 'round-2')->assertCreated();
+        $this->submit($session, [30], 'round-2')->assertSuccessful();
         $this->assertDatabaseCount('pos_orders', 1);
         $this->assertDatabaseCount('pos_qr_order_rounds', 2);
-        $this->submit($this->qrSession(), [1])->assertStatus(422);
+        $this->assertDatabaseCount('pos_product_stock_movements', 0);
     }
 
-    public function test_pending_confirmation_then_acceptance_keeps_one_commitment_and_frozen_money(): void
+    public function test_a_pending_round_above_the_shelf_count_confirms_with_frozen_money(): void
     {
         $session = $this->qrSession(true);
-        $this->submit($session, [20])->assertCreated();
+        $this->submit($session, [30])->assertCreated();
         $round = QrOrderRound::query()->sole();
         $this->assertSame(QrOrderRound::STATUS_PENDING_CONFIRMATION, $round->status);
-        $this->assertDatabaseCount('pos_order_items', 0);
-        $this->submit($this->qrSession(), [4])->assertStatus(422);
         $frozen = $round->total_baisas;
         app(ConfirmDineInQrRoundAction::class)->handle($this->device('fixed_pos'), $round->id);
         $this->assertSame($frozen, $round->fresh()->total_baisas);
         $this->assertSame(QrOrderRound::STATUS_ACCEPTED, $round->fresh()->status);
-        $this->submit($this->qrSession(), [3])->assertCreated();
-        $this->submit($this->qrSession(), [1])->assertStatus(422);
-    }
-
-    public function test_rejected_pending_round_releases_its_commitment(): void
-    {
-        $this->submit($this->qrSession(true), [23])->assertCreated();
-        $this->submit($this->qrSession(), [1])->assertStatus(422);
-        app(RejectDineInQrRoundAction::class)->handle($this->device('fixed_pos'), QrOrderRound::query()->sole()->id);
-        $this->submit($this->qrSession(), [23])->assertCreated();
-    }
-
-    public function test_paid_and_pending_verification_items_are_not_counted_against_already_deducted_stock(): void
-    {
-        foreach ([Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION] as $status) {
-            $this->submit($this->qrSession(), [23])->assertCreated();
-            Order::query()->where('status', Order::STATUS_HELD)->update(['status' => $status]);
-        }
-        // 23 here represents the remaining balance after historic sales.
-        $this->submit($this->qrSession(), [23])->assertCreated();
-        $this->assertDatabaseCount('pos_orders', 3);
-    }
-
-    public function test_void_order_or_void_item_does_not_keep_a_commitment(): void
-    {
-        $this->submit($this->qrSession(), [23])->assertCreated();
-        Order::query()->update(['status' => Order::STATUS_VOID]);
-        $this->submit($this->qrSession(), [23])->assertCreated();
-        DB::table('pos_order_items')->update(['status' => 'void']);
-        $this->submit($this->qrSession(), [23])->assertCreated();
-    }
-
-    public function test_other_branch_or_company_commitments_are_not_counted(): void
-    {
-        $this->submit($this->qrSession(), [23])->assertCreated();
-        Order::query()->update(['branch_id' => 20]);
-        $this->submit($this->qrSession(), [23])->assertCreated();
-        Order::query()->where('branch_id', 10)->update(['company_id' => 200]);
-        $this->submit($this->qrSession(), [23])->assertCreated();
+        $this->assertSame(30.0, (float) DB::table('pos_order_items')->sum('qty'));
     }
 
     private function device(string $type = 'payment_station'): Device

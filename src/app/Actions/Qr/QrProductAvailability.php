@@ -8,6 +8,17 @@ use App\Models\BranchProduct;
 use App\Models\Product;
 use DateTimeInterface;
 
+/**
+ * Whether a product can be ordered from the QR menu / a QR or table round
+ * right now: the merchant's explicit availability only — switched off at the
+ * branch, inactive, or outside its daily window.
+ *
+ * LAUNCH-P2 P2-7 — sell, but warn: stock numbers never block a sale. A unit
+ * or cooked product whose branch shelf count is at or below zero stays on
+ * the menu and orderable (the books go negative and the merchant is warned),
+ * exactly like the till and handheld. OUT_OF_STOCK is no longer produced; the
+ * constant stays because rounds held before this change carry it.
+ */
 final readonly class QrProductAvailability
 {
     public const BRANCH_UNAVAILABLE = 'branch_unavailable';
@@ -16,6 +27,7 @@ final readonly class QrProductAvailability
 
     public const OUTSIDE_AVAILABILITY_WINDOW = 'outside_availability_window';
 
+    /** No longer produced since LAUNCH-P2 (see the class comment). */
     public const OUT_OF_STOCK = 'out_of_stock';
 
     private function __construct(public bool $available, public ?string $reason) {}
@@ -30,11 +42,6 @@ final readonly class QrProductAvailability
         }
         if (! self::isInsideWindow($at->format('H:i:s'), $product->available_from, $product->available_until)) {
             return new self(false, self::OUTSIDE_AVAILABILITY_WINDOW);
-        }
-        if (in_array((string) $product->stock_mode, ['unit', 'cooked'], true)
-            && $branchProduct?->stock_qty !== null
-            && (float) $branchProduct->stock_qty <= 0.0) {
-            return new self(false, self::OUT_OF_STOCK);
         }
 
         return new self(true, null);

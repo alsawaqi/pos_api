@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
 use App\Models\StockMovement;
+use App\Support\StockDecimal;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -134,9 +135,9 @@ final readonly class StartProductionAction
                     throw new RuntimeException(sprintf(
                         'Not enough %s: need %s %s, have %s.',
                         $ingredient->name,
-                        rtrim(rtrim(number_format($needed[$ingredientId], 3, '.', ''), '0'), '.'),
+                        StockDecimal::format($needed[$ingredientId], 0, 4),
                         $ingredient->unit,
-                        rtrim(rtrim(number_format($available, 3, '.', ''), '0'), '.'),
+                        StockDecimal::format($available, 0, 4),
                     ));
                 }
             }
@@ -155,11 +156,14 @@ final readonly class StartProductionAction
 
             $consume = function (int $ingredientId, float $qty, bool $isExtra, ?string $unitAtTime) use ($production, $balances, $ingredients, $branchId, $staffId): void {
                 $ingredient = $ingredients->get($ingredientId);
+                // LAUNCH-P2 — ledger precision (4dp) once: line, movement and
+                // balance move by the same amount; the cost keeps 6 decimals.
+                $qty = round($qty, StockDecimal::QUANTITY_SCALE);
 
                 ProductionLine::create([
                     'production_id' => $production->id,
                     'ingredient_id' => $ingredientId,
-                    'quantity' => number_format($qty, 3, '.', ''),
+                    'quantity' => StockDecimal::quantity($qty),
                     'unit_at_time' => $unitAtTime ?? (string) $ingredient->unit,
                     'is_extra' => $isExtra,
                 ]);
@@ -168,8 +172,8 @@ final readonly class StartProductionAction
                     'branch_id' => $branchId,
                     'ingredient_id' => $ingredientId,
                     'movement_type' => StockMovement::TYPE_PRODUCTION_CONSUMPTION,
-                    'quantity' => number_format(-$qty, 3, '.', ''),
-                    'unit_cost_at_time' => number_format((float) ($ingredient->default_unit_cost ?? 0), 3, '.', ''),
+                    'quantity' => StockDecimal::quantity(-$qty),
+                    'unit_cost_at_time' => StockDecimal::unitCost($ingredient->default_unit_cost ?? 0),
                     'reference_type' => 'pos_productions',
                     'reference_id' => (int) $production->id,
                     'recorded_by_pos_staff_id' => $staffId,

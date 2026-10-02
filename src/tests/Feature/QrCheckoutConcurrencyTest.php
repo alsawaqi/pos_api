@@ -128,7 +128,12 @@ final class QrCheckoutConcurrencyTest extends TestCase
         }
     }
 
-    public function test_distinct_concurrent_customers_cannot_oversell_three_units(): void
+    /**
+     * LAUNCH-P2 P2-7 — sell, but warn: concurrent customers are never refused
+     * on the shelf count (it was: only 3 of 10 could buy 3 units). Every buyer
+     * gets an order and admission still writes no stock.
+     */
+    public function test_distinct_concurrent_customers_all_buy_even_past_the_shelf_count(): void
     {
         if (! function_exists('pcntl_fork') || ! function_exists('stream_socket_pair')) {
             throw new RuntimeException('The QR stock concurrency proof requires PCNTL and Unix socket pairs.');
@@ -179,12 +184,12 @@ final class QrCheckoutConcurrencyTest extends TestCase
                     $refused++;
                 }
             }
-            $this->assertSame(3, $created);
-            $this->assertSame(7, $refused);
+            $this->assertSame(self::WORKER_COUNT, $created);
+            $this->assertSame(0, $refused);
             DB::purge('sqlite');
-            $this->assertDatabaseCount('pos_orders', 3);
-            $this->assertDatabaseCount('pos_order_items', 3);
-            $this->assertSame(3.0, (float) DB::table('pos_order_items')->sum('qty'));
+            $this->assertDatabaseCount('pos_orders', self::WORKER_COUNT);
+            $this->assertDatabaseCount('pos_order_items', self::WORKER_COUNT);
+            $this->assertSame((float) self::WORKER_COUNT, (float) DB::table('pos_order_items')->sum('qty'));
             $this->assertSame(3.0, (float) DB::table('pos_branch_product')->value('stock_qty'));
             $this->assertDatabaseCount('pos_product_stock_movements', 0);
         } finally {

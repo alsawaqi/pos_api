@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Actions\Device\Sync\ConsumeInventoryAction;
+use App\Casts\ScaledDecimal;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -59,8 +60,8 @@ class StockMovement extends Model
     protected function casts(): array
     {
         return [
-            'quantity' => 'decimal:3',
-            'unit_cost_at_time' => 'decimal:3',
+            'quantity' => ScaledDecimal::class.':3,4',
+            'unit_cost_at_time' => ScaledDecimal::class.':3,6',
             'occurred_at' => 'datetime',
             'created_at' => 'datetime',
         ];

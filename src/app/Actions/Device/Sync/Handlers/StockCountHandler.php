@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\Sync\FoldLateMovementIntoCount;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\BranchStock;
@@ -14,6 +15,7 @@ use App\Models\StockCountLine;
 use App\Models\StockMovement;
 use App\Models\SyncEvent;
 use App\Models\WasteRecord;
+use App\Support\StockDecimal;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -64,9 +66,11 @@ class StockCountHandler implements SyncEventHandler
             throw new RuntimeException('invalid stock.count payload: '.implode('; ', $validator->errors()->all()));
         }
 
-        $countedAt = isset($payload['counted_at'])
+        // The count moment is the DEVICE's (when staff counted), never the
+        // sync time; whole seconds, the precision the ledger stores.
+        $countedAt = (isset($payload['counted_at'])
             ? Carbon::parse((string) $payload['counted_at'])
-            : ($event->client_timestamp ?? now());
+            : Carbon::instance($event->client_timestamp ?? now()))->startOfSecond();
         $staffId = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
         // Phase 4 — the recorded_by staff id (an audit column) must be a staff
         // member of the device's own company; withTrashed keeps offline-queued
@@ -111,7 +115,7 @@ class StockCountHandler implements SyncEventHandler
             $resolved[] = [
                 'ingredient' => $ingredient,
                 'counted_pieces' => $countedPieces,
-                'counted_units' => round((float) $countedUnits, 3),
+                'counted_units' => round((float) $countedUnits, StockDecimal::QUANTITY_SCALE),
             ];
         }
 
@@ -131,27 +135,31 @@ class StockCountHandler implements SyncEventHandler
                 /** @var Ingredient $ingredient */
                 $ingredient = $line['ingredient'];
 
-                $expected = (float) (BranchStock::query()
-                    ->where('branch_id', $device->branch_id)
-                    ->where('ingredient_id', $ingredient->id)
-                    ->value('quantity') ?? 0.0);
-                $variance = round($line['counted_units'] - $expected, 3);
-                $unitCost = (float) ($ingredient->default_unit_cost ?? 0);
+                // LAUNCH-P2 P2-6 — the book balance AT THE COUNT MOMENT
+                // (sale time, not sync time): sales made after the count but
+                // synced before this event no longer inflate the variance;
+                // sales made before it that sync later are folded in when
+                // they arrive (FoldLateMovementIntoCount).
+                $expected = $this->bookBalanceAt((int) $device->branch_id, (int) $ingredient->id, $countedAt);
+                $variance = round($line['counted_units'] - $expected, StockDecimal::QUANTITY_SCALE);
+                $unitCost = (string) StockDecimal::unitCost($ingredient->default_unit_cost ?? 0);
 
                 $movementId = null;
+                $wasteId = null;
                 if ($variance < 0) {
                     // Shortfall → waste record + negative waste movement.
                     $waste = WasteRecord::create([
                         'uuid' => (string) Str::uuid(),
                         'branch_id' => $device->branch_id,
                         'ingredient_id' => $ingredient->id,
-                        'quantity' => number_format(abs($variance), 3, '.', ''),
+                        'quantity' => StockDecimal::quantity(abs($variance)),
                         'reason' => WasteRecord::REASON_RECONCILIATION_VARIANCE,
                         'unit_at_set' => (string) $ingredient->unit,
-                        'unit_cost_at_time' => number_format($unitCost, 3, '.', ''),
+                        'unit_cost_at_time' => $unitCost,
                         'notes' => $this->lineNote($line, $expected, $note),
                         'occurred_at' => $countedAt,
                     ]);
+                    $wasteId = (int) $waste->id;
                     $movementId = $this->move(
                         $device,
                         $ingredient,
@@ -186,13 +194,14 @@ class StockCountHandler implements SyncEventHandler
                     'stock_count_id' => $count->id,
                     'ingredient_id' => $ingredient->id,
                     'counted_pieces' => $line['counted_pieces'] !== null
-                        ? number_format($line['counted_pieces'], 3, '.', '')
+                        ? StockDecimal::quantity($line['counted_pieces'])
                         : null,
-                    'counted_units' => number_format($line['counted_units'], 3, '.', ''),
-                    'expected_units' => number_format($expected, 3, '.', ''),
-                    'variance_units' => number_format($variance, 3, '.', ''),
-                    'unit_cost_at_time' => number_format($unitCost, 3, '.', ''),
+                    'counted_units' => StockDecimal::quantity($line['counted_units']),
+                    'expected_units' => StockDecimal::quantity($expected),
+                    'variance_units' => StockDecimal::quantity($variance),
+                    'unit_cost_at_time' => $unitCost,
                     'stock_movement_id' => $movementId,
+                    'waste_record_id' => $wasteId,
                 ]);
             }
 
@@ -202,6 +211,26 @@ class StockCountHandler implements SyncEventHandler
                 'lines_with_variance' => $linesWithVariance,
             ];
         });
+    }
+
+    /**
+     * LAUNCH-P2 P2-6 — the branch's book balance of an ingredient AT $at: the
+     * running balance minus every movement dated after $at. A movement in the
+     * count's own second already on the books counts as before it.
+     */
+    private function bookBalanceAt(int $branchId, int $ingredientId, Carbon $at): float
+    {
+        $balance = (float) (DB::table('pos_branch_stock')
+            ->where('branch_id', $branchId)
+            ->where('ingredient_id', $ingredientId)
+            ->value('quantity') ?? 0.0);
+        $after = (float) DB::table('pos_stock_movements')
+            ->where('branch_id', $branchId)
+            ->where('ingredient_id', $ingredientId)
+            ->where('occurred_at', '>', $at)
+            ->sum('quantity');
+
+        return round($balance - $after, StockDecimal::QUANTITY_SCALE);
     }
 
     /**
@@ -221,11 +250,18 @@ class StockCountHandler implements SyncEventHandler
      * Append the signed movement + move the balance (the same pair
      * ConsumeInventoryAction writes). Returns the movement id.
      */
+    /**
+     * Append the signed movement + move the balance (the same pair
+     * ConsumeInventoryAction writes, an atomic SQL increment). Returns the
+     * movement id. LAUNCH-P2 P2-6 — when a LATER count of this branch and
+     * ingredient is already on the books (this device count was taken
+     * earlier but synced after it), the variance is folded into that count.
+     */
     private function move(
         Device $device,
         Ingredient $ingredient,
         float $signedQty,
-        float $unitCost,
+        string $unitCost,
         string $type,
         string $referenceType,
         int $referenceId,
@@ -233,12 +269,13 @@ class StockCountHandler implements SyncEventHandler
         Carbon $at,
         string $note,
     ): int {
+        $quantity = (string) StockDecimal::quantity($signedQty);
         $movement = StockMovement::create([
             'branch_id' => $device->branch_id,
             'ingredient_id' => $ingredient->id,
             'movement_type' => $type,
-            'quantity' => number_format($signedQty, 3, '.', ''),
-            'unit_cost_at_time' => number_format($unitCost, 3, '.', ''),
+            'quantity' => $quantity,
+            'unit_cost_at_time' => $unitCost,
             'reference_type' => $referenceType,
             'reference_id' => $referenceId,
             'recorded_by_pos_staff_id' => $staffId,
@@ -247,13 +284,27 @@ class StockCountHandler implements SyncEventHandler
             'created_at' => now(),
         ]);
 
-        $stock = BranchStock::firstOrNew([
-            'branch_id' => $device->branch_id,
-            'ingredient_id' => $ingredient->id,
-        ]);
-        $stock->quantity = (float) $stock->quantity + $signedQty;
-        $stock->last_movement_at = now();
-        $stock->save();
+        $stock = BranchStock::query()->firstOrCreate(
+            ['branch_id' => $device->branch_id, 'ingredient_id' => $ingredient->id],
+            ['quantity' => 0, 'last_movement_at' => now()],
+        );
+        BranchStock::query()
+            ->whereKey($stock->getKey())
+            ->toBase()
+            ->increment('quantity', $quantity, [
+                'last_movement_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+        (new FoldLateMovementIntoCount)->handle(
+            (int) $device->branch_id,
+            (int) $ingredient->id,
+            $quantity,
+            $unitCost,
+            $at,
+            null,
+            $staffId,
+        );
 
         return (int) $movement->id;
     }
@@ -267,14 +318,14 @@ class StockCountHandler implements SyncEventHandler
         $counted = $line['counted_pieces'] !== null
             ? sprintf(
                 '%s %s (= %s %s)',
-                rtrim(rtrim(number_format($line['counted_pieces'], 3, '.', ''), '0'), '.'),
+                StockDecimal::format($line['counted_pieces'], 0, StockDecimal::QUANTITY_SCALE),
                 $ingredient->piece_unit_label ?? 'piece(s)',
-                number_format($line['counted_units'], 3, '.', ''),
+                StockDecimal::quantity($line['counted_units']),
                 (string) $ingredient->unit,
             )
-            : sprintf('%s %s', number_format($line['counted_units'], 3, '.', ''), (string) $ingredient->unit);
+            : sprintf('%s %s', StockDecimal::quantity($line['counted_units']), (string) $ingredient->unit);
 
-        $text = sprintf('Day-end stock count: counted %s, expected %s.', $counted, number_format($expected, 3, '.', ''));
+        $text = sprintf('Day-end stock count: counted %s, expected %s.', $counted, StockDecimal::quantity($expected));
 
         return $note !== null ? $text.' '.$note : $text;
     }

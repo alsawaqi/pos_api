@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Casts\ScaledDecimal;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -27,7 +28,7 @@ class AddOn extends Model
     {
         return [
             'price_delta' => 'decimal:3',
-            'ingredient_qty' => 'decimal:3',
+            'ingredient_qty' => ScaledDecimal::class.':3,4',
             'display_order' => 'integer',
         ];
     }

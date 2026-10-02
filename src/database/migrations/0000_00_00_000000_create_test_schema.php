@@ -281,7 +281,7 @@ return new class extends Migration
             // Phase B — pre-selected option in the POS customize sheet.
             $table->boolean('is_default')->default(false);
             $table->unsignedBigInteger('ingredient_id')->nullable();
-            $table->decimal('ingredient_qty', 10, 3)->nullable();
+            $table->decimal('ingredient_qty', 14, 4)->nullable();
             $table->string('ingredient_unit', 16)->nullable();
             // P-G3 — the add-on IS this product (consumes its real stock).
             $table->unsignedBigInteger('linked_product_id')->nullable();
@@ -342,8 +342,8 @@ return new class extends Migration
             $table->string('piece_unit_label_ar', 32)->nullable();
             $table->decimal('units_per_piece', 14, 4)->nullable();
             $table->boolean('allow_fractional_pieces')->default(true);
-            $table->decimal('default_unit_cost', 12, 3)->default(0);
-            $table->decimal('min_stock_threshold', 12, 3)->nullable();
+            $table->decimal('default_unit_cost', 15, 6)->default(0);
+            $table->decimal('min_stock_threshold', 14, 4)->nullable();
             $table->unsignedBigInteger('primary_supplier_id')->nullable();
             $table->string('status', 32)->default('active');
             $table->timestamps();
@@ -354,7 +354,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('product_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('quantity', 12, 3);
+            $table->decimal('quantity', 14, 4);
             $table->string('unit_at_set', 16);
             $table->unsignedSmallInteger('sort_order')->default(0);
             $table->timestamps();
@@ -392,7 +392,7 @@ return new class extends Migration
             $table->unsignedBigInteger('ingredient_id')->nullable();
             $table->unsignedBigInteger('component_product_id')->nullable();
             $table->string('direction', 8)->default('add');
-            $table->decimal('quantity', 12, 3);
+            $table->decimal('quantity', 14, 4);
             $table->string('unit', 16)->nullable();
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->timestamps();
@@ -404,7 +404,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('branch_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('quantity', 12, 3)->default(0);
+            $table->decimal('quantity', 14, 4)->default(0);
             $table->timestamp('last_movement_at')->nullable();
             $table->timestamps();
         });
@@ -416,7 +416,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('company_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('quantity', 12, 3)->default(0);
+            $table->decimal('quantity', 14, 4)->default(0);
             $table->timestamp('last_movement_at')->nullable();
             $table->timestamps();
             $table->unique(['company_id', 'ingredient_id']);
@@ -445,7 +445,7 @@ return new class extends Migration
             // Product wastage (folds in admin 2026_07_27_010000): reason + frozen cost.
             $table->string('reason', 32)->nullable();
             $table->decimal('quantity', 12, 3);
-            $table->decimal('unit_cost', 12, 3)->nullable();
+            $table->decimal('unit_cost', 15, 6)->nullable();
             $table->string('reference_type')->nullable();
             $table->unsignedBigInteger('reference_id')->nullable();
             $table->unsignedBigInteger('recorded_by_user_id')->nullable();
@@ -1017,8 +1017,8 @@ return new class extends Migration
             $table->unsignedBigInteger('branch_id')->nullable();
             $table->unsignedBigInteger('ingredient_id');
             $table->string('movement_type', 32);
-            $table->decimal('quantity', 12, 3);
-            $table->decimal('unit_cost_at_time', 12, 3)->default(0);
+            $table->decimal('quantity', 14, 4);
+            $table->decimal('unit_cost_at_time', 15, 6)->default(0);
             $table->string('reference_type')->nullable();
             $table->unsignedBigInteger('reference_id')->nullable();
             $table->unsignedBigInteger('recorded_by_user_id')->nullable();
@@ -1037,10 +1037,10 @@ return new class extends Migration
             $table->uuid('uuid')->unique();
             $table->unsignedBigInteger('branch_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('quantity', 12, 3);
+            $table->decimal('quantity', 14, 4);
             $table->string('reason', 32);
             $table->string('unit_at_set', 16);
-            $table->decimal('unit_cost_at_time', 12, 3)->default(0);
+            $table->decimal('unit_cost_at_time', 15, 6)->default(0);
             $table->text('notes')->nullable();
             $table->unsignedBigInteger('recorded_by_user_id')->nullable();
             $table->timestamp('occurred_at')->useCurrent();
@@ -1063,12 +1063,15 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('stock_count_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('counted_pieces', 12, 3)->nullable();
-            $table->decimal('counted_units', 12, 3);
-            $table->decimal('expected_units', 12, 3);
-            $table->decimal('variance_units', 12, 3);
-            $table->decimal('unit_cost_at_time', 12, 3)->default(0);
+            $table->decimal('counted_pieces', 14, 4)->nullable();
+            $table->decimal('counted_units', 14, 4);
+            $table->decimal('expected_units', 14, 4);
+            $table->decimal('variance_units', 14, 4);
+            $table->decimal('unit_cost_at_time', 15, 6)->default(0);
             $table->unsignedBigInteger('stock_movement_id')->nullable();
+            // pos_admin 2026_10_02_000003: late pre-count movements folded in + the line's waste record.
+            $table->decimal('late_movement_units', 14, 4)->default(0);
+            $table->unsignedBigInteger('waste_record_id')->nullable();
             $table->unique(['stock_count_id', 'ingredient_id'], 'pos_stock_count_lines_count_ingredient_unique');
         });
 
@@ -1225,8 +1228,8 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('restock_request_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('quantity_requested', 12, 3);
-            $table->decimal('quantity_allocated', 12, 3)->default(0);
+            $table->decimal('quantity_requested', 14, 4);
+            $table->decimal('quantity_allocated', 14, 4)->default(0);
             $table->string('unit_at_set', 16);
             $table->text('note')->nullable();
             $table->unsignedSmallInteger('sort_order')->default(0);
@@ -1417,7 +1420,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('production_id');
             $table->unsignedBigInteger('ingredient_id');
-            $table->decimal('quantity', 12, 3);
+            $table->decimal('quantity', 14, 4);
             $table->string('unit_at_time', 16);
             $table->boolean('is_extra')->default(false);
             $table->timestamps();

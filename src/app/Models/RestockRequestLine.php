@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Casts\ScaledDecimal;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -25,8 +26,8 @@ class RestockRequestLine extends Model
     protected function casts(): array
     {
         return [
-            'quantity_requested' => 'decimal:3',
-            'quantity_allocated' => 'decimal:3',
+            'quantity_requested' => ScaledDecimal::class.':3,4',
+            'quantity_allocated' => ScaledDecimal::class.':3,4',
         ];
     }
 }

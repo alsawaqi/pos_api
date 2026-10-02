@@ -973,15 +973,16 @@ class BuildDeviceConfigAction
     }
 
     /**
-     * Phase D2 — LOW STOCK badge per stock mode:
+     * Phase D2 — LOW STOCK badge per stock mode. LAUNCH-P2 P2-7 (sell, but
+     * warn): nothing is ever sold out on stock numbers, so the badge — a
+     * non-blocking hint — also covers what used to be "sold out":
      *
-     *   unit       → this branch's unit stock is at/below the product's own
-     *                low_stock_threshold. Stock <= 0 returns false — that is
-     *                the (stronger) SOLD OUT state, not "low".
-     *   ingredient → ANY recipe ingredient with a min_stock_threshold whose
-     *                branch balance sits below it (blueprint §5.5.3 "when
-     *                stock of the product's primary ingredient falls below
-     *                X"; mirrors the merchant dashboard low-stock count).
+     *   unit       → this branch's unit stock is at or below zero, or at/below
+     *                the product's own low_stock_threshold.
+     *   ingredient → ANY recipe ingredient whose branch balance cannot cover
+     *                one portion (recipe availability at or below zero), or
+     *                that sits below its min_stock_threshold (blueprint
+     *                §5.5.3; mirrors the merchant dashboard low-stock count).
      *   untracked  → never.
      *
      * @param  Collection<int, \stdClass>|null  $recipeRows
@@ -993,22 +994,23 @@ class BuildDeviceConfigAction
         // P-G1: cooked products sell from the same branch shelf count as
         // unit products, so the LOW STOCK badge follows the same rule.
         if ($p->stock_mode === 'unit' || $p->stock_mode === 'cooked') {
-            if ($p->low_stock_threshold === null || $branchProduct === null || $branchProduct->stock_qty === null) {
+            if ($branchProduct === null || $branchProduct->stock_qty === null) {
                 return false;
             }
             $qty = (float) $branchProduct->stock_qty;
 
-            return $qty > 0 && $qty <= (float) $p->low_stock_threshold;
+            return $qty <= 0 || ($p->low_stock_threshold !== null && $qty <= (float) $p->low_stock_threshold);
         }
 
         if ($p->stock_mode === 'ingredient' && $recipeRows !== null) {
             foreach ($recipeRows as $line) {
-                $threshold = $minThresholdByIngredient?->get($line->ingredient_id);
-                if ($threshold === null) {
-                    continue;
-                }
                 $balance = (float) ($branchBalanceByIngredient?->get($line->ingredient_id) ?? 0);
-                if ($balance < (float) $threshold) {
+                // Not enough for one portion: the recipe can make nothing.
+                if ((float) $line->quantity > 0 && $balance < (float) $line->quantity) {
+                    return true;
+                }
+                $threshold = $minThresholdByIngredient?->get($line->ingredient_id);
+                if ($threshold !== null && $balance < (float) $threshold) {
                     return true;
                 }
             }

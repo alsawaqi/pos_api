@@ -19,7 +19,6 @@ final class AppendQuickQrOrderItemsAction
     public function __construct(
         private readonly PresentQrPendingOrderAction $present,
         private readonly LoadQrPricingInputAction $pricing,
-        private readonly AssertQrStockAvailableAction $stock,
         private readonly AppendQrPricedLinesAction $append,
         private readonly FreezeQrRoundLinesAction $freeze,
     ) {}
@@ -32,8 +31,7 @@ final class AppendQuickQrOrderItemsAction
         $this->present->assertAttended($device);
 
         return DB::transaction(function () use ($device, $uuid, $payload, $workspace): array {
-            // Serialize with revocation and payment on device -> order; stock
-            // locks are acquired later, in the shared stock admission action.
+            // Serialize with revocation and payment on device -> order.
             $lockedDevice = Device::query()->whereKey($device->id)->lockForUpdate()->first();
             if ($lockedDevice === null) {
                 throw new QrChargeException('device_not_attended', 409, 'The attended device is no longer active.');
@@ -88,7 +86,7 @@ final class AppendQuickQrOrderItemsAction
                 (int) $order->company_id, (int) $order->branch_id, $payload['lines'],
             );
             $price = Totals::priceOrder($loaded->pricingInput);
-            $this->stock->handle((int) $order->company_id, (int) $order->branch_id, $loaded->resolvedLines);
+            // LAUNCH-P2 P2-7 — sell, but warn: the shelf count never refuses staff additions.
             $at = now();
             // Typed pricing context only: staff never create/revive a phone
             // session or rewrite the customer's identity, reference or items.

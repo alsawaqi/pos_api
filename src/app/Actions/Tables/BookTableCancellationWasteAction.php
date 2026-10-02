@@ -12,6 +12,7 @@ use App\Models\StockMovement;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use App\Models\WasteRecord;
+use App\Support\StockDecimal;
 use Illuminate\Support\Str;
 
 /** Domain balances are locked before the journal; linked movements are inserted at its flush. */
@@ -31,7 +32,7 @@ final class BookTableCancellationWasteAction
                 continue;
             }
             foreach ($this->inventory->frozenIngredients($item) as $part) {
-                $amount = round($part['qty'] * $qty, 3);
+                $amount = round($part['qty'] * $qty, StockDecimal::QUANTITY_SCALE);
                 if ($amount <= 0) {
                     continue;
                 }
@@ -39,7 +40,7 @@ final class BookTableCancellationWasteAction
                 // an older round or lose cost precision by averaging.
                 $key = json_encode([$part['ingredient_id'], $part['unit'], $part['unit_cost']]);
                 $rows[$key] ??= array_replace($part, ['qty' => 0]);
-                $rows[$key]['qty'] = round($rows[$key]['qty'] + $amount, 3);
+                $rows[$key]['qty'] = round($rows[$key]['qty'] + $amount, StockDecimal::QUANTITY_SCALE);
             }
         }
         $rows = array_values($rows);

@@ -954,10 +954,37 @@ class DeviceConfigTest extends TestCase
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
         $this->assertFalse(collect($data['products'])->firstWhere('id', 2)['low_stock']);
 
-        // Sold out (0) is the stronger state — not "low".
+        // LAUNCH-P2 P2-7 — nothing is sold out on stock numbers any more:
+        // at or below zero is the strongest LOW STOCK hint.
         DB::table('pos_branch_product')->where('branch_id', 10)->where('product_id', 2)->update(['stock_qty' => 0.000]);
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
-        $this->assertFalse(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+        $this->assertTrue(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+    }
+
+    public function test_launch_p2_low_stock_also_flags_what_used_to_be_sold_out(): void
+    {
+        $this->seedCatalogue();
+        $this->pairedDevice();
+        $t = ['created_at' => $this->old, 'updated_at' => $this->old];
+
+        // Tea (unit) at zero with NO threshold, then oversold to −3: LOW,
+        // never sold out — a sale is not blocked by stock numbers.
+        DB::table('pos_branch_product')->insert([
+            ['branch_id' => 10, 'product_id' => 2, 'is_available' => true, 'stock_qty' => 0.000] + $t,
+        ]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertTrue(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+        DB::table('pos_branch_product')->where('product_id', 2)->update(['stock_qty' => -3.000]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertTrue(collect($data['products'])->firstWhere('id', 2)['low_stock']);
+
+        // Latte (recipe: 0.25 l milk) with 0.2 l on the books cannot make one
+        // portion: LOW, with no minimum set.
+        DB::table('pos_branch_stock')->where('branch_id', 10)->where('ingredient_id', 1)->update(['quantity' => 0.200]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $latte = collect($data['products'])->firstWhere('id', 1);
+        $this->assertTrue($latte['low_stock']);
+        $this->assertIsBool($latte['low_stock']);
     }
 
     public function test_unit_mode_low_stock_is_false_without_a_threshold(): void

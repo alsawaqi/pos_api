@@ -51,7 +51,7 @@ final class StaffRoundCatalogueHoldTest extends TestCase
             DB::table('pos_branch_product')->insert([
                 'branch_id' => $device->branch_id, 'product_id' => $product->id,
                 'is_available' => $reason !== 'branch_unavailable',
-                'stock_qty' => $reason === 'out_of_stock' ? 0 : 10,
+                'stock_qty' => 10,
             ]);
         }
         $payload['lines'][0]['notes'] = "No ice; customer's original note";
@@ -99,7 +99,8 @@ final class StaffRoundCatalogueHoldTest extends TestCase
     public static function productAvailabilityReasons(): array
     {
         return array_map(static fn (string $reason): array => [$reason], [
-            'inactive', 'branch_unavailable', 'outside_availability_window', 'out_of_stock', 'product_missing',
+            // LAUNCH-P2 P2-7 — stock numbers never hold a line ('out_of_stock' is gone).
+            'inactive', 'branch_unavailable', 'outside_availability_window', 'product_missing',
         ]);
     }
 

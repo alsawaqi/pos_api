@@ -11,6 +11,7 @@ use App\Models\Ingredient;
 use App\Models\PosStaff;
 use App\Models\Production;
 use App\Models\StockMovement;
+use App\Support\StockDecimal;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -84,8 +85,8 @@ final readonly class CancelProductionAction
                     'branch_id' => $branchId,
                     'ingredient_id' => $ingredientId,
                     'movement_type' => StockMovement::TYPE_PRODUCTION_RETURN,
-                    'quantity' => number_format($qty, 3, '.', ''),
-                    'unit_cost_at_time' => number_format((float) ($costs[$ingredientId] ?? 0), 3, '.', ''),
+                    'quantity' => StockDecimal::quantity($qty),
+                    'unit_cost_at_time' => StockDecimal::unitCost($costs[$ingredientId] ?? 0),
                     'reference_type' => 'pos_productions',
                     'reference_id' => (int) $production->id,
                     'recorded_by_pos_staff_id' => $staffId,

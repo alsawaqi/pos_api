@@ -1,0 +1,31 @@
+{
+  "name": "inclusive_vat_single_rate",
+  "description": "LAUNCH-P4 C1: menu prices INCLUDE VAT (pricesIncludeTax). Lines 1.050 x1 + 0.800 x2 = gross G 2.650. One 5% VAT: R = 5, tax = round(G x r / (100 + R)) = round(2650 x 5 / 105) = round(126.190...) = 126. The grand total IS the gross: 2.650 (nothing is added on top). Identity for inclusive orders: raw - discount - comp = grand; the 126 baisas of VAT sit inside it (net of VAT 2.524).",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1050, "qty": 1 },
+      { "productId": 12, "categoryId": 90, "unitPriceBaisas": 800, "qty": 2 }
+    ],
+    "taxes": [{ "name": "VAT", "nameAr": "ضريبة القيمة المضافة", "ratePercent": 5.0 }],
+    "pricesIncludeTax": true,
+    "now": "2026-10-03T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 2650,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 2650,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 2650,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 126 }],
+    "taxTotalBaisas": 126,
+    "grandTotalBaisas": 2650
+  }
+}

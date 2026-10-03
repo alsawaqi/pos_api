@@ -1,0 +1,30 @@
+{
+  "name": "inclusive_not_registered_no_taxes",
+  "description": "LAUNCH-P4 C1 + owner decision 1: a merchant that is not VAT-registered gets an EMPTY effective tax list from the server, so no VAT is computed or printed whatever the inclusive switch says. 1.050 x1 with pricesIncludeTax and no taxes: tax 0, no tax lines, grand 1.050.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1050, "qty": 1 }
+    ],
+    "taxes": [],
+    "pricesIncludeTax": true,
+    "now": "2026-10-03T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1050,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 1050,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1050,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 1050
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "bundle_group_qty_forgiveness",
+  "description": "Combo composition depth: bundle 12 (2x product 201 + 1x product 202 for 6.000) with maxPerOrder 1. Instance '12:1': line 0 has qty 3 of product 201 — the group needs only 2 and the line's EXCESS is forgiven (the whole line is spent on the group; validation semantics from the machine's take = qty.clamp(0, requireQty)). Set value 8.000, discount 2.000 allocated by value 6.0/2.0 -> exactly 1500/500. Instance '12:2' is also intact but maxPerOrder 1 SKIPS it — full price. Raw 14000, discount 2000, subtotal 12000.",
+  "input": {
+    "lines": [
+      { "productId": 201, "categoryId": 47, "unitPriceBaisas": 2000, "qty": 3, "bundleKey": "12:1" },
+      { "productId": 202, "categoryId": 48, "unitPriceBaisas": 2000, "qty": 1, "bundleKey": "12:1" },
+      { "productId": 201, "categoryId": 47, "unitPriceBaisas": 2000, "qty": 2, "bundleKey": "12:2" },
+      { "productId": 202, "categoryId": 48, "unitPriceBaisas": 2000, "qty": 1, "bundleKey": "12:2" }
+    ],
+    "offers": [
+      {
+        "id": 12,
+        "name": "Family meal",
+        "type": "bundle",
+        "autoApply": false,
+        "maxPerOrder": 1,
+        "config": {
+          "price_baisas": 6000,
+          "groups": [
+            { "product_ids": [201], "qty": 2 },
+            { "product_ids": [202], "qty": 1 }
+          ]
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 14000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 12,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 1500, "1": 500 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 2000,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 2000,
+    "subtotalBaisas": 12000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 12000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 12000
+  }
+}

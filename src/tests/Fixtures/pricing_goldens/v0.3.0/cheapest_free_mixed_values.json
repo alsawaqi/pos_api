@@ -1,0 +1,46 @@
+{
+  "name": "cheapest_free_mixed_values",
+  "description": "cheapest_free 'buy 3, cheapest free' over one category with mixed prices: burgers 2.000 x 2 and fries 0.800 x 2. Application 1 takes the three MOST expensive units (2.000, 2.000, 0.800) and frees the cheapest of that set (0.800, on the fries line). Application 2 impossible (one 0.800 unit left < 3). Hand-computed: raw 5600; line 1 amount 800; subtotal 4800; grand 4800.",
+  "input": {
+    "lines": [
+      { "productId": 41, "categoryId": 40, "unitPriceBaisas": 2000, "qty": 2 },
+      { "productId": 42, "categoryId": 40, "unitPriceBaisas": 800, "qty": 2 }
+    ],
+    "offers": [
+      {
+        "id": 3,
+        "name": "Buy 3 cheapest free",
+        "type": "cheapest_free",
+        "autoApply": true,
+        "config": { "category_ids": [40], "qty": 3, "free_count": 1 }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 5600,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 3,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "1": 800 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 800,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 800,
+    "subtotalBaisas": 4800,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 4800,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 4800
+  }
+}

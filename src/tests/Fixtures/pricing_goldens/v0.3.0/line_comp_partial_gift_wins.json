@@ -1,0 +1,32 @@
+{
+  "name": "line_comp_partial_gift_wins",
+  "description": "A gifted 1.000 x 2 line plus a paid 0.500 line has a qty-1 manager comp aimed at the gifted line. Gift wins: manager comp is 0, the gift alone supplies comp total 2000, and taxed base is the paid 500. No reasoned wire row can be produced from the zero manager slice.",
+  "input": {
+    "lines": [
+      { "productId": 21, "categoryId": 20, "unitPriceBaisas": 1000, "qty": 2, "gifted": true },
+      { "productId": 22, "categoryId": 20, "unitPriceBaisas": 500, "qty": 1 }
+    ],
+    "comp": { "lineIndex": 0, "qty": 1, "reasonId": 2, "reason": "Spill" },
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 2500,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 2500,
+    "giftAmountsBaisas": { "0": 2000 },
+    "giftedTotalBaisas": 2000,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 2000,
+    "taxedBaseBaisas": 500,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 500
+  }
+}

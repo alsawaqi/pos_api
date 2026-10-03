@@ -1,0 +1,32 @@
+{
+  "name": "full_order_comp_with_gifted_line",
+  "description": "A FULL-ORDER manager comp on a cart with a gifted line: the comp covers only what isn't already gifted (no double write-off). Gifts 3000, manager part = subtotal 5000 - 3000 = 2000, comp total 5000. Fully comped order: taxed base 0, tax 0 even with VAT configured, grand 0.000.",
+  "input": {
+    "lines": [
+      { "productId": 21, "categoryId": 20, "unitPriceBaisas": 3000, "qty": 1, "gifted": true },
+      { "productId": 22, "categoryId": 20, "unitPriceBaisas": 2000, "qty": 1 }
+    ],
+    "comp": { "lineIndex": null, "reason": "Owner guest" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 5000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 5000,
+    "giftAmountsBaisas": { "0": 3000 },
+    "giftedTotalBaisas": 3000,
+    "managerCompBaisas": 2000,
+    "compTotalBaisas": 5000,
+    "taxedBaseBaisas": 0,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 0 }],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 0
+  }
+}

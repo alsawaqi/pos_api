@@ -1,0 +1,39 @@
+{
+  "name": "line_comp_partial_on_discounted_line",
+  "description": "A 2.000 x 2 line takes a 10% line rule (400), leaving net 3600. The partial comp basis is that post-rule net: n=1 of N=2 writes off ((2 * 3600 * 1) + 2) ~/ 4 = 1800, not half the raw 4000. Taxed base 1800; 5% VAT is 90; grand 1890.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 2 }
+    ],
+    "discountRules": [
+      {
+        "id": 4, "name": "Ten percent", "scope": "product",
+        "amountType": "percent", "percent": 10.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "comp": { "lineIndex": 0, "qty": 1, "reasonId": 2, "reason": "Spill" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 400, "ruleId": 4, "amountType": "percent" }
+    ],
+    "lineDiscountTotalBaisas": 400,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 400,
+    "subtotalBaisas": 3600,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 1800,
+    "compTotalBaisas": 1800,
+    "taxedBaseBaisas": 1800,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 90 }],
+    "taxTotalBaisas": 90,
+    "grandTotalBaisas": 1890
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "inclusive_delivery_exemption",
+  "description": "LAUNCH-P4 C1 + owner decision 2: a delivery-provider order carries NO VAT in either mode. Inclusive merchant, 5% VAT configured, delivery order 2.000 x2: no tax lines, tax 0, grand = gross 4.000 (the provider's price is final).",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 2 }
+    ],
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "pricesIncludeTax": true,
+    "isDeliveryProvider": true,
+    "now": "2026-10-03T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 4000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 4000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 4000
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "inclusive_tax_half_baisa_midpoint_law",
+  "description": "LAUNCH-P4 C1: the deterministic midpoint law on the inclusive path. Gross G 1.111 with two 5% taxes, R = 10: each line is 1111 x 5 / 110 = 50.5 EXACTLY, which rounds half AWAY from zero to 51 (round-half-even would give 50). Tax total 51 + 51 = 102 (sum-then-round: 1111 x 10 / 110 = 101). The quotient is computed exactly: rates are scaled to integer ten-thousandths of a percent and divided with integer arithmetic, never on a binary double. Grand = G = 1.111.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1111, "qty": 1 }
+    ],
+    "taxes": [
+      { "name": "VAT", "ratePercent": 5.0 },
+      { "name": "Municipality", "ratePercent": 5.0 }
+    ],
+    "pricesIncludeTax": true,
+    "now": "2026-10-03T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1111,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 1111,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1111,
+    "taxLines": [
+      { "name": "VAT", "amountBaisas": 51 },
+      { "name": "Municipality", "amountBaisas": 51 }
+    ],
+    "taxTotalBaisas": 102,
+    "grandTotalBaisas": 1111
+  }
+}

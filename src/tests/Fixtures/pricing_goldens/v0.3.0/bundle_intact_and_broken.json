@@ -1,0 +1,53 @@
+{
+  "name": "bundle_intact_and_broken",
+  "description": "Two instances of bundle offer 5 (burger + drink for 5.000). Instance '5:1' (burger 4.000 + drink 1.500) is INTACT: set 5.500, discount 0.500 allocated largest-remainder by value -> exact shares 363.64/136.36, floors 363+136=499, 1 leftover baisa to the larger remainder -> burger 364, drink 136. Instance '5:2' (burger only, drink removed) is BROKEN: full price, no discount. Hand-computed: raw 9500; offer rows line0 364 + line1 136; subtotal 9000; grand 9000.",
+  "input": {
+    "lines": [
+      { "productId": 101, "categoryId": 45, "unitPriceBaisas": 4000, "qty": 1, "bundleKey": "5:1" },
+      { "productId": 102, "categoryId": 46, "unitPriceBaisas": 1500, "qty": 1, "bundleKey": "5:1" },
+      { "productId": 101, "categoryId": 45, "unitPriceBaisas": 4000, "qty": 1, "bundleKey": "5:2" }
+    ],
+    "offers": [
+      {
+        "id": 5,
+        "name": "Burger + drink 5.000",
+        "type": "bundle",
+        "autoApply": false,
+        "config": {
+          "price_baisas": 5000,
+          "groups": [
+            { "product_ids": [101], "qty": 1 },
+            { "product_ids": [102], "qty": 1 }
+          ]
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 9500,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 5,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 364, "1": 136 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 500,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 500,
+    "subtotalBaisas": 9000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 9000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 9000
+  }
+}

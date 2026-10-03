@@ -1,0 +1,45 @@
+{
+  "name": "multi_buy_three_for_allocation",
+  "description": "multi_buy '3 for 1.000' on water 0.400 x 4. One application: set value 1.200, discount 0.200 allocated largest-remainder over three equal 0.400 units -> exact shares 66.67 baisas, floors 66+66+66=198, 2 leftover baisas to the largest remainders -> 67+67+66 = 200, all on line 0. Second application impossible (1 unit left). Hand-computed: raw 1600; line 0 offer amount 200; subtotal 1400; grand 1400.",
+  "input": {
+    "lines": [
+      { "productId": 5, "categoryId": 50, "unitPriceBaisas": 400, "qty": 4 }
+    ],
+    "offers": [
+      {
+        "id": 9,
+        "name": "3 waters 1.000",
+        "type": "multi_buy",
+        "autoApply": true,
+        "config": { "product_ids": [5], "qty": 3, "price_baisas": 1000 }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1600,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 9,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 200 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 200,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 200,
+    "subtotalBaisas": 1400,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1400,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 1400
+  }
+}

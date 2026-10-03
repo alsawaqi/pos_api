@@ -1,0 +1,39 @@
+{
+  "name": "order_slot_oversized_clamp",
+  "description": "Discount clamp at raw subtotal: a manual fixed order discount of 5.000 on a 2.000 cart that also carries a 10% line rule (0.200). The slot value is NEVER clamped at entry (reported as 5000); only the COMBINED discount clamps: min(5000 + 200, 2000) = 2000. Subtotal 0, grand 0.000 — the silent saturation the devices exhibit today, preserved faithfully (a ceiling is MARGIN-001's job, not CORE-001's).",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 2000, "qty": 1 }
+    ],
+    "discountRules": [
+      {
+        "id": 4, "name": "Ten percent", "scope": "product",
+        "amountType": "percent", "percent": 10.0,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "orderDiscount": { "kind": "fixed", "fixedBaisas": 5000, "label": "Manual", "reason": "test" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 2000,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 200, "ruleId": 4, "amountType": "percent" }
+    ],
+    "lineDiscountTotalBaisas": 200,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 5000,
+    "discountTotalBaisas": 2000,
+    "subtotalBaisas": 0,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 0,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 0 }],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 0
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "inclusive_discount_and_comp",
+  "description": "LAUNCH-P4 C1: discounts and comps come off the GROSS (VAT-inclusive) prices, then the VAT is taken out of what is left. Lines 1.500 x2 + 1.000 x1 = raw 4.000. Order slot 10% = 400, subtotal 3.600. Manager comp on line 1 (whole line) = 1.000, taxed gross base G = 2.600. VAT 5% = round(2600 x 5 / 105) = round(123.809...) = 124. Grand = G = 2.600; identity raw - discount - comp = grand: 4000 - 400 - 1000 = 2600.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1500, "qty": 2 },
+      { "productId": 12, "categoryId": 90, "unitPriceBaisas": 1000, "qty": 1 }
+    ],
+    "orderDiscount": { "kind": "percentage", "percent": 10.0, "label": "Ten off" },
+    "comp": { "lineIndex": 1, "reasonId": 2, "reason": "Spill" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "pricesIncludeTax": true,
+    "now": "2026-10-03T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 400,
+    "discountTotalBaisas": 400,
+    "subtotalBaisas": 3600,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 1000,
+    "compTotalBaisas": 1000,
+    "taxedBaseBaisas": 2600,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 124 }],
+    "taxTotalBaisas": 124,
+    "grandTotalBaisas": 2600
+  }
+}

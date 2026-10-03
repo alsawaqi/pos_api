@@ -1,0 +1,29 @@
+{
+  "name": "tax_half_baisa_midpoint_law",
+  "description": "DOCUMENTED DIVERGENCE CLASS #2 pinned: 5% VAT on a 0.090 base is EXACTLY 4.5 baisas — the core's deterministic decimal law rounds half away from zero to 5. The device computed this on a binary-noisy double and (for this input) rounded DOWN to 4; that representation-dependent outcome is an accident of the old pipeline, not a contract. Bounded at +/-1 baisa per rounded quantity, midpoints only. Grand 0.095.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 90, "qty": 1 }
+    ],
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 90,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 90,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 90,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 5 }],
+    "taxTotalBaisas": 5,
+    "grandTotalBaisas": 95
+  }
+}

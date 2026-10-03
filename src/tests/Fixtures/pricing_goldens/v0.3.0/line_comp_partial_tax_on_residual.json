@@ -1,0 +1,30 @@
+{
+  "name": "line_comp_partial_tax_on_residual",
+  "description": "A 1.000 x 2 line with no discounts is comped for n=1 of N=2: manager comp 1000, leaving taxed base 1000. The un-comped unit remains taxable; 5% VAT is 50 and grand is 1050, unlike a whole-line comp whose taxed base is zero.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1000, "qty": 2 }
+    ],
+    "comp": { "lineIndex": 0, "qty": 1, "reasonId": 2, "reason": "Spill" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 2000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 2000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 1000,
+    "compTotalBaisas": 1000,
+    "taxedBaseBaisas": 1000,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 50 }],
+    "taxTotalBaisas": 50,
+    "grandTotalBaisas": 1050
+  }
+}

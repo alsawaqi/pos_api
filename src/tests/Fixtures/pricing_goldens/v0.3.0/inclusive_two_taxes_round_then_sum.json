@@ -1,0 +1,36 @@
+{
+  "name": "inclusive_two_taxes_round_then_sum",
+  "description": "LAUNCH-P4 C1: inclusive ROUND-THEN-SUM over two taxes. Gross G 1.110, taxes 5% and 4.5%, R = 9.5. VAT = round(1110 x 5 / 109.5) = round(50.684...) = 51; Tourism = round(1110 x 4.5 / 109.5) = round(45.616...) = 46; tax total 97. Sum-then-round would give round(1110 x 9.5 / 109.5) = round(96.301...) = 96, one baisa LESS, so the structure is observable. Grand = G = 1.110.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 1110, "qty": 1 }
+    ],
+    "taxes": [
+      { "name": "VAT", "ratePercent": 5.0 },
+      { "name": "Tourism", "ratePercent": 4.5 }
+    ],
+    "pricesIncludeTax": true,
+    "now": "2026-10-03T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1110,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 0,
+    "subtotalBaisas": 1110,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 1110,
+    "taxLines": [
+      { "name": "VAT", "amountBaisas": 51 },
+      { "name": "Tourism", "amountBaisas": 46 }
+    ],
+    "taxTotalBaisas": 97,
+    "grandTotalBaisas": 1110
+  }
+}

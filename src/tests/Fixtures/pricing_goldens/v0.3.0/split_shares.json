@@ -1,0 +1,39 @@
+{
+  "name": "split_shares",
+  "kind": "split",
+  "description": "Split-payment share math. Equal split of 10.000 by 3: each share rounds to 3.333; the FINAL leg takes the exact remainder 3.334 so the legs close to the total. Custom plans: the last share is rewritten to the exact remainder; every non-final share needs >= 1 baisa and the remainder itself must be >= 1 baisa or the plan is rejected.",
+  "cases": [
+    {
+      "case": "equal_share_10000_by_3",
+      "equalShare": { "grand": 10000, "count": 3, "expected": 3333 }
+    },
+    {
+      "case": "final_leg_exact_remainder",
+      "remainderShare": { "grand": 10000, "paidBase": 6666, "expected": 3334 }
+    },
+    {
+      "case": "equal_share_count_1_is_grand",
+      "equalShare": { "grand": 10000, "count": 1, "expected": 10000 }
+    },
+    {
+      "case": "plan_last_share_rewritten",
+      "plan": { "shares": [2000, 3000, 999], "grand": 10000, "expected": [2000, 3000, 5000] }
+    },
+    {
+      "case": "plan_one_baisa_final_leg_ok",
+      "plan": { "shares": [9999, 500], "grand": 10000, "expected": [9999, 1] }
+    },
+    {
+      "case": "plan_rejected_no_remainder",
+      "plan": { "shares": [10000, 500], "grand": 10000, "expected": null }
+    },
+    {
+      "case": "plan_rejected_zero_head_share",
+      "plan": { "shares": [0, 5000, 5000], "grand": 10000, "expected": null }
+    },
+    {
+      "case": "plan_rejected_single_share",
+      "plan": { "shares": [10000], "grand": 10000, "expected": null }
+    }
+  ]
+}

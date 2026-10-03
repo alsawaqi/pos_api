@@ -1,0 +1,39 @@
+{
+  "name": "line_comp_partial_third_n2",
+  "description": "The same 0.400 x 3 line and fixed 0.200 rule leave net 1000. Comping n=2 of N=3 uses ((2 * 1000 * 2) + 3) ~/ (2 * 3) = 667. This deliberately differs from the offer engine's independent 3-dp accumulation of two 1000/3 units (666). Taxed base 333; 5% VAT rounds to 17; grand 350.",
+  "input": {
+    "lines": [
+      { "productId": 11, "categoryId": 90, "unitPriceBaisas": 400, "qty": 3 }
+    ],
+    "discountRules": [
+      {
+        "id": 4, "name": "Fixed 0.200", "scope": "product",
+        "amountType": "fixed", "fixedBaisas": 200,
+        "targets": [{ "targetType": "product", "targetId": 11 }]
+      }
+    ],
+    "comp": { "lineIndex": 0, "qty": 2, "reasonId": 2, "reason": "Spill" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1200,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 200, "ruleId": 4, "amountType": "fixed" }
+    ],
+    "lineDiscountTotalBaisas": 200,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 200,
+    "subtotalBaisas": 1000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 667,
+    "compTotalBaisas": 667,
+    "taxedBaseBaisas": 333,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 17 }],
+    "taxTotalBaisas": 17,
+    "grandTotalBaisas": 350
+  }
+}

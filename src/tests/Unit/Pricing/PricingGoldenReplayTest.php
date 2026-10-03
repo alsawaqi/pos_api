@@ -84,9 +84,14 @@ final class PricingGoldenReplayTest extends TestCase
         }
         self::assertSame($expectedTaxes, $actualTaxes, 'taxLines');
 
+        // LAUNCH-P4 (v0.3.0) — a VAT-inclusive vector keeps the tax inside
+        // the grand total; an exclusive one adds it on top.
+        $inclusive = ($vector['input']['pricesIncludeTax'] ?? false) === true;
+        self::assertSame($inclusive, $result->pricesIncludeTax, 'pricesIncludeTax');
         self::assertSame(
             $result->grandTotalBaisas,
-            $result->rawSubtotalBaisas - $result->discountTotalBaisas - $result->compTotalBaisas + $result->taxTotalBaisas,
+            $result->rawSubtotalBaisas - $result->discountTotalBaisas - $result->compTotalBaisas
+                + ($inclusive ? 0 : $result->taxTotalBaisas),
             'exact zero-baisa invariant',
         );
     }
@@ -145,7 +150,8 @@ final class PricingGoldenReplayTest extends TestCase
 
     private static function fixtureDirectory(): string
     {
-        return dirname(__DIR__, 2).'/Fixtures/pricing_goldens/v0.2.0';
+        // LAUNCH-P4 — the pinned engine: mithqal_pricing v0.3.0.
+        return dirname(__DIR__, 2).'/Fixtures/pricing_goldens/v0.3.0';
     }
 
     /** @return array<string, mixed> */

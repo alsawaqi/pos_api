@@ -1,0 +1,39 @@
+{
+  "name": "line_comp_partial_midpoint",
+  "description": "A 0.550 x 2 line takes a 9% line rule (99), leaving net 1001. Comping n=1 of N=2 is the exact midpoint: ((2 * 1001 * 1) + 2) ~/ (2 * 2) = 501, half away from zero. Taxed base 500; 5% VAT is 25; grand 525.",
+  "input": {
+    "lines": [
+      { "productId": 12, "categoryId": 90, "unitPriceBaisas": 550, "qty": 2 }
+    ],
+    "discountRules": [
+      {
+        "id": 5, "name": "Nine percent", "scope": "product",
+        "amountType": "percent", "percent": 9.0,
+        "targets": [{ "targetType": "product", "targetId": 12 }]
+      }
+    ],
+    "comp": { "lineIndex": 0, "qty": 1, "reasonId": 2, "reason": "Spill" },
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 1100,
+    "lineDiscounts": [
+      { "lineIndex": 0, "amountBaisas": 99, "ruleId": 5, "amountType": "percent" }
+    ],
+    "lineDiscountTotalBaisas": 99,
+    "appliedOffers": [],
+    "offerDiscountTotalBaisas": 0,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 99,
+    "subtotalBaisas": 1001,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 501,
+    "compTotalBaisas": 501,
+    "taxedBaseBaisas": 500,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 25 }],
+    "taxTotalBaisas": 25,
+    "grandTotalBaisas": 525
+  }
+}

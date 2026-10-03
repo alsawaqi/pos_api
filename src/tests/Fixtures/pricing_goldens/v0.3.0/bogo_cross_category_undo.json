@@ -1,0 +1,49 @@
+{
+  "name": "bogo_cross_category_undo",
+  "description": "BOGO buying from category 20 (mains, 2 units at 3.000) rewarding category 30 (drinks, 1 unit at 1.000) at 50% off. Application 1: buy consumes one main, get halves the drink (0.500). Application 2: buy consumes the second main, but the get pool is empty -> that buy is UNDONE (the main stays available to later offers) and the loop breaks. Hand-computed: raw 7000; one application, line 1 amount 500; subtotal 6500; no tax; grand 6500.",
+  "input": {
+    "lines": [
+      { "productId": 21, "categoryId": 20, "unitPriceBaisas": 3000, "qty": 2 },
+      { "productId": 31, "categoryId": 30, "unitPriceBaisas": 1000, "qty": 1 }
+    ],
+    "offers": [
+      {
+        "id": 4,
+        "name": "Main + half-price drink",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "category_ids": [20], "qty": 1 },
+          "get": { "category_ids": [30], "qty": 1, "percent_off": 50 }
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 7000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 4,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "1": 500 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 500,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 500,
+    "subtotalBaisas": 6500,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 6500,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 6500
+  }
+}

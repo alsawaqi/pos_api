@@ -1,0 +1,48 @@
+{
+  "name": "bogo_two_applications",
+  "description": "Unlimited maxPerOrder: the same BOGO applies TWICE over four 1.000 units (each application consumes a buy unit and frees a get unit), then the pool is empty. applications = 2, total off 2.000. Raw 4000, subtotal 2000, grand 2000.",
+  "input": {
+    "lines": [
+      { "productId": 3, "categoryId": 60, "unitPriceBaisas": 1000, "qty": 4 }
+    ],
+    "offers": [
+      {
+        "id": 1,
+        "name": "BOGO unlimited",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "product_ids": [3], "qty": 1 },
+          "get": { "same_as_buy": true, "qty": 1, "percent_off": 100 }
+        }
+      }
+    ],
+    "taxes": [],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 4000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 1,
+        "applications": 2,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 2000 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 2000,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 2000,
+    "subtotalBaisas": 2000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 2000,
+    "taxLines": [],
+    "taxTotalBaisas": 0,
+    "grandTotalBaisas": 2000
+  }
+}

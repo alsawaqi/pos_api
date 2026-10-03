@@ -1,0 +1,48 @@
+{
+  "name": "bogo_same_as_buy_pair",
+  "description": "BOGO buy-1-get-1 (same_as_buy, 100%) on one line of qty 3 at 2.000. Application 1: buy consumes one unit, get frees the cheapest remaining (2.000 off). Application 2: buy consumes the third unit, the get pool is then empty -> the buy is UNDONE and the loop breaks. Hand-computed: raw 6000; one application, line 0 amount 2000; subtotal 4000; VAT 5% on 4000 = 200; grand 4200.",
+  "input": {
+    "lines": [
+      { "productId": 1, "categoryId": 10, "unitPriceBaisas": 2000, "qty": 3 }
+    ],
+    "offers": [
+      {
+        "id": 1,
+        "name": "Coffee BOGO",
+        "type": "bogo",
+        "autoApply": true,
+        "config": {
+          "buy": { "product_ids": [1], "qty": 1 },
+          "get": { "same_as_buy": true, "qty": 1, "percent_off": 100 }
+        }
+      }
+    ],
+    "taxes": [{ "name": "VAT", "ratePercent": 5.0 }],
+    "now": "2026-08-16T12:00:00",
+    "branchId": 1
+  },
+  "expected": {
+    "rawSubtotalBaisas": 6000,
+    "lineDiscounts": [],
+    "lineDiscountTotalBaisas": 0,
+    "appliedOffers": [
+      {
+        "offerId": 1,
+        "applications": 1,
+        "orderAmountBaisas": 0,
+        "lineAmountsBaisas": { "0": 2000 }
+      }
+    ],
+    "offerDiscountTotalBaisas": 2000,
+    "orderDiscountBaisas": 0,
+    "discountTotalBaisas": 2000,
+    "subtotalBaisas": 4000,
+    "giftedTotalBaisas": 0,
+    "managerCompBaisas": 0,
+    "compTotalBaisas": 0,
+    "taxedBaseBaisas": 4000,
+    "taxLines": [{ "name": "VAT", "amountBaisas": 200 }],
+    "taxTotalBaisas": 200,
+    "grandTotalBaisas": 4200
+  }
+}

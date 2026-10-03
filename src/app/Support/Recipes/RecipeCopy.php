@@ -27,6 +27,12 @@ use Illuminate\Support\Facades\DB;
  *    {ingredient_id, qty, unit, unit_cost} per ONE unit — so pay and void
  *    (ConsumeInventoryAction), the pos_admin reversal copy and the portal's
  *    cost of goods read it unchanged.
+ *  - Fix order 1 M1-b: exploded quantities keep 8 decimals
+ *    ({@see PrepExploder::PER_UNIT_SCALE}), so the portal's cost of goods
+ *    equals the theoretical cost (15 ml of a saffron syrup copies 0.00003 kg
+ *    of saffron, not 0). Pay and void still round the per-unit plan to the
+ *    ledger's 4 decimals (P2 behaviour); the portal's save-time guard keeps
+ *    that stock error within 1 %.
  *
  * One instance per order write: it caches what it read.
  */
@@ -78,7 +84,7 @@ final class RecipeCopy
             'qty' => (float) $line['quantity'],
             'unit' => $line['unit'],
             'unit_cost' => (float) $line['unit_cost'],
-        ], $this->exploder->explode($lines));
+        ], $this->exploder->explode($lines, 1, PrepExploder::PER_UNIT_SCALE));
     }
 
     /**
@@ -160,7 +166,7 @@ final class RecipeCopy
         }
 
         $partsByLine = [];
-        foreach ($this->exploder->explode($ingredientLines) as $part) {
+        foreach ($this->exploder->explode($ingredientLines, 1, PrepExploder::PER_UNIT_SCALE) as $part) {
             $partsByLine[$part['line']][] = $part;
         }
 

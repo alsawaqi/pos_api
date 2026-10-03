@@ -25,7 +25,8 @@ use Illuminate\Support\Facades\DB;
  * repeated until only raw ingredients remain; lines of the same raw
  * ingredient merge. A prep may use another prep, at most MAX_LEVELS deep.
  * Arithmetic is exact (rationals) until the end: quantities are then rounded
- * half up to 4 decimals, costs to 6. The cost of P per base unit is
+ * half up to 4 decimals (8 for a per-unit amount that is multiplied later,
+ * {@see PER_UNIT_SCALE}), costs to 6. The cost of P per base unit is
  * Σ(c.quantity × cost(c)) ÷ P.prep_yield_quantity, recursively — the same
  * number as the exploded raw lines priced at their own costs.
  *
@@ -43,6 +44,15 @@ final class PrepExploder
 {
     /** Prep levels allowed: a dish's prep (1) may use a prep (2) that uses a prep (3). */
     public const MAX_LEVELS = 3;
+
+    /**
+     * LAUNCH-P3 fix order 1 (M1-b, L6) — decimals kept on a PER-UNIT amount
+     * that is multiplied later: an order line's copy (× the line qty at pay,
+     * and by the portal's cost of goods) and the kitchen's per-piece lines
+     * (× the pieces). 15 ml of a saffron syrup holds 0.00003 kg of saffron;
+     * at the ledger's 4 decimals that copy would read 0 (no cost of goods).
+     */
+    public const PER_UNIT_SCALE = 8;
 
     public const PROBLEM_CYCLE = 'cycle';
 
@@ -75,15 +85,18 @@ final class PrepExploder
      *
      * @param  iterable<array{ingredient_id: int|string, quantity: mixed, unit?: string|null, group?: string}>  $lines
      * @param  int|string  $multiplier  applied before rounding (a batch of N pieces)
+     * @param  int  $scale  decimals of the result: the ledger's 4 for an amount that is
+     *                      written as is, {@see PER_UNIT_SCALE} for a per-unit amount
+     *                      that is multiplied later
      * @return list<array{ingredient_id: int, quantity: string, unit: string|null, unit_cost: string, group: string, line: int}>
      */
-    public function explode(iterable $lines, int|string $multiplier = 1): array
+    public function explode(iterable $lines, int|string $multiplier = 1, int $scale = StockDecimal::QUANTITY_SCALE): array
     {
         $rows = [];
         foreach ($this->explodeExact($lines, $multiplier) as $line) {
             $rows[] = [
                 'ingredient_id' => $line['ingredient_id'],
-                'quantity' => (string) $line['quantity']->toScale(StockDecimal::QUANTITY_SCALE, RoundingMode::HALF_UP),
+                'quantity' => (string) $line['quantity']->toScale($scale, RoundingMode::HALF_UP),
                 'unit' => $line['unit'],
                 'unit_cost' => $line['unit_cost'],
                 'group' => $line['group'],

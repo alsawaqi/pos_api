@@ -110,7 +110,14 @@ class PreparedTableWasteRegressionTest extends TestCase
         }
     }
 
-    public function test_text_alone_or_another_devices_cancellation_does_not_bypass_shelf_validation(): void
+    /**
+     * LAUNCH-P3 fix order 1 K3 (owner decision 2026-10-02): waste is never
+     * refused on the shelf numbers, so there is no shelf check left to
+     * bypass. What stays: text alone or another device's cancellation is NOT
+     * a prepared-table cancellation proof — the waste is ordinary waste (no
+     * table_cancellation_waste stamp) and consumes no cancellation allowance.
+     */
+    public function test_text_alone_or_another_devices_cancellation_is_ordinary_waste_not_a_cancellation_proof(): void
     {
         $this->device();
         $other = $this->device('other-device');
@@ -128,10 +135,16 @@ class PreparedTableWasteRegressionTest extends TestCase
             if ($ref !== null) {
                 $payload['table_cancellation_request_id'] = $ref;
             }
-            $this->push([$this->wasteEvent($payload)])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+            $result = $this->push([$this->wasteEvent($payload)])->assertOk()
+                ->assertJsonPath('data.results.0.status', 'processed')
+                ->json('data.results.0.result');
+            $this->assertArrayNotHasKey('table_cancellation_waste', $result);
+            // The shelf was already short: a warning, not a refusal.
+            $this->assertSame(1, $result['wasted_lines']);
+            $this->assertCount(1, $result['shelf_shortfalls']);
         }
-        $this->assertDatabaseCount('pos_product_stock_movements', 0);
-        $this->assertSame(-2.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
+        $this->assertDatabaseCount('pos_product_stock_movements', 2);
+        $this->assertSame(-4.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
     }
 
     public function test_fix5_each_cancellation_authorizes_only_its_own_quantity_once(): void
@@ -188,6 +201,11 @@ class PreparedTableWasteRegressionTest extends TestCase
         $this->assertDatabaseHas('pos_product_stock_movements', ['product_id' => 1, 'quantity' => '-1.000', 'movement_type' => 'waste']);
     }
 
+    /**
+     * LAUNCH-P3 fix order 1 K3: such a waste is recorded as ordinary waste
+     * (never refused on the shelf numbers), but it is never stamped as a
+     * prepared-table cancellation proof.
+     */
     public function test_fix5_other_tenant_table_and_unprepared_cancellation_cannot_authorize_waste(): void
     {
         $device = $this->device();
@@ -212,9 +230,13 @@ class PreparedTableWasteRegressionTest extends TestCase
                 'payload_json' => ['table_id' => $table->id, 'product_id' => 1, 'qty' => 1,
                     'prepared' => $kind !== 'unprepared', 'staff_id' => 7],
                 'result_json' => ['outcome' => 'bill_terminal', 'cancelled_qty' => 0]]);
-            $this->push([$this->wasteEvent(['lines' => [['product_id' => 1, 'qty' => 1, 'reason' => 'other']],
-                'staff_id' => 7, 'note' => 'Prepared loss', 'table_cancellation_request_id' => $id])])->assertOk()->assertJsonPath('data.results.0.status', 'failed');
+            $result = $this->push([$this->wasteEvent(['lines' => [['product_id' => 1, 'qty' => 1, 'reason' => 'other']],
+                'staff_id' => 7, 'note' => 'Prepared loss', 'table_cancellation_request_id' => $id])])->assertOk()
+                ->assertJsonPath('data.results.0.status', 'processed')
+                ->json('data.results.0.result');
+            $this->assertArrayNotHasKey('table_cancellation_waste', $result);
         }
-        $this->assertDatabaseCount('pos_product_stock_movements', 0);
+        $this->assertDatabaseCount('pos_product_stock_movements', 3);
+        $this->assertSame(-5.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
     }
 }

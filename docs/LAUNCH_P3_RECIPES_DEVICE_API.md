@@ -69,6 +69,26 @@ Finishing a batch stamps the `produced` product movement's `unit_cost` with
 each ingredient at the unit cost frozen on its `production_consumption` movement
 (the live cost only when a batch has none).
 
+## Device product waste (fix order 1, K2 and K3)
+
+`product.waste` (`ProductWasteHandler`):
+
+- **K2 — cost.** A cooked piece is wasted at the batch cost per piece its cost of goods
+  reads (pos_merchant `OrderLineCost`): the `unit_cost` of the latest stamped
+  `produced` movement at or before the waste, at the device's branch, else at any
+  branch. Fallback (no stamped batch, and every unit product): `cost_price` when set,
+  else the recipe cost through prep items.
+- **K3 — never refused on the shelf (owner decision 2026-10-02: waste follows the
+  selling rule).** A waste larger than the shelf count takes it below zero. With no
+  count at the branch (no `pos_branch_product` row, or a NULL `stock_qty`) the waste is
+  recorded and no shelf moves; a row is never created (rows also scope where a product
+  is sold). Either case is reported as `result.shelf_shortfalls`:
+  `[{product_id, name, wasted, on_shelf}]` (`on_shelf` null = no count), an additive
+  key present only when non-empty. A proved prepared-table cancellation still caps its
+  own waste at the cancelled quantity (that is the cancellation's accounting, not a
+  stock number); an unproved one is ordinary waste.
+- `wasted_at` is read with its offset and stored in UTC.
+
 ## P3-6 The recipe of the moment of sale
 
 Rule (`App\Support\Recipes\RecipeInForce`):

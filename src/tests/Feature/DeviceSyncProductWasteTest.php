@@ -119,8 +119,10 @@ class DeviceSyncProductWasteTest extends TestCase
         ]);
     }
 
-    public function test_cannot_waste_more_than_the_shelf_holds(): void
+    public function test_wasting_more_than_the_shelf_holds_is_recorded_and_warned(): void
     {
+        // LAUNCH-P3 fix order 1 K3 (owner decision 2026-10-02): waste follows
+        // the selling rule — never refused on the shelf numbers.
         $this->device();
         $this->seedProduct(1, 'unit', '0.200');
         $this->seedShelf(1, '2.000');
@@ -129,9 +131,10 @@ class DeviceSyncProductWasteTest extends TestCase
             'lines' => [['product_id' => 1, 'qty' => 5, 'reason' => 'dropped']],
         ])])->assertOk();
 
-        $this->assertSame('failed', $res->json('data.results.0.status'));
-        $this->assertSame(2.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
-        $this->assertDatabaseMissing('pos_product_stock_movements', ['product_id' => 1, 'movement_type' => 'waste']);
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertSame('2.000', $res->json('data.results.0.result.shelf_shortfalls.0.on_shelf'));
+        $this->assertSame(-3.0, (float) DB::table('pos_branch_product')->where('product_id', 1)->value('stock_qty'));
+        $this->assertDatabaseHas('pos_product_stock_movements', ['product_id' => 1, 'movement_type' => 'waste', 'quantity' => '-5.000']);
     }
 
     public function test_refuses_an_ineligible_product(): void

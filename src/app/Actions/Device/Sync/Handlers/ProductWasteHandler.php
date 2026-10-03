@@ -17,6 +17,7 @@ use App\Models\TableSessionEvent;
 use App\Support\Recipes\PrepExploder;
 use App\Support\Recipes\RecipeInForce;
 use App\Support\StockDecimal;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -29,17 +30,25 @@ use RuntimeException;
  *
  * The product-units parallel of the `stock.count` shortfall path: per line a
  * signed-negative 'waste' ProductStockMovement is written (with the WasteReason
- * + a per-unit cost FROZEN at this moment — cost_price when set, else a cooked
- * item's recipe cost) and the branch shelf (pos_branch_product.stock_qty) is
- * decremented. Ordinary waste is capped by shelf stock. A proved prepared-table
- * cancellation may record physical loss even when the shelf is already negative. The merchant Loss/Waste report surfaces it
- * with no extra wiring.
+ * + a per-unit cost FROZEN at this moment, {@see unitCost()}) and the branch
+ * shelf (pos_branch_product.stock_qty) is decremented. The merchant Loss/Waste
+ * report surfaces it with no extra wiring.
+ *
+ * LAUNCH-P3 fix order 1 K3 (owner decision 2026-10-02: waste follows the
+ * selling rule) — waste is NEVER refused on the shelf numbers. A waste larger
+ * than the shelf count takes the count below zero; with no count at this
+ * branch (no row, or a NULL stock_qty) the waste is still recorded and no
+ * shelf moves (a row is never created: rows also scope availability). Either
+ * case is reported back in result.shelf_shortfalls (additive key, present
+ * only when non-empty). A proved prepared-table cancellation still caps its
+ * own waste at the cancelled quantity — an accounting identity, not a stock
+ * number.
  *
  * Wastage is LOSS-tracking, NOT an expense — the cost was already booked at
  * purchase (unit) or production (cooked) under the cash model.
  *
- * The whole event is atomic: a bad line (unknown/ineligible product, over-waste)
- * fails the entire submission, mirroring the ingredient stock-count flow.
+ * The whole event is atomic: a bad line (unknown/ineligible product) fails the
+ * entire submission, mirroring the ingredient stock-count flow.
  */
 class ProductWasteHandler implements SyncEventHandler
 {
@@ -66,8 +75,9 @@ class ProductWasteHandler implements SyncEventHandler
 
         $companyId = (int) $device->company_id;
         $branchId = (int) $device->branch_id;
+        // UTC like the ledger (an offset stamp keeps its instant, fix order 1 K6).
         $wastedAt = isset($payload['wasted_at'])
-            ? Carbon::parse((string) $payload['wasted_at'])
+            ? Carbon::parse((string) $payload['wasted_at'])->utc()
             : ($event->client_timestamp ?? now());
         // Phase 4 — the recorded_by staff id (an audit column) must be a staff
         // member of the device's own company; withTrashed keeps offline-queued
@@ -102,9 +112,9 @@ class ProductWasteHandler implements SyncEventHandler
             // Internal capability only: the QR cancellation action holds the
             // scoped order/items, caps these quantities and commits its audit
             // atomically. No HTTP/sync payload field can supply this argument.
-            $preparedTableWaste = $authority !== null || $preparedQuickCancellation !== null;
             $wastedLines = 0;
             $totalQty = 0.0;
+            $shortfalls = [];
 
             foreach ($resolved as $line) {
                 /** @var Product $product */
@@ -116,15 +126,18 @@ class ProductWasteHandler implements SyncEventHandler
                     ->where('product_id', $product->id)
                     ->lockForUpdate()
                     ->first();
-                $available = $row?->stock_qty !== null ? (float) $row->stock_qty : 0.0;
+                $counted = $row?->stock_qty !== null;
+                $available = $counted ? (float) $row->stock_qty : 0.0;
 
-                if ($row === null || (! $preparedTableWaste && $qty > $available + 1e-9)) {
-                    throw new RuntimeException(sprintf(
-                        'Cannot waste %s of %s: only %s on the shelf.',
-                        rtrim(rtrim(number_format($qty, 3, '.', ''), '0'), '.'),
-                        $product->name,
-                        rtrim(rtrim(number_format($available, 3, '.', ''), '0'), '.'),
-                    ));
+                // K3 — sell, but warn: report a waste the shelf count does not
+                // cover; never refuse it.
+                if (! $counted || $qty > $available + 1e-9) {
+                    $shortfalls[] = [
+                        'product_id' => (int) $product->id,
+                        'name' => (string) $product->name,
+                        'wasted' => number_format($qty, 3, '.', ''),
+                        'on_shelf' => $counted ? number_format($available, 3, '.', '') : null,
+                    ];
                 }
 
                 ProductStockMovement::create([
@@ -134,14 +147,14 @@ class ProductWasteHandler implements SyncEventHandler
                     'movement_type' => ProductStockMovement::TYPE_WASTE,
                     'reason' => $line['reason'],
                     'quantity' => number_format(-$qty, 3, '.', ''),
-                    'unit_cost' => $this->unitCost($product),
+                    'unit_cost' => $this->unitCost($product, $branchId, $wastedAt),
                     'recorded_by_pos_staff_id' => $staffId,
                     'note' => $note,
                     'occurred_at' => $wastedAt,
                     'created_at' => now(),
                 ]);
 
-                if ($row->stock_qty !== null) {
+                if ($counted) {
                     $row->stock_qty = $available - $qty;
                     $row->save();
                 }
@@ -155,6 +168,7 @@ class ProductWasteHandler implements SyncEventHandler
                 ...($preparedQuickCancellation === null ? [] : ['quick_cancellation_waste' => $preparedQuickCancellation]),
                 'wasted_lines' => $wastedLines,
                 'total_qty' => number_format($totalQty, 3, '.', ''),
+                ...($shortfalls === [] ? [] : ['shelf_shortfalls' => $shortfalls]),
             ];
         });
     }
@@ -256,13 +270,34 @@ class ProductWasteHandler implements SyncEventHandler
     }
 
     /**
-     * The per-unit cost frozen at waste time: cost_price when set, else (for a
-     * cooked item) its recipe cost = Σ(recipe.quantity × ingredient cost). A
-     * unit product with no recipe falls back to 0. LAUNCH-P3 — a prep item in
-     * the recipe is costed through its own recipe (the explode rule).
+     * The per-unit cost frozen at waste time.
+     *
+     * LAUNCH-P3 fix order 1 K2 — a COOKED piece is valued like its cost of
+     * goods (pos_merchant OrderLineCost): the batch cost per piece stamped on
+     * the latest 'produced' movement at or before the waste, at this branch,
+     * else at any branch. Without a stamped batch (everything produced before
+     * P3), and for unit products: cost_price when set, else the recipe cost =
+     * Σ(recipe.quantity × ingredient cost) through prep items (the explode
+     * rule); a unit product with no recipe falls back to 0.
      */
-    private function unitCost(Product $product): string
+    private function unitCost(Product $product, int $branchId, CarbonInterface $wastedAt): string
     {
+        if ($product->stock_mode === 'cooked') {
+            $at = $wastedAt->copy()->utc()->format('Y-m-d H:i:s');
+            $batches = DB::table('pos_product_stock_movements')
+                ->where('company_id', (int) $product->company_id)
+                ->where('product_id', (int) $product->id)
+                ->where('movement_type', 'produced')
+                ->whereNotNull('unit_cost')
+                ->where('occurred_at', '<=', $at)
+                ->orderByDesc('occurred_at')
+                ->orderByDesc('id');
+            $batchCost = (clone $batches)->where('branch_id', $branchId)->value('unit_cost') ?? $batches->value('unit_cost');
+            if ($batchCost !== null) {
+                return (string) StockDecimal::unitCost(StockDecimal::exact($batchCost));
+            }
+        }
+
         $costPrice = (float) ($product->cost_price ?? 0);
         if ($costPrice > 0) {
             return number_format($costPrice, 3, '.', '');

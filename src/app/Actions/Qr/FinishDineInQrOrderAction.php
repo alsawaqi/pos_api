@@ -144,6 +144,8 @@ final class FinishDineInQrOrderAction
             'receipt_number' => $order->receipt_number,
             'temp_reference' => $order->temp_reference,
             'grand_total_baisas' => Money::toBaisas($order->grand_total),
+            // LAUNCH-P4 — true: the tax is already inside grand_total.
+            'prices_include_tax' => (bool) $order->prices_include_tax,
         ];
     }
 }

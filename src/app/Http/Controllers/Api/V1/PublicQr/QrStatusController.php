@@ -53,6 +53,8 @@ class QrStatusController
                 'discount_total_baisas' => Money::toBaisas($order->discount_total),
                 'tax_total_baisas' => Money::toBaisas($order->tax_total),
                 'grand_total_baisas' => Money::toBaisas($order->grand_total),
+                // LAUNCH-P4 — true: the tax is already inside grand_total.
+                'prices_include_tax' => (bool) $order->prices_include_tax,
             ] : null,
         ];
 
@@ -85,6 +87,7 @@ class QrStatusController
                 'discount_total_baisas' => Money::toBaisas($visibleOrder->discount_total),
                 'tax_total_baisas' => Money::toBaisas($visibleOrder->tax_total),
                 'grand_total_baisas' => Money::toBaisas($visibleOrder->grand_total),
+                'prices_include_tax' => (bool) $visibleOrder->prices_include_tax,
             ];
         }
         $rounds = QrOrderRound::query()

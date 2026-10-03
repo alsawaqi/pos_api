@@ -162,6 +162,8 @@ final class VatInclusiveTest extends TestCase
         $session = $this->p4QrSession();
         $lines = [['product_id' => $product, 'qty' => 2, 'addon_ids' => [], 'notes' => '']];
 
+        $this->p4QrGet($session, '/api/v1/public/qr/menu')->assertOk()
+            ->assertJsonPath('data.tax', ['vat_registered' => true, 'prices_include_vat' => true, 'prices_include_tax' => true]);
         $this->p4QrPost($session, '/api/v1/public/qr/quote', ['lines' => $lines])->assertOk()
             ->assertJsonPath('data.quote.subtotal_baisas', 4000)
             ->assertJsonPath('data.quote.tax_total_baisas', 190)

@@ -216,6 +216,14 @@ final class ReadTableDetailAction
                     'base_price_baisas', 'unit_price_baisas', 'line_discount_baisas', 'line_total_baisas',
                     'order_item_id', 'cancelled_qty', 'cancelled_discount_baisas', 'held_reason', 'held_disposition',
                     'addon_id', 'addon_ids', 'requested']);
+                // LAUNCH-P4 — a combo line's chosen items, per ONE combo.
+                if (isset($line['components'])) {
+                    $safe['components'] = array_map(static fn (array $component): array => Arr::only($component, [
+                        'slot_id', 'slot_name', 'slot_name_ar', 'product_id', 'name', 'name_ar', 'product_name', 'product_name_ar',
+                        'qty', 'extra_price_baisas', 'notes',
+                    ]) + ['addons' => array_map(static fn (array $addon): array => Arr::only($addon, ['add_on_id', 'name', 'name_ar', 'price_delta_baisas']),
+                        $component['addons'] ?? [])], $line['components']);
+                }
                 foreach (['addons' => ['add_on_id', 'name', 'name_ar', 'price_delta_baisas'],
                     'cancellations' => ['qty', 'discount_baisas', 'at']] as $key => $fields) {
                     if (isset($line[$key])) {

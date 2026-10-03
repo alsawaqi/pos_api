@@ -56,6 +56,10 @@ trait RejectsClientPricing
         'tax_total_baisas',
         'grand_total_baisas',
         'comp_total_baisas',
+        // LAUNCH-P4 — a combo choice's extra price is the catalogue's, never the client's.
+        'extra_price',
+        'extra_price_baisas',
+        'extra_price_display',
     ];
 
     protected function prepareForValidation(): void

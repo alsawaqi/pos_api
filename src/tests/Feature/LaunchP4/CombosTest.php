@@ -283,7 +283,8 @@ final class CombosTest extends TestCase
         // A client price inside a combo is refused like anywhere else.
         $priced = $this->qrLine();
         $priced['combo'][0]['extra_price_baisas'] = 0;
-        $this->p4QrPost($session, '/api/v1/public/qr/quote', ['lines' => [$priced]])->assertStatus(422);
+        $this->p4QrPost($session, '/api/v1/public/qr/quote', ['lines' => [$priced]])->assertStatus(422)
+            ->assertJsonPath('errors.0.code', 'client_priced_payload_rejected');
 
         $this->p4QrPost($session, '/api/v1/public/qr/checkout', $this->p4QrCheckout([$this->qrLine()]))->assertStatus(201)
             ->assertJsonPath('data.order.grand_total_baisas', 6000);
@@ -321,8 +322,17 @@ final class CombosTest extends TestCase
 
         $ticket = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/kitchen/claim-print', ['ticket_key' => 'round:'.$round->id])
             ->assertSuccessful()->json('data');
-        $this->assertSame(['Burger', 'Fries', 'Juice'], array_column($ticket['priced_lines'][0]['components'], 'product_name'));
+        $this->assertSame(['Burger', 'Fries', 'Juice'], array_column($ticket['priced_lines'][0]['components'], 'name'));
+        $this->assertSame([1, 1, 1], array_column($ticket['priced_lines'][0]['components'], 'qty'));
+        $this->assertSame([['add_on_id' => $this->cheese, 'name' => 'Cheese', 'name_ar' => null, 'price_delta_baisas' => 200]],
+            $ticket['priced_lines'][0]['components'][0]['addons']);
         $this->assertSame('No ice', $ticket['priced_lines'][0]['components'][2]['notes']);
+        // The table detail shows the round's combo with its components.
+        app('auth')->forgetGuards();
+        $detail = $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$seating->table_id.'/detail')
+            ->assertOk()->json('data');
+        $this->assertSame(['Burger', 'Fries', 'Juice'], array_column($detail['rounds'][0]['priced_lines'][0]['components'], 'name'));
+        $this->assertSame([$this->burger, $this->fries, $this->juice], array_column($detail['bill']['items'][0]['combo'], 'product_id'));
 
         // Cancelling the combo line takes its children with it.
         $cancel = $this->withToken($device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[

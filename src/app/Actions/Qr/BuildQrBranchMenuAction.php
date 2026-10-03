@@ -134,6 +134,9 @@ final class BuildQrBranchMenuAction
             'branding' => app(ReadQrBranding::class)->handle($companyId, $branchId),
             'tax' => [
                 'vat_registered' => $taxPolicy->vatRegistered,
+                // The merchant's switch (the device config's company.tax value) …
+                'prices_include_vat' => $taxPolicy->pricesIncludeVat,
+                // … and whether a new QR bill actually prices VAT inside (registered and on).
                 'prices_include_tax' => $taxPolicy->pricesIncludeTax(),
             ],
             'categories' => $categories->map(function (ProductCategory $category) use ($categoryBindings, $activeGroupSet): array {

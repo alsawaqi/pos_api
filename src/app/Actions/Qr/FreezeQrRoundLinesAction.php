@@ -47,6 +47,8 @@ final class FreezeQrRoundLinesAction
                 'slot_name' => $component->slotName,
                 'slot_name_ar' => $component->slotNameAr,
                 'product_id' => (int) $component->product->id,
+                'name' => (string) $component->product->name,
+                'name_ar' => $component->product->name_ar,
                 'product_name' => (string) $component->product->name,
                 'product_name_ar' => $component->product->name_ar,
                 'qty' => $component->qty,

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Tables;
 
+use App\Actions\Device\Sync\Handlers\CreateOrderHandler;
 use App\Actions\Qr\QrDineInException;
 use App\Models\Device;
 use App\Models\Order;
@@ -11,6 +12,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\SyncEvent;
 use App\Models\TableSession;
+use App\Support\Pricing\BillMoney;
 use Closure;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -109,7 +111,8 @@ final class ReadTableDraftProofAction
                 $items[$item['id']] = $this->item($item);
             }
             if ($bill['subtotal_baisas'] !== array_sum(array_column($items, 'line_total_baisas'))
-                || $bill['tax_total_baisas'] < 0 || $bill['grand_total_baisas'] !== $bill['subtotal_baisas'] + $bill['tax_total_baisas']) {
+                || $bill['tax_total_baisas'] < 0
+                || $bill['grand_total_baisas'] !== BillMoney::total($bill['subtotal_baisas'], $bill['tax_total_baisas'], (bool) $order->prices_include_tax)) {
                 throw $this->changed();
             }
             $legacyOwners = $owners;
@@ -147,7 +150,7 @@ final class ReadTableDraftProofAction
                 throw $this->refusal('draft_proof_baseline_required', 'Legacy bill items need an explicit baseline before another staff round. Keep the draft.');
             }
             if ($values['kind'] === 'staff_rounds' || ($recovery && array_diff_key($items, $owners) === [])) {
-                $this->assertRoundBalances($rounds->all(), $bill);
+                $this->assertRoundBalances($rounds->all(), $bill, (bool) $order->prices_include_tax);
             }
 
             return [
@@ -260,7 +263,7 @@ final class ReadTableDraftProofAction
                 throw $this->changed();
             }
         }
-        if ($stored['grand_total_baisas'] !== $stored['subtotal_baisas'] + $stored['tax_total_baisas']) {
+        if ($stored['grand_total_baisas'] !== BillMoney::total($stored['subtotal_baisas'], $stored['tax_total_baisas'], CreateOrderHandler::pricesIncludeTax($stored))) {
             throw $this->changed();
         }
 
@@ -282,7 +285,7 @@ final class ReadTableDraftProofAction
                 ->where('branch_id', $device->branch_id)->first()?->isPaymentStation() === true;
     }
 
-    private function assertRoundBalances(array $rounds, array $bill): void
+    private function assertRoundBalances(array $rounds, array $bill, bool $inclusive = false): void
     {
         $subtotal = $tax = $total = 0;
         foreach ($rounds as $round) {
@@ -302,7 +305,7 @@ final class ReadTableDraftProofAction
                 $gross += $line['line_total_baisas'];
             }
             if ($gross !== (int) $round->subtotal_baisas || $round->tax_baisas < 0
-                || $gross + (int) $round->tax_baisas !== (int) $round->total_baisas) {
+                || BillMoney::total($gross, (int) $round->tax_baisas, $inclusive) !== (int) $round->total_baisas) {
                 throw $this->changed();
             }
             $subtotal += $gross;

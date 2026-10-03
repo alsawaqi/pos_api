@@ -10,8 +10,8 @@ use App\Models\BranchProduct;
 use App\Models\Discount;
 use App\Models\Offer;
 use App\Models\Product;
-use App\Models\Tax;
 use App\Support\Money;
+use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Pricing\DiscountRule;
 use App\Support\Pricing\Discounts;
 use App\Support\Pricing\DiscountTarget;
@@ -19,7 +19,6 @@ use App\Support\Pricing\OfferSpec;
 use App\Support\Pricing\OrderDiscountSelection;
 use App\Support\Pricing\PricingInput;
 use App\Support\Pricing\PricingLine;
-use App\Support\Pricing\TaxSpec;
 use DateTimeImmutable;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
@@ -34,22 +33,28 @@ final class LoadQrPricingInputAction
         private readonly ResolveQrAddOnAvailabilityAction $addonAvailability,
     ) {}
 
-    /** @param list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}> $lines */
+    /**
+     * @param  list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}>  $lines
+     * @param  bool|null  $pricesIncludeTax  LAUNCH-P4: an existing bill's own
+     *                                       tax mode; null = the merchant's
+     *                                       current policy (a new bill)
+     */
     public function handle(
         int $companyId,
         int $branchId,
         array $lines,
         ?DateTimeImmutable $now = null,
+        ?bool $pricesIncludeTax = null,
     ): QrPricingLoadResult {
-        return $this->load($companyId, $branchId, $lines, $now, false);
+        return $this->load($companyId, $branchId, $lines, $now, false, $pricesIncludeTax);
     }
 
     /** Staff may sell tablet-hidden products, but never internal ingredients.
      * @param  list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}>  $lines
      */
-    public function handleForStaff(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null): QrPricingLoadResult
+    public function handleForStaff(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null, ?bool $pricesIncludeTax = null): QrPricingLoadResult
     {
-        return $this->load($companyId, $branchId, $lines, $now, true);
+        return $this->load($companyId, $branchId, $lines, $now, true, $pricesIncludeTax);
     }
 
     /** @param list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string|null}> $lines */
@@ -59,6 +64,7 @@ final class LoadQrPricingInputAction
         array $lines,
         ?DateTimeImmutable $now,
         bool $staff,
+        ?bool $pricesIncludeTax = null,
     ): QrPricingLoadResult {
         $now ??= DateTimeImmutable::createFromInterface(now());
         $normalisedLines = $this->normaliseLines($lines);
@@ -167,6 +173,9 @@ final class LoadQrPricingInputAction
         $autoOrderDiscount = Discounts::selectAutoOrderDiscount(
             $pricingLines, $discountRules, $now, $branchId, false,
         );
+        // LAUNCH-P4 — the effective taxes (none when not VAT-registered) and
+        // the bill's tax mode: the same rule as the devices' pricing package.
+        $taxPolicy = CompanyTaxPolicy::for($companyId);
 
         return new QrPricingLoadResult(
             pricingInput: new PricingInput(
@@ -177,8 +186,9 @@ final class LoadQrPricingInputAction
                 orderDiscount: $autoOrderDiscount === null
                     ? OrderDiscountSelection::none()
                     : Discounts::ruleAsOrderSelection($autoOrderDiscount),
-                taxes: $this->taxes($companyId),
+                taxes: $taxPolicy->taxSpecs(),
                 branchId: $branchId,
+                pricesIncludeTax: $pricesIncludeTax ?? $taxPolicy->pricesIncludeTax(),
             ),
             resolvedLines: $resolvedLines,
             autoOrderDiscount: $autoOrderDiscount,
@@ -405,18 +415,6 @@ final class LoadQrPricingInputAction
                 branchScope: $this->integerList($offer->branch_scope_json),
                 maxPerOrder: $offer->max_per_order !== null ? (int) $offer->max_per_order : null,
                 isActive: true,
-            ))->values()->all();
-    }
-
-    /** @return list<TaxSpec> */
-    private function taxes(int $companyId): array
-    {
-        return Tax::query()->where('company_id', $companyId)->where('is_active', true)
-            ->orderBy('sort_order')->orderBy('id')->get()
-            ->map(static fn (Tax $tax): TaxSpec => new TaxSpec(
-                name: (string) $tax->name,
-                ratePercent: (float) $tax->rate_percent,
-                nameAr: $tax->name_ar,
             ))->values()->all();
     }
 

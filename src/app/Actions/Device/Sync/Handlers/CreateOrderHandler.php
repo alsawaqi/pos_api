@@ -182,6 +182,9 @@ class CreateOrderHandler implements SyncEventHandler
                 'comp_total' => Money::toOmr((int) ($order['comp_total_baisas'] ?? 0)),
                 'tax_total' => Money::toOmr((int) $order['tax_total_baisas']),
                 'grand_total' => Money::toOmr((int) $order['grand_total_baisas']),
+                // LAUNCH-P4 — stamped from the order: true = grand already
+                // contains tax (VAT-inclusive menu prices). Absent = false.
+                'prices_include_tax' => self::pricesIncludeTax($order),
                 'opened_at' => Carbon::parse((string) $order['opened_at']),
                 'client_event_id' => $event->client_event_id,
                 'note' => $order['note'] ?? null,
@@ -706,6 +709,8 @@ class CreateOrderHandler implements SyncEventHandler
             'discount_total_baisas' => ['required', 'integer', 'min:0'],
             'tax_total_baisas' => ['required', 'integer', 'min:0'],
             'grand_total_baisas' => ['required', 'integer', 'min:0'],
+            // LAUNCH-P4 — VAT-inclusive pricing (absent = exclusive).
+            'prices_include_tax' => ['sometimes', 'boolean'],
             'opened_at' => ['required', 'date'],
             // P-F8 — optional printed receipt number (server-allocated or
             // the device's offline fallback); column is varchar(24).
@@ -762,13 +767,27 @@ class CreateOrderHandler implements SyncEventHandler
     {
         // Phase B — comps reduce what the customer pays alongside discounts
         // (comp_total_baisas defaults 0 for devices that never comp).
+        // LAUNCH-P4 — a VAT-inclusive order's grand already contains its tax.
+        $inclusive = self::pricesIncludeTax($order);
         $expected = (int) $order['subtotal_baisas']
             - (int) $order['discount_total_baisas']
             - (int) ($order['comp_total_baisas'] ?? 0)
-            + (int) $order['tax_total_baisas'];
+            + ($inclusive ? 0 : (int) $order['tax_total_baisas']);
         if (abs($expected - (int) $order['grand_total_baisas']) > 1) {
-            throw new RuntimeException('order money invariant violated: subtotal − discount − comp + tax != grand_total');
+            throw new RuntimeException($inclusive
+                ? 'order money invariant violated: subtotal − discount − comp != grand_total (prices include tax)'
+                : 'order money invariant violated: subtotal − discount − comp + tax != grand_total');
         }
+    }
+
+    /**
+     * LAUNCH-P4 — the order's `prices_include_tax` flag (absent = false).
+     *
+     * @param  array<string, mixed>  $order
+     */
+    public static function pricesIncludeTax(array $order): bool
+    {
+        return filter_var($order['prices_include_tax'] ?? false, FILTER_VALIDATE_BOOLEAN);
     }
 
     /**

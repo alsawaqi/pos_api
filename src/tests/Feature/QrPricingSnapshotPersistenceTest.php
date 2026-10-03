@@ -149,6 +149,8 @@ final class QrPricingSnapshotPersistenceTest extends TestCase
             'deleted_at' => null,
         ]);
 
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert([
             'id' => 20,
             'uuid' => (string) Str::uuid(),

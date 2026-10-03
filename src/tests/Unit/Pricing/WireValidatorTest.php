@@ -41,7 +41,7 @@ final class WireValidatorTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => true,
             'failures' => [],
         ], $this->check($this->order()));
@@ -49,7 +49,7 @@ final class WireValidatorTest extends TestCase
         $mismatch = $this->order(['grand_total_baisas' => 2001]);
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => false,
             'failures' => [[
                 'code' => 'identity_zero',
@@ -315,6 +315,8 @@ final class WireValidatorTest extends TestCase
 
     public function test_c1_recomputes_active_taxes_and_suppresses_on_drift(): void
     {
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert([
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,

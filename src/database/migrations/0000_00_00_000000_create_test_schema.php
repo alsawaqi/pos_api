@@ -38,6 +38,11 @@ return new class extends Migration
             $table->string('name_ar')->nullable();
             $table->string('status')->default('active');
             $table->json('settings')->nullable();
+            // LAUNCH-P4 — the admin-owned VAT registration (pos_admin
+            // 2026_05_17_120000): registered = vat_registered_at set.
+            $table->string('vat_number')->nullable();
+            $table->date('vat_registered_at')->nullable();
+            $table->timestamps();
             $table->softDeletes();
         });
         Schema::create('pos_devices', function (Blueprint $table): void {
@@ -249,6 +254,14 @@ return new class extends Migration
             // available, start > end wraps midnight).
             $table->string('available_from', 8)->nullable();
             $table->string('available_until', 8)->nullable();
+            // LAUNCH-P4 data contract (pos_admin 2026_10_03_100001): combos,
+            // channels and branch scope ('all' = every branch except a row
+            // with is_available false; 'selected' = only rows with true).
+            $table->string('product_type', 16)->default('standard');
+            $table->boolean('sold_in_store')->default(true);
+            $table->boolean('sold_on_delivery')->default(true);
+            $table->string('branch_scope', 16)->default('all');
+            $table->text('description_ar')->nullable();
             $table->timestamps();
             $table->softDeletes();
         });
@@ -326,7 +339,10 @@ return new class extends Migration
             $table->unsignedBigInteger('product_id');
             $table->unsignedBigInteger('delivery_provider_id');
             $table->unsignedBigInteger('company_id');
-            $table->decimal('price', 12, 3);
+            // LAUNCH-P4 (pos_admin 2026_10_03_100002): NULL = the product's
+            // delivery price, else its base price; listed false hides it.
+            $table->decimal('price', 12, 3)->nullable();
+            $table->boolean('listed')->default(true);
             $table->timestamps();
         });
 
@@ -416,6 +432,47 @@ return new class extends Migration
             $table->decimal('quantity', 12, 3);
             $table->timestamps();
             $table->unique(['product_id', 'component_product_id'], 'pos_product_components_pair_unique');
+        });
+
+        // LAUNCH-P4 data contract — combo slots and their options (pos_admin
+        // 2026_10_03_100003 / _100004) and the per-branch sold-out switch
+        // (2026_10_03_100005). The Postgres CHECKs are rehearsal-verified.
+        Schema::create('pos_combo_slots', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('combo_product_id');
+            $table->string('name', 64);
+            $table->string('name_ar', 64)->nullable();
+            $table->integer('min_choices')->default(1);
+            $table->integer('max_choices')->default(1);
+            $table->integer('sort_order')->default(0);
+            $table->timestamps();
+            $table->index(['combo_product_id', 'sort_order'], 'pos_combo_slots_combo_sort_idx');
+        });
+
+        Schema::create('pos_combo_slot_options', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('slot_id');
+            $table->unsignedBigInteger('product_id');
+            $table->decimal('extra_price', 12, 3)->default(0);
+            $table->boolean('is_default')->default(false);
+            $table->integer('sort_order')->default(0);
+            $table->timestamps();
+            $table->unique(['slot_id', 'product_id'], 'pos_combo_slot_options_slot_product_unique');
+        });
+
+        Schema::create('pos_product_sold_out', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('product_id');
+            $table->unsignedBigInteger('set_by_user_id')->nullable();
+            $table->unsignedBigInteger('set_by_pos_staff_id')->nullable();
+            $table->timestamp('set_at');
+            $table->timestamps();
+            $table->unique(['branch_id', 'product_id'], 'pos_product_sold_out_branch_product_unique');
         });
 
         // PD3b — per-option consumption lines: ingredient XOR
@@ -776,6 +833,9 @@ return new class extends Migration
             $table->timestamp('delivery_punched_at')->nullable();
             $table->timestamp('delivery_confirmed_at')->nullable();
             $table->unsignedBigInteger('delivery_confirmed_by_user_id')->nullable();
+            // LAUNCH-P4 (pos_admin 2026_10_03_100006): true = grand_total
+            // already contains tax_total (VAT-inclusive menu prices).
+            $table->boolean('prices_include_tax')->default(false);
             $table->timestamps();
             $table->index(['company_id', 'receipt_number'], 'pos_orders_company_receipt_idx');
             $table->index(['branch_id', 'temp_reference'], 'pos_orders_branch_temp_reference_idx');
@@ -918,6 +978,12 @@ return new class extends Migration
             $table->text('component_snapshot_json')->nullable();
             $table->string('status', 32)->default('open');
             $table->text('notes')->nullable();
+            // LAUNCH-P4 (pos_admin 2026_10_03_100007): a combo child line
+            // (no revenue; the parent carries it). combo_slot_id is a
+            // snapshot; combo_extra_price is per one chosen item.
+            $table->unsignedBigInteger('parent_order_item_id')->nullable()->index();
+            $table->unsignedBigInteger('combo_slot_id')->nullable();
+            $table->decimal('combo_extra_price', 12, 3)->default(0);
             $table->timestamps();
 
             // prepared | not_prepared (T11); no wastage arithmetic in T2.
@@ -1774,6 +1840,9 @@ return new class extends Migration
         Schema::dropIfExists('pos_product_recipes');
         Schema::dropIfExists('pos_ingredient_recipes');
         Schema::dropIfExists('pos_ingredients');
+        Schema::dropIfExists('pos_product_sold_out');
+        Schema::dropIfExists('pos_combo_slot_options');
+        Schema::dropIfExists('pos_combo_slots');
         Schema::dropIfExists('pos_addon_group_products');
         Schema::dropIfExists('pos_addons');
         Schema::dropIfExists('pos_addon_groups');

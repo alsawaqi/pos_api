@@ -532,6 +532,8 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
 
     private function tax(int $id, string $name, string $rate, bool $active): void
     {
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert([
             'id' => $id,
             'uuid' => (string) Str::uuid(),

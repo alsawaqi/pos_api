@@ -20,7 +20,7 @@ use Throwable;
  */
 final class WireValidator
 {
-    private const ENGINE = 'php-mithqal/0.2.0';
+    private const ENGINE = 'php-mithqal/0.3.0';
 
     /**
      * @param  array<string, mixed>  $order
@@ -151,8 +151,10 @@ final class WireValidator
         }
 
         // S3 — observe the strict zero-baisa identity without changing the
-        // existing server write-path's +/-1 acceptance.
-        $identity = $subtotal - $discountTotal - $compTotal + $taxTotal;
+        // existing server write-path's +/-1 acceptance. LAUNCH-P4: with
+        // prices_include_tax the grand total already contains the tax.
+        $inclusive = filter_var($order['prices_include_tax'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $identity = $subtotal - $discountTotal - $compTotal + ($inclusive ? 0 : $taxTotal);
         if ($identity !== $grandTotal) {
             $this->failOnce($failures, 'identity_zero', $identity, $grandTotal);
         }
@@ -211,7 +213,7 @@ final class WireValidator
                 ]);
             }
         } else {
-            $this->checkTax($order, $companyId, $subtotal, $discountTotal, $compTotal, $taxTotal, $failures, $suppressed);
+            $this->checkTax($order, $companyId, $subtotal, $discountTotal, $compTotal, $taxTotal, $inclusive, $failures, $suppressed);
         }
 
         $result = [
@@ -455,10 +457,23 @@ final class WireValidator
         int $discountTotal,
         int $compTotal,
         int $actualTaxTotal,
+        bool $inclusive,
         array &$failures,
         array &$suppressed,
     ): void {
         $openedAt = Carbon::parse((string) ($order['opened_at'] ?? ''));
+        // LAUNCH-P4 — only the EFFECTIVE taxes count: none when the merchant
+        // is not VAT-registered. A registration or "prices include VAT"
+        // change after the order opened suppresses the recompute, like a tax
+        // row edit (the device priced with what it had).
+        $policy = CompanyTaxPolicy::for($companyId);
+        if (($policy->companyUpdatedAt !== null && $policy->companyUpdatedAt->gt($openedAt))
+            || ($policy->settingUpdatedAt !== null && $policy->settingUpdatedAt->gt($openedAt))) {
+            $suppressed[] = 'tax_recompute';
+
+            return;
+        }
+
         $taxRows = Tax::withTrashed()
             ->where('company_id', $companyId)
             ->orderBy('sort_order')
@@ -477,7 +492,7 @@ final class WireValidator
         }
 
         $taxes = [];
-        foreach ($taxRows as $tax) {
+        foreach (($policy->vatRegistered ? $taxRows : []) as $tax) {
             if ($tax->deleted_at !== null || ! (bool) $tax->is_active) {
                 continue;
             }
@@ -490,7 +505,9 @@ final class WireValidator
 
         $netSubtotal = max(0, $subtotal - $discountTotal);
         $taxedBase = max(0, min($netSubtotal - $compTotal, $netSubtotal));
-        $expected = Taxes::taxTotalBaisasFor($taxedBase, $taxes);
+        $expected = $inclusive
+            ? Taxes::inclusiveTaxTotalBaisasFor($taxedBase, $taxes)
+            : Taxes::taxTotalBaisasFor($taxedBase, $taxes);
         if ($expected !== $actualTaxTotal) {
             $this->failOnce($failures, 'tax_recompute', $expected, $actualTaxTotal);
         }

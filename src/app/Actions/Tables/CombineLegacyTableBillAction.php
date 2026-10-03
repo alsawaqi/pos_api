@@ -15,6 +15,7 @@ use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
+use App\Support\Pricing\BillMoney;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -230,9 +231,12 @@ final class CombineLegacyTableBillAction
         $subtotal = (int) array_sum(array_column($accepted, 'subtotal_baisas'));
         $tax = (int) array_sum(array_column($accepted, 'tax_baisas'));
         $total = (int) array_sum(array_column($accepted, 'total_baisas'));
-        if ($targetSnapshot['comps'] !== [] || $money['comp_total_baisas'] !== 0
+        // LAUNCH-P4 — both bills must price tax the same way (inclusive or on top).
+        if ((bool) $source->prices_include_tax !== (bool) $target->prices_include_tax
+            || $targetSnapshot['comps'] !== [] || $money['comp_total_baisas'] !== 0
             || $money['subtotal_baisas'] !== $subtotal || $money['tax_total_baisas'] !== $tax
-            || $money['grand_total_baisas'] !== $total || $money['discount_total_baisas'] !== $subtotal + $tax - $total) {
+            || $money['grand_total_baisas'] !== $total
+            || $money['discount_total_baisas'] !== BillMoney::discount($subtotal, $tax, $total, (bool) $target->prices_include_tax)) {
             throw $this->refusal('combine_accounting_unsupported', 'The QR bill does not match its frozen rounds. Keep both bills unchanged.');
         }
 

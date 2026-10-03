@@ -81,7 +81,7 @@ final class AdjustTableBillAction
             // inconsistent header. The normal round path owns legacy baseline.
             $this->baseline->assertReadyForCharge($order);
             $a = $this->totals->amounts($order);
-            $net = $a['total'] - $a['tax'];
+            $net = RefreshQrOrderTotalsAction::net($a);
             if (! $this->totals->matchesHeader($order, $a) || $net < 1) {
                 throw self::refusal('adjustment_exceeds_bill', 'The frozen bill must be consistent and have a positive balance.');
             }

@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\TableSession;
 use App\Support\Money;
+use App\Support\Pricing\BillMoney;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 
@@ -157,7 +158,8 @@ final class EnsureLegacyTableBillBaselineAction
                 $seen[$id] = true;
                 $gross += $line['line_total_baisas'];
             }
-            if ($gross !== (int) $round->subtotal_baisas || $gross + (int) $round->tax_baisas !== (int) $round->total_baisas) {
+            if ($gross !== (int) $round->subtotal_baisas
+                || BillMoney::total($gross, (int) $round->tax_baisas, (bool) $order->prices_include_tax) !== (int) $round->total_baisas) {
                 throw $this->refusal();
             }
             foreach ($accepted as $field => $value) {
@@ -267,7 +269,7 @@ final class EnsureLegacyTableBillBaselineAction
             }
             if ($round->status === QrOrderRound::STATUS_ACCEPTED) {
                 if ($gross !== (int) $round->subtotal_baisas || min($round->tax_baisas, $round->total_baisas) < 0
-                    || $round->total_baisas > $gross + $round->tax_baisas) {
+                    || $round->total_baisas > BillMoney::total($gross, (int) $round->tax_baisas, (bool) $order->prices_include_tax)) {
                     throw $this->refusal();
                 }
                 $subtotal += $gross;

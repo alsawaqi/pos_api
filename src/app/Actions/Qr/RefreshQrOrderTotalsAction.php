@@ -12,6 +12,7 @@ use App\Models\OrderComp;
 use App\Models\OrderDiscount;
 use App\Models\QrOrderRound;
 use App\Support\Money;
+use App\Support\Pricing\BillMoney;
 
 /** Frozen rounds remain intact. Only this action calculates the bill header. */
 final class RefreshQrOrderTotalsAction
@@ -34,15 +35,24 @@ final class RefreshQrOrderTotalsAction
             'total' => (int) $totals->total_baisas,
             'loyalty' => TableLoyaltyDiscount::amount($order),
             'manual' => $this->manualRows($order)->get()->sum(fn ($row): int => Money::toBaisas($row->amount)),
-            'comp' => OrderComp::query()->where('order_id', $order->id)->get()->sum(fn ($row): int => Money::toBaisas($row->amount))];
+            'comp' => OrderComp::query()->where('order_id', $order->id)->get()->sum(fn ($row): int => Money::toBaisas($row->amount)),
+            // LAUNCH-P4 — 1 when the bill's prices include its tax (0/1 keeps min() meaningful).
+            'inclusive' => (int) (bool) $order->prices_include_tax];
+    }
+
+    /** LAUNCH-P4 — the pre-tax net that adjustments may not exceed, in the bill's tax mode. */
+    public static function net(array $amounts): int
+    {
+        return BillMoney::net($amounts['total'], $amounts['tax'], (bool) ($amounts['inclusive'] ?? 0));
     }
 
     /** Read-only calculation also used by charge integrity checks. No clamping here. */
     public function header(array $amounts): array
     {
         ['subtotal' => $s, 'tax' => $t, 'total' => $g, 'manual' => $m, 'comp' => $c] = $amounts;
+        $inclusive = (bool) ($amounts['inclusive'] ?? 0);
         $m += $amounts['loyalty'] ?? 0;
-        $roundDiscount = max(0, $s + $t - $g);
+        $roundDiscount = max(0, BillMoney::discount($s, $t, $g, $inclusive));
         $net = $s - $roundDiscount;
         $base = $net - $m - $c;
         // Preserve the old no-adjustment branch exactly, including empty bills.
@@ -50,13 +60,13 @@ final class RefreshQrOrderTotalsAction
 
         return ['subtotal' => Money::toOmr($s), 'discount_total' => Money::toOmr($roundDiscount + $m),
             'comp_total' => Money::toOmr($c), 'tax_total' => Money::toOmr($tax),
-            'grand_total' => Money::toOmr($m === 0 && $c === 0 ? $g : $base + $tax)];
+            'grand_total' => Money::toOmr($m === 0 && $c === 0 ? $g : BillMoney::total($base, $tax, $inclusive))];
     }
 
     public function matchesHeader(Order $order, ?array $amounts = null): bool
     {
         $a = $amounts ?? $this->amounts($order);
-        if (min($a) < 0 || max(0, $a['total'] - $a['tax'] - 1) < $a['manual'] + $a['comp'] + $a['loyalty']) {
+        if (min($a) < 0 || max(0, self::net($a) - 1) < $a['manual'] + $a['comp'] + $a['loyalty']) {
             return false;
         }
         foreach ($this->header($a) as $key => $value) {
@@ -126,12 +136,12 @@ final class RefreshQrOrderTotalsAction
     {
         $a = $this->amounts($order);
         $a['comp'] = $this->capCompToRemainingLine($order, $a['comp']);
-        if ($a['loyalty'] > 0 && $a['loyalty'] + $a['manual'] + $a['comp'] >= $a['total'] - $a['tax']) {
+        if ($a['loyalty'] > 0 && self::net($a) <= $a['loyalty'] + $a['manual'] + $a['comp']) {
             // Owner decision: clear whole blocks, never partially clamp a redemption.
             TableLoyaltyDiscount::clear($order);
             $a['loyalty'] = 0;
         }
-        $excess = $a['manual'] + $a['comp'] + $a['loyalty'] - max(0, $a['total'] - $a['tax'] - 1);
+        $excess = $a['manual'] + $a['comp'] + $a['loyalty'] - max(0, self::net($a) - 1);
         if ($excess > 0) {
             $discount = min($a['manual'], $excess);
             $this->reverseDiscount($order, $discount, 'table_manual_clamp');

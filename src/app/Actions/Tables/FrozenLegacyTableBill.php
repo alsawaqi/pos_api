@@ -7,6 +7,7 @@ namespace App\Actions\Tables;
 use App\Actions\Qr\QrDineInException;
 use App\Models\Order;
 use App\Support\Money;
+use App\Support\Pricing\BillMoney;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 
@@ -87,7 +88,8 @@ final class FrozenLegacyTableBill
         if ($subtotal !== $totals['subtotal_baisas'] || $subtotal === 0
             || $discountTotal !== $totals['discount_total_baisas'] || $lineDiscounts > $discountTotal
             || $discountTotal > $subtotal
-            || $subtotal - $discountTotal + $totals['tax_total_baisas'] !== $totals['grand_total_baisas']) {
+            || BillMoney::total($subtotal - $discountTotal, $totals['tax_total_baisas'], (bool) ($snapshot['order']['prices_include_tax'] ?? false))
+                !== $totals['grand_total_baisas']) {
             throw $this->unsupported();
         }
     }

@@ -36,6 +36,18 @@ class Product extends Model
             'low_stock_threshold' => 'decimal:3',
             'tax_inclusive' => 'boolean',
             'show_on_customer_tablet' => 'boolean',
+            // LAUNCH-P4 — channels (product_type / branch_scope stay strings).
+            'sold_in_store' => 'boolean',
+            'sold_on_delivery' => 'boolean',
         ];
+    }
+
+    public const TYPE_STANDARD = 'standard';
+
+    public const TYPE_COMBO = 'combo';
+
+    public function isCombo(): bool
+    {
+        return (string) ($this->product_type ?? self::TYPE_STANDARD) === self::TYPE_COMBO;
     }
 }

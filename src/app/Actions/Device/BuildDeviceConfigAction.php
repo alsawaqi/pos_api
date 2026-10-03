@@ -34,6 +34,7 @@ use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
 use App\Support\OrderNumbering;
+use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Recipes\RecipeCopy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -372,12 +373,14 @@ class BuildDeviceConfigAction
             ->get()
             ->groupBy('customer_id');
 
-        // ---- Company taxes (active set; the POS adds each, as its own line,
-        // on top of the order total — exclusive). ----
-        $taxes = $this->changed(
-            Tax::query()->where('company_id', $companyId)->where('is_active', true)->orderBy('sort_order'),
-            $since
-        )->get();
+        // ---- Company taxes. LAUNCH-P4: the EFFECTIVE set — the active rows
+        // when the merchant is VAT-registered, none otherwise — on every pull
+        // (full + delta, a handful of rows), so a registration change or a
+        // switched-off tax reaches the device at once; every other tax id of
+        // the company rides deleted.taxes on a delta. `company.tax` says how
+        // the device prices and prints them (inclusive or on top). ----
+        $taxPolicy = CompanyTaxPolicy::for($companyId);
+        $taxes = $taxPolicy->effectiveTaxes();
 
         // ---- Expense categories (active set; the POS expense screen renders
         // these + expense.log validates the submitted key against them). ----
@@ -448,6 +451,12 @@ class BuildDeviceConfigAction
                 'device_type' => $device->device_type,
                 'location_mode' => $device->locationMode(),
             ],
+            // LAUNCH-P4 — the merchant's VAT policy (full + delta, tiny):
+            // {vat_registered, prices_include_vat, vat_number}. Not
+            // registered = `taxes` is empty: compute and print no VAT.
+            'company' => [
+                'tax' => $taxPolicy->deviceBlock(),
+            ],
             'branch' => $branch ? $this->mapBranch($branch) : null,
             'floors' => $floors->map(fn (Floor $f): array => $this->mapFloor($f))->all(),
             'tables' => $tables->map(fn (Table $t): array => $this->mapTable($t))->all(),
@@ -493,7 +502,8 @@ class BuildDeviceConfigAction
             'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
             'void_reasons' => $voidReasons->map(fn (VoidReason $r): array => $this->mapVoidReason($r))->all(),
             'comp_reasons' => $compReasons->map(fn (CompReason $r): array => $this->mapCompReason($r))->all(),
-            'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since, $prepIngredientIds),
+            'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since, $prepIngredientIds)
+                + ['taxes' => $since === null ? [] : $this->nonEffectiveTaxIds($companyId, $taxes)],
         ];
 
         return [
@@ -727,6 +737,24 @@ class BuildDeviceConfigAction
                 ->all(),
             'expense_categories' => $this->trashedIds(ExpenseCategory::query()->where('company_id', $companyId), $since),
         ];
+    }
+
+    /**
+     * LAUNCH-P4 (H10) — every tax id of the company that does not apply now:
+     * soft-deleted, switched off, or all of them when the merchant is not
+     * VAT-registered. The set is tiny, so it rides every delta and the
+     * device's tax list always equals the effective one.
+     *
+     * @param  Collection<int, Tax>  $effective
+     * @return list<int>
+     */
+    private function nonEffectiveTaxIds(int $companyId, Collection $effective): array
+    {
+        $keep = $effective->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+
+        return Tax::withTrashed()->where('company_id', $companyId)
+            ->whereNotIn('id', $keep ?: [0])->orderBy('id')->pluck('id')
+            ->map(static fn ($id): int => (int) $id)->values()->all();
     }
 
     /**

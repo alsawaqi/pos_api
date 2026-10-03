@@ -103,6 +103,8 @@ final class VectorLoader
             taxes: $taxes,
             isDeliveryProvider: ($json['isDeliveryProvider'] ?? false) === true,
             branchId: self::intOf($json['branchId'] ?? null, 1),
+            // LAUNCH-P4 — mithqal_pricing v0.3.0 vectors; absent = exclusive.
+            pricesIncludeTax: ($json['pricesIncludeTax'] ?? false) === true,
         );
     }
 

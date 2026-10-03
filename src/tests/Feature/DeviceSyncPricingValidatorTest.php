@@ -46,7 +46,7 @@ final class DeviceSyncPricingValidatorTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => true,
             'failures' => [],
         ], $pricing);

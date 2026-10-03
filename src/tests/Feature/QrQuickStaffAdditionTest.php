@@ -35,6 +35,8 @@ final class QrQuickStaffAdditionTest extends QrPendingTestCase
             'branch_id' => 10, 'product_id' => 105, 'is_available' => true,
             'stock_qty' => '5.000', 'created_at' => now(), 'updated_at' => now(),
         ]);
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert([
             'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'VAT',
             'rate_percent' => '5.00', 'is_active' => true, 'sort_order' => 0,

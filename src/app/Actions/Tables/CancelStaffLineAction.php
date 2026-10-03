@@ -14,6 +14,7 @@ use App\Models\QrOrderRound;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use App\Support\Money;
+use App\Support\Pricing\BillMoney;
 use Carbon\CarbonInterface;
 use RuntimeException;
 
@@ -99,7 +100,7 @@ final class CancelStaffLineAction
                     $lineDiscount += (int) ($line['line_discount_baisas'] ?? 0) - (int) ($line['cancelled_discount_baisas'] ?? 0);
                 }
             }
-            $discount = $subtotal + $tax - $total;
+            $discount = BillMoney::discount($subtotal, $tax, $total, (bool) $order->prices_include_tax);
             $orderDiscount = $discount - $lineDiscount;
             $deltaSubtotal = 0;
             $deltaDiscount = 0;
@@ -171,7 +172,7 @@ final class CancelStaffLineAction
             $taxedBase = $subtotal - $discount;
             $nextTaxedBase = $nextBase - $nextOrderDiscount;
             $nextTax = $taxedBase === 0 ? 0 : (int) round($tax * $nextTaxedBase / $taxedBase);
-            $nextTotal = $nextTaxedBase + $nextTax;
+            $nextTotal = BillMoney::total($nextTaxedBase, $nextTax, (bool) $order->prices_include_tax);
             if (min($nextSubtotal, $nextTax, $nextTotal, $nextOrderDiscount) < 0) {
                 throw new RuntimeException('Cancellation cannot produce negative frozen totals.');
             }

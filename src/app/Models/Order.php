@@ -88,6 +88,8 @@ class Order extends Model
             'discount_total' => 'decimal:3',
             'tax_total' => 'decimal:3',
             'grand_total' => 'decimal:3',
+            // LAUNCH-P4 — true = grand_total already contains tax_total.
+            'prices_include_tax' => 'boolean',
             'qr_recovery_request' => 'array',
             'charge_amount_baisas' => 'integer',
             'charge_roundup_amount_baisas' => 'integer',

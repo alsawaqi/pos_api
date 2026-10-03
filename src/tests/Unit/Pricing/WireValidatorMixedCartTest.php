@@ -22,7 +22,7 @@ final class WireValidatorMixedCartTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => true,
             'failures' => [],
             'informational' => ['mixed_cart_unverifiable'],
@@ -47,6 +47,8 @@ final class WireValidatorMixedCartTest extends TestCase
         $s8['order_type'] = 'delivery';
         $this->assertSame(['delivery_tax'], $this->failureCodes($this->check($s8)));
 
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert([
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,
@@ -68,7 +70,7 @@ final class WireValidatorMixedCartTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => true,
             'failures' => [],
             'informational' => ['mixed_cart_unverifiable'],
@@ -92,7 +94,7 @@ final class WireValidatorMixedCartTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => true,
             'failures' => [],
             'informational' => ['mixed_cart_unverifiable'],

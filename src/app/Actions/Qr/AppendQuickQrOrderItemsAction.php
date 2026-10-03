@@ -82,8 +82,10 @@ final class AppendQuickQrOrderItemsAction
                 throw new QrChargeException('order_not_editable', 409, 'Only an unpaid quick order sent to the counter can be changed.');
             }
 
+            // LAUNCH-P4 — an addition is priced in the bill's own tax mode.
             $loaded = $this->pricing->handleForStaff(
                 (int) $order->company_id, (int) $order->branch_id, $payload['lines'],
+                null, (bool) $order->prices_include_tax,
             );
             $price = Totals::priceOrder($loaded->pricingInput);
             // LAUNCH-P2 P2-7 — sell, but warn: the shelf count never refuses staff additions.

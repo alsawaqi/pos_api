@@ -27,6 +27,8 @@ final class WireValidatorGoldenProjectionTest extends TestCase
         $expected = $vector['expected'];
 
         foreach ($input['taxes'] as $index => $tax) {
+            // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+            $this->registerVat();
             DB::table('pos_taxes')->insert([
                 'uuid' => (string) Str::uuid(),
                 'company_id' => 100,
@@ -67,7 +69,7 @@ final class WireValidatorGoldenProjectionTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.2.0',
+            'engine' => 'php-mithqal/0.3.0',
             'match' => true,
             'failures' => [],
         ], (new WireValidator)->validate($order, 100, 10, 99));

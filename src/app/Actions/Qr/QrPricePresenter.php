@@ -41,6 +41,8 @@ final class QrPricePresenter
             'discount_total_baisas' => $price->discountTotalBaisas,
             'tax_total_baisas' => $price->taxTotalBaisas,
             'grand_total_baisas' => $price->grandTotalBaisas,
+            // LAUNCH-P4 — true: the tax is already inside grand_total.
+            'prices_include_tax' => $price->pricesIncludeTax,
         ];
     }
 
@@ -57,6 +59,7 @@ final class QrPricePresenter
                 'discount_total_baisas' => Money::toBaisas($order->discount_total),
                 'tax_total_baisas' => Money::toBaisas($order->tax_total),
                 'grand_total_baisas' => Money::toBaisas($order->grand_total),
+                'prices_include_tax' => (bool) $order->prices_include_tax,
             ],
         ];
     }

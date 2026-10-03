@@ -189,6 +189,8 @@ final class QrCataloguePricingTest extends TestCase
         $this->offer(1, true, 'active');
         $this->offer(2, false, 'active');
         $this->offer(3, true, 'inactive');
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert([
             [
                 'id' => 1,

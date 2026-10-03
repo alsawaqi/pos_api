@@ -154,6 +154,8 @@ final class CompCancellationClampTest extends TestCase
                 'amount_type' => 'percent', 'amount' => 10, 'status' => 'active', 'auto_apply' => true]);
         }
         // Tax comes from the company tax catalogue (pos_taxes), applied to the base after discounts.
+        // LAUNCH-P4 — taxes apply to a VAT-registered merchant (priced on top here).
+        $this->registerVat();
         DB::table('pos_taxes')->insert(['uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'VAT', 'rate_percent' => '5.00',
             'is_active' => true, 'sort_order' => 0, 'created_at' => now(), 'updated_at' => now()]);
         $a = $this->product('1.250', '5.00', 'Tester latte');

@@ -70,15 +70,21 @@ final class Totals
         $managerComp = Comps::managerCompBaisasFor($compTotal, $giftedTotalRaw, $subtotal);
         $taxedBase = min(max($subtotal - $compTotal, 0), $subtotal);
 
-        $taxLines = $delivery ? [] : Taxes::taxLinesBaisasFor($taxedBase, $input->taxes);
+        // LAUNCH-P4 — inclusive prices take each tax OUT of the taxed gross
+        // base (grand = that base); exclusive ones add it on top. Delivery
+        // orders carry no tax either way.
+        $inclusive = $input->pricesIncludeTax;
+        $taxLines = $delivery ? [] : ($inclusive
+            ? Taxes::inclusiveTaxLinesBaisasFor($taxedBase, $input->taxes)
+            : Taxes::taxLinesBaisasFor($taxedBase, $input->taxes));
         $taxTotal = array_reduce(
             $taxLines,
             static fn (int $sum, TaxLineResult $line): int => $sum + $line->amountBaisas,
             0,
         );
-        $grand = $taxedBase + $taxTotal;
+        $grand = $inclusive ? $taxedBase : $taxedBase + $taxTotal;
 
-        if ($raw - $discountTotal - $compTotal + $taxTotal !== $grand) {
+        if ($raw - $discountTotal - $compTotal + ($inclusive ? 0 : $taxTotal) !== $grand) {
             throw new LogicException('pricing invariant violated');
         }
 
@@ -99,6 +105,7 @@ final class Totals
             taxLines: $taxLines,
             taxTotalBaisas: $taxTotal,
             grandTotalBaisas: $grand,
+            pricesIncludeTax: $inclusive,
         );
     }
 }

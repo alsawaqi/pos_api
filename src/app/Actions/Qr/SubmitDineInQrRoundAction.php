@@ -215,11 +215,13 @@ final class SubmitDineInQrRoundAction
             }
 
             $now = now();
+            // LAUNCH-P4 — a further round is priced in the bill's tax mode.
             $loaded = $this->pricing->handle(
                 (int) $session->company_id,
                 (int) $session->branch_id,
                 $payload['lines'],
                 DateTimeImmutable::createFromInterface($now),
+                $order !== null ? (bool) $order->prices_include_tax : null,
             );
             $price = Totals::priceOrder($loaded->pricingInput);
             // LAUNCH-P2 P2-7 — sell, but warn: the shelf count never refuses a round.
@@ -341,6 +343,7 @@ final class SubmitDineInQrRoundAction
                     'comp_total' => Money::toOmr(0),
                     'tax_total' => Money::toOmr(0),
                     'grand_total' => Money::toOmr(0),
+                    'prices_include_tax' => $price->pricesIncludeTax,
                     'opened_at' => $now,
                     'closed_at' => null,
                     'client_event_id' => null,

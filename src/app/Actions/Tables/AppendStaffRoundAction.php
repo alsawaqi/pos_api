@@ -17,6 +17,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\TableSession;
 use App\Support\Money;
+use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Pricing\Totals;
 use App\Support\Recipes\RecipeInForce;
 use Carbon\CarbonInterface;
@@ -100,7 +101,9 @@ final class AppendStaffRoundAction
             $price = null;
             if ($classified['priceable'] !== []) {
                 try {
-                    $loaded = $this->pricing->handle((int) $device->company_id, (int) $device->branch_id, $classified['priceable'], $at);
+                    // LAUNCH-P4 — a further round is priced in the bill's tax mode.
+                    $loaded = $this->pricing->handle((int) $device->company_id, (int) $device->branch_id, $classified['priceable'], $at,
+                        $order !== null ? (bool) $order->prices_include_tax : null);
                     $price = Totals::priceOrder($loaded->pricingInput);
                 } catch (QrCatalogueException $exception) {
                     // A catalogue edit between classification and pricing holds
@@ -149,6 +152,7 @@ final class AppendStaffRoundAction
                     'comp_total' => Money::toOmr(0),
                     'tax_total' => Money::toOmr(0),
                     'grand_total' => Money::toOmr(0),
+                    'prices_include_tax' => $price?->pricesIncludeTax ?? CompanyTaxPolicy::for((int) $device->company_id)->pricesIncludeTax(),
                     'opened_at' => Carbon::parse($payload['submitted_at']),
                     'temp_reference' => $primary->temp_reference,
                     'receipt_number' => null,

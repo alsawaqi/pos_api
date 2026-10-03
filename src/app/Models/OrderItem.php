@@ -41,7 +41,25 @@ class OrderItem extends Model
             // back to the live pos_product_components read; [] = the
             // product had no components at write time.
             'component_snapshot_json' => 'array',
+            // LAUNCH-P4 — a combo child's option extra price, per one item.
+            'combo_extra_price' => 'decimal:3',
         ];
+    }
+
+    /**
+     * LAUNCH-P4 — the items chosen inside this combo line (its children).
+     * They carry no revenue; stock and the kitchen read them.
+     *
+     * @return HasMany<OrderItem, $this>
+     */
+    public function children(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_order_item_id')->orderBy('id');
+    }
+
+    public function isComboChild(): bool
+    {
+        return $this->parent_order_item_id !== null;
     }
 
     /**

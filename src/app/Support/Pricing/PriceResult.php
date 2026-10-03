@@ -29,6 +29,8 @@ final readonly class PriceResult
         public array $taxLines,
         public int $taxTotalBaisas,
         public int $grandTotalBaisas,
+        // LAUNCH-P4 — true: grand already contains the tax (grand = taxed base).
+        public bool $pricesIncludeTax = false,
     ) {}
 
     public function orderDiscountRowBaisas(): int

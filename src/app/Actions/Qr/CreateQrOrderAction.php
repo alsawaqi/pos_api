@@ -135,6 +135,7 @@ final class CreateQrOrderAction
                 'comp_total' => Money::toOmr(0),
                 'tax_total' => Money::toOmr($price->taxTotalBaisas),
                 'grand_total' => Money::toOmr($price->grandTotalBaisas),
+                'prices_include_tax' => $price->pricesIncludeTax,
                 'opened_at' => $now,
                 'closed_at' => null,
                 'client_event_id' => null,

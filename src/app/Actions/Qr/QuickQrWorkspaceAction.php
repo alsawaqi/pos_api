@@ -13,6 +13,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\Pricing\BillMoney;
 use Illuminate\Support\Facades\DB;
 
 /** Online, revision-checked edits and explicit handoffs of the existing bill. */
@@ -132,7 +133,8 @@ final class QuickQrWorkspaceAction
         $subtotal = $round?->subtotal_baisas ?? Money::toBaisas($order->subtotal) - (int) $rounds->sum('subtotal_baisas');
         $tax = $round?->tax_baisas ?? Money::toBaisas($order->tax_total) - (int) $rounds->sum('tax_baisas');
         $total = $round?->total_baisas ?? Money::toBaisas($order->grand_total) - (int) $rounds->sum('total_baisas');
-        $discount = $subtotal + $tax - $total;
+        $inclusive = (bool) $order->prices_include_tax;
+        $discount = BillMoney::discount($subtotal, $tax, $total, $inclusive);
         $oldQty = (float) $item->qty;
         $oldRaw = Money::toBaisas($item->line_total);
         $nextRaw = (int) round($oldRaw * $remaining / $oldQty);
@@ -157,7 +159,7 @@ final class QuickQrWorkspaceAction
         $base = $subtotal - $discount;
         $nextBase = $nextSubtotal - $nextDiscount;
         $nextTax = $base === 0 ? 0 : (int) round($tax * $nextBase / $base);
-        $nextTotal = $nextBase + $nextTax;
+        $nextTotal = BillMoney::total($nextBase, $nextTax, $inclusive);
         if (min($nextSubtotal, $nextDiscount, $nextTax, $nextTotal) < 0) {
             throw new QrChargeException('order_not_editable', 409, 'The frozen bill amounts need review.');
         }

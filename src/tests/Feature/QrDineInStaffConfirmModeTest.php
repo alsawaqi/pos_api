@@ -765,6 +765,8 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             'discount_total_baisas',
             'tax_total_baisas',
             'grand_total_baisas',
+            // LAUNCH-P4 — whether the tax is inside grand_total (QR web reads it).
+            'prices_include_tax',
         ], array_keys($body['data']['order']));
         $this->assertSame([
             'round_no' => 1,
@@ -785,6 +787,7 @@ final class QrDineInStaffConfirmModeTest extends TestCase
             'discount_total_baisas' => 1250,
             'tax_total_baisas' => 0,
             'grand_total_baisas' => 4500,
+            'prices_include_tax' => false,
         ], array_diff_key($body['data']['order'], ['uuid' => true]));
         $this->assertFalse($body['data']['replayed']);
         $this->assertSame(['money_unit' => 'baisas'], $body['meta']);

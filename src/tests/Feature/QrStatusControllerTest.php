@@ -29,6 +29,8 @@ class QrStatusControllerTest extends TestCase
         'discount_total_baisas',
         'tax_total_baisas',
         'grand_total_baisas',
+        // LAUNCH-P4 — whether the tax is inside grand_total (QR web reads it).
+        'prices_include_tax',
     ];
 
     /** @var list<string> */

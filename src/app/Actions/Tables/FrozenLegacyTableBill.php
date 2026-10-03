@@ -106,6 +106,10 @@ final class FrozenLegacyTableBill
         return Arr::only($snapshot['order'], ['uuid', 'source', 'status', 'temp_reference', 'receipt_number', 'opened_at'])
             + $this->totals($snapshot) + ['items' => array_map(function (array $item) use ($snapshot): array {
                 return ['id' => (int) $item['id'], 'product_id' => $item['product_id'],
+                    // LAUNCH-P4 — a combo item names its combo line, so a device
+                    // never reviews (or merges into) a bill whose combo it would
+                    // show flattened; the handheld refuses on this key.
+                    'parent_order_item_id' => isset($item['parent_order_item_id']) ? (int) $item['parent_order_item_id'] : null,
                     'name' => $item['product_name_snapshot'], 'qty' => (float) $item['qty'],
                     'status' => $item['status'], 'notes' => $item['notes'],
                     'unit_price_baisas' => Money::toBaisas($item['unit_price_snapshot']),

@@ -137,6 +137,24 @@ final class CombineLegacyTableBillTest extends TestCase
         $this->assertSame($before, $this->rows(), 'A refusal changes no business row.');
     }
 
+    public function test_launch_p4_preview_marks_the_targets_combo_items_so_a_device_refuses(): void
+    {
+        $parent = (int) DB::table('pos_order_items')->where('order_id', $this->target->id)->value('id');
+        DB::table('pos_order_items')->insert([
+            'order_id' => $this->target->id, 'parent_order_item_id' => $parent, 'combo_slot_id' => 1,
+            'combo_extra_price' => '0.000', 'product_id' => $this->productId, 'product_name_snapshot' => 'Combo side',
+            'qty' => '1.000', 'unit_price_snapshot' => '0.000', 'line_discount' => '0.000', 'line_total' => '0.000',
+            'recipe_snapshot_json' => '[]', 'component_snapshot_json' => '[]', 'status' => 'open',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $preview = app(CombineLegacyTableBillAction::class)->preview($this->device, $this->source->table_id, $this->source->uuid);
+        $items = collect($preview['target']['items']);
+
+        $this->assertSame([null], $items->where('id', $parent)->pluck('parent_order_item_id')->all());
+        $this->assertSame([$parent], $items->where('name', 'Combo side')->pluck('parent_order_item_id')->all());
+    }
+
     public function test_preview_is_private_read_only_and_does_not_expose_identity_or_snapshots(): void
     {
         $before = $this->rows();

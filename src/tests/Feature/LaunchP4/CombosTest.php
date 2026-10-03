@@ -240,6 +240,28 @@ final class CombosTest extends TestCase
         $this->assertSame($childIds, OrderItem::query()->whereNotNull('parent_order_item_id')->orderBy('id')->pluck('recipe_snapshot_json')->all());
     }
 
+    public function test_the_qr_menu_offers_the_combo_with_each_choice_and_its_add_ons(): void
+    {
+        $session = $this->p4QrSession();
+        $menu = $this->p4QrGet($session, '/api/v1/public/qr/menu')->assertOk()->json('data');
+        $products = collect($menu['products'])->keyBy('id');
+
+        $meal = $products[$this->meal['id']];
+        $this->assertSame('combo', $meal['product_type']);
+        $this->assertSame([], $meal['addon_group_ids']);
+        $drink = $meal['combo']['slots'][2];
+        $this->assertSame(['Drink', 1, 1], [$drink['name'], $drink['min'], $drink['max']]);
+        $this->assertSame([[$this->cola, 0, true], [$this->juice, 300, false]],
+            array_map(static fn (array $o): array => [$o['product_id'], $o['extra_price_baisas'], $o['is_default']], $drink['options']));
+        // Juice is sold only inside combos: offered there, not on its own.
+        $this->assertFalse($products->has($this->juice));
+        $this->assertTrue($drink['options'][1]['available']);
+        // The burger choice brings its own add-on group.
+        $burgerGroups = $meal['combo']['slots'][0]['options'][0]['addon_group_ids'];
+        $this->assertCount(1, $burgerGroups);
+        $this->assertContains($burgerGroups[0], array_column($menu['addon_groups'], 'id'));
+    }
+
     public function test_qr_checkout_prices_a_combo_writes_its_children_and_refuses_bad_choices(): void
     {
         $session = $this->p4QrSession();

@@ -41,7 +41,8 @@ final class QrCataloguePricingTest extends TestCase
         $internal = $this->product(['category_id' => 10, 'is_internal' => true]);
         $tabletHidden = $this->product(['category_id' => 10, 'show_on_customer_tablet' => false]);
         $softDeleted = $this->product(['category_id' => 10, 'deleted_at' => now()]);
-        $otherBranch = $this->product(['category_id' => 10]);
+        // LAUNCH-P4 — sold at branch 20 only: a 'selected' branch scope.
+        $otherBranch = $this->product(['category_id' => 10, 'branch_scope' => 'selected']);
         $inactive = $this->product(['category_id' => 10, 'status' => 'inactive']);
 
         $this->branchProduct($branchUnavailable, false, null);
@@ -75,8 +76,8 @@ final class QrCataloguePricingTest extends TestCase
         // LAUNCH-P2 P2-7 — sell, but warn: a zero shelf count no longer hides it.
         $this->assertTrue($products[$zeroStock]['available']);
         $this->assertNull($products[$zeroStock]['unavailable_reason']);
-        $this->assertFalse($products[$inactive]['available']);
-        $this->assertSame('inactive', $products[$inactive]['unavailable_reason']);
+        // LAUNCH-P4 L4 — an inactive product is left out of the QR menu, not greyed.
+        $this->assertFalse($products->has($inactive));
         $this->assertFalse($products->has($internal));
         $this->assertFalse($products->has($tabletHidden));
         $this->assertFalse($products->has($softDeleted));
@@ -100,7 +101,8 @@ final class QrCataloguePricingTest extends TestCase
     public function test_loader_refuses_unavailable_foreign_branch_and_unbound_addons(): void
     {
         $unavailable = $this->product();
-        $otherBranch = $this->product();
+        // LAUNCH-P4 — sold at branch 20 only: a 'selected' branch scope.
+        $otherBranch = $this->product(['branch_scope' => 'selected']);
         $foreign = $this->product(['company_id' => 200]);
         $visible = $this->product();
         $this->branchProduct($unavailable, false, null);

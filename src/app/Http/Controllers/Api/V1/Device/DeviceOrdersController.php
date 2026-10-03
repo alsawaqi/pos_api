@@ -9,9 +9,9 @@ use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderComp;
 use App\Models\OrderItem;
-use App\Models\OrderItemAddon;
 use App\Models\QrOrderRound;
 use App\Support\Money;
+use App\Support\Orders\DeviceOrderItems;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -148,7 +148,7 @@ class DeviceOrdersController
      */
     private function mapOrder(Order $order, bool $roundEvidence = false): array
     {
-        $itemIds = $order->items
+        $itemIds = DeviceOrderItems::lines($order)
             ->map(fn (OrderItem $item): int => (int) $item->id)
             ->values()
             ->all();
@@ -228,22 +228,9 @@ class DeviceOrdersController
                     'applied_at' => $comp->applied_at?->toIso8601String(),
                 ];
             })->all(),
-            'items' => $order->items->map(fn (OrderItem $item): array => [
-                'id' => (int) $item->id,
-                'product_id' => $item->product_id !== null ? (int) $item->product_id : null,
-                'product_name' => $item->product_name_snapshot,
-                'qty' => (float) $item->qty,
-                'unit_price_baisas' => Money::toBaisas($item->unit_price_snapshot),
-                'line_discount_baisas' => Money::toBaisas($item->line_discount),
-                'line_total_baisas' => Money::toBaisas($item->line_total),
-                'status' => $item->status,
-                'notes' => $item->notes,
-                'addons' => $item->addons->map(fn (OrderItemAddon $addon): array => [
-                    'add_on_id' => $addon->add_on_id !== null ? (int) $addon->add_on_id : null,
-                    'add_on_name' => $addon->add_on_name_snapshot,
-                    'price_delta_baisas' => Money::toBaisas($addon->price_delta_snapshot),
-                ])->all(),
-            ])->all(),
+            // LAUNCH-P4 — combo children ride their line as `combo`.
+            'items' => DeviceOrderItems::present($order),
+            'prices_include_tax' => (bool) $order->prices_include_tax,
         ];
     }
 }

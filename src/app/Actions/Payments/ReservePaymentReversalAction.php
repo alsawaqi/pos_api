@@ -165,7 +165,10 @@ final class ReservePaymentReversalAction
 
     public function remainingLines(Order $order): array
     {
-        $items = DB::table('pos_order_items')->where('order_id', $order->id)->where('status', '<>', 'void')->orderBy('id')->get();
+        // LAUNCH-P4 — only revenue lines are refundable: a combo is refunded
+        // on its own line; the items chosen inside it follow (priceLines).
+        $items = DB::table('pos_order_items')->where('order_id', $order->id)->where('status', '<>', 'void')
+            ->whereNull('parent_order_item_id')->orderBy('id')->get();
         $reserved = DB::table('pos_payment_reversal_lines as l')
             ->join('pos_payment_reversals as r', 'r.id', '=', 'l.reversal_id')
             ->where('r.order_id', $order->id)->whereIn('r.status', ['approved', 'pending', 'uncertain'])
@@ -207,6 +210,25 @@ final class ReservePaymentReversalAction
                 'stock_mode_at_refund' => $product?->stock_mode ?? 'untracked',
                 'returned_to_stock' => false,
             ];
+            // LAUNCH-P4 — refunding part of a combo line returns the shelf of
+            // the items chosen inside it in proportion: one derived line per
+            // child (no money; its own stock mode), which the refund result
+            // handler — here and in pos_admin's copy — returns like any line.
+            $sold = Money::toBaisas($remaining[$id]['item']->qty);
+            foreach (DB::table('pos_order_items')->where('order_id', $order->id)->where('parent_order_item_id', $id)
+                ->where('status', '<>', 'void')->orderBy('id')->get() as $child) {
+                $childQty = $sold > 0 ? (int) round(Money::toBaisas($child->qty) * $qty / $sold) : 0;
+                if ($childQty <= 0) {
+                    continue;
+                }
+                $result[] = [
+                    'order_item_id' => (int) $child->id, 'qty' => Money::toOmr($childQty),
+                    'amount' => Money::toOmr(0), 'amount_baisas' => 0,
+                    'stock_mode_at_refund' => (string) (DB::table('pos_products')->where('id', $child->product_id)
+                        ->where('company_id', $order->company_id)->value('stock_mode') ?? 'untracked'),
+                    'returned_to_stock' => false,
+                ];
+            }
         }
 
         return $result;

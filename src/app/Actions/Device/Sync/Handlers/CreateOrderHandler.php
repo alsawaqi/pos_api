@@ -267,33 +267,36 @@ class CreateOrderHandler implements SyncEventHandler
                 ]);
                 $itemIds[$index] = (int) $item->id;
 
-                foreach ($line['addons'] ?? [] as $addon) {
-                    $addOnId = (int) $addon['add_on_id'];
-                    $addOn = AddOn::withTrashed()->where('company_id', $device->company_id)->find($addOnId);
-                    $keptAddon = $kept !== null && ($kept['addons'][$addOnId] ?? []) !== []
-                        ? $this->withCurrentProductType(array_shift($kept['addons'][$addOnId]), $device->company_id)
-                        : null;
-                    // PD3b — per-option stock-usage lines, frozen at create.
-                    // When present they SUPERSEDE the legacy single-ingredient
-                    // trio for this addon (never both — no double-count).
-                    $stockUse = $keptAddon ?? ($addOn !== null
-                        ? $copy->addonStockUse($addOn) + [
-                            // P-G3 — product-as-add-on freeze: id for reporting,
-                            // snapshot for consumption by the product's type.
-                            'linked_product_id' => $addOn->linked_product_id !== null ? (int) $addOn->linked_product_id : null,
-                            'product_snapshot_json' => $this->snapshotAddonProduct($addOn, $device->company_id, $copy),
-                        ]
-                        : ['ingredient_snapshot_json' => null, 'consumption_snapshot_json' => null, 'linked_product_id' => null, 'product_snapshot_json' => null]);
-                    OrderItemAddon::create([
-                        'order_item_id' => $item->id,
-                        'add_on_id' => $addOnId,
-                        'add_on_name_snapshot' => $addOn?->name ?? ('#'.$addOnId),
-                        'price_delta_snapshot' => Money::toOmr((int) ($addon['price_delta_baisas'] ?? 0)),
-                        'ingredient_snapshot_json' => $stockUse['ingredient_snapshot_json'],
-                        'linked_product_id' => $stockUse['linked_product_id'],
-                        'product_snapshot_json' => $stockUse['product_snapshot_json'],
-                        'consumption_snapshot_json' => $stockUse['consumption_snapshot_json'],
+                $this->writeAddons($item, $line['addons'] ?? [], $device, $copy, $kept);
+
+                // LAUNCH-P4 — a combo line's chosen items become its children
+                // (data contract): the item, qty = combo qty × choice qty, no
+                // money (the revenue sits on this line), their own recipe,
+                // component and add-on copies. Never refused for an invalid
+                // combo — the pricing check flags it.
+                foreach ($line['combo'] ?? [] as $component) {
+                    $childId = (int) $component['product_id'];
+                    $child = Product::withTrashed()->where('company_id', $device->company_id)->find($childId);
+                    $keptChild = $kept !== null ? $this->takeKeptChildCopy($kept, $component) : null;
+                    $childItem = OrderItem::create([
+                        'order_id' => $model->id,
+                        'parent_order_item_id' => $item->id,
+                        'product_id' => $childId,
+                        'product_name_snapshot' => $child?->name ?? ('#'.$childId),
+                        'qty' => round((float) $line['qty'] * (float) $component['qty'], 3),
+                        'unit_price_snapshot' => Money::toOmr(0),
+                        'line_discount' => Money::toOmr(0),
+                        'line_total' => Money::toOmr(0),
+                        'recipe_snapshot_json' => $keptChild !== null
+                            ? ((string) $child?->stock_mode === 'ingredient' ? $keptChild['recipe'] : null)
+                            : $copy->productRecipe($child),
+                        'component_snapshot_json' => $keptChild !== null ? $keptChild['components'] : $this->snapshotComponents($childId),
+                        'combo_slot_id' => (int) $component['slot_id'],
+                        'combo_extra_price' => Money::toOmr((int) ($component['extra_price_baisas'] ?? 0)),
+                        'status' => OrderItem::STATUS_OPEN,
+                        'notes' => $component['notes'] ?? null,
                     ]);
+                    $this->writeAddons($childItem, $component['addons'] ?? [], $device, $copy, $keptChild);
                 }
             }
 
@@ -311,6 +314,46 @@ class CreateOrderHandler implements SyncEventHandler
                 'joined_tables' => $joinedCount,
             ];
         });
+    }
+
+    /**
+     * A line's add-on rows with their frozen stock-use copies (a kept copy
+     * when the re-sent line is unchanged) — for a top-level line and, since
+     * LAUNCH-P4, for each combo child.
+     *
+     * @param  list<array<string, mixed>>  $addons
+     * @param  array<string, mixed>|null  $kept
+     */
+    private function writeAddons(OrderItem $item, array $addons, Device $device, RecipeCopy $copy, ?array &$kept): void
+    {
+        foreach ($addons as $addon) {
+            $addOnId = (int) $addon['add_on_id'];
+            $addOn = AddOn::withTrashed()->where('company_id', $device->company_id)->find($addOnId);
+            $keptAddon = $kept !== null && ($kept['addons'][$addOnId] ?? []) !== []
+                ? $this->withCurrentProductType(array_shift($kept['addons'][$addOnId]), $device->company_id)
+                : null;
+            // PD3b — per-option stock-usage lines, frozen at create.
+            // When present they SUPERSEDE the legacy single-ingredient
+            // trio for this addon (never both — no double-count).
+            $stockUse = $keptAddon ?? ($addOn !== null
+                ? $copy->addonStockUse($addOn) + [
+                    // P-G3 — product-as-add-on freeze: id for reporting,
+                    // snapshot for consumption by the product's type.
+                    'linked_product_id' => $addOn->linked_product_id !== null ? (int) $addOn->linked_product_id : null,
+                    'product_snapshot_json' => $this->snapshotAddonProduct($addOn, $device->company_id, $copy),
+                ]
+                : ['ingredient_snapshot_json' => null, 'consumption_snapshot_json' => null, 'linked_product_id' => null, 'product_snapshot_json' => null]);
+            OrderItemAddon::create([
+                'order_item_id' => $item->id,
+                'add_on_id' => $addOnId,
+                'add_on_name_snapshot' => $addOn?->name ?? ('#'.$addOnId),
+                'price_delta_snapshot' => Money::toOmr((int) ($addon['price_delta_baisas'] ?? 0)),
+                'ingredient_snapshot_json' => $stockUse['ingredient_snapshot_json'],
+                'linked_product_id' => $stockUse['linked_product_id'],
+                'product_snapshot_json' => $stockUse['product_snapshot_json'],
+                'consumption_snapshot_json' => $stockUse['consumption_snapshot_json'],
+            ]);
+        }
     }
 
     /**
@@ -399,10 +442,15 @@ class CreateOrderHandler implements SyncEventHandler
     {
         $companyId = $device->company_id;
 
-        $productIds = array_values(array_unique(array_map(
-            static fn (array $line): int => (int) $line['product_id'],
-            $order['lines'],
-        )));
+        // LAUNCH-P4 — a combo's chosen items are products of the order too.
+        $productIds = [];
+        foreach ($order['lines'] as $line) {
+            $productIds[] = (int) $line['product_id'];
+            foreach ($line['combo'] ?? [] as $component) {
+                $productIds[] = (int) $component['product_id'];
+            }
+        }
+        $productIds = array_values(array_unique($productIds));
         // withTrashed: an offline-queued order may land after the merchant
         // deleted the menu item — the sale still happened and must settle
         // (the offers + staff guards below already follow this rule). The
@@ -417,6 +465,11 @@ class CreateOrderHandler implements SyncEventHandler
         foreach ($order['lines'] as $line) {
             foreach ($line['addons'] ?? [] as $addon) {
                 $addOnIds[] = (int) $addon['add_on_id'];
+            }
+            foreach ($line['combo'] ?? [] as $component) {
+                foreach ($component['addons'] ?? [] as $addon) {
+                    $addOnIds[] = (int) $addon['add_on_id'];
+                }
             }
         }
         $addOnIds = array_values(array_unique($addOnIds));
@@ -604,19 +657,21 @@ class CreateOrderHandler implements SyncEventHandler
 
             $reason = null;
             if (! $isGift) {
-                $reason = CompReason::query()
+                // LAUNCH-P4 H10 — a reason deleted after the device cached it
+                // still resolves (withTrashed), and a comp above a cap lowered
+                // since is flagged: a sale is never refused on reason metadata.
+                // Only a reason of another company refuses (tenant guard).
+                $reason = CompReason::withTrashed()
                     ->where('company_id', $device->company_id)
                     ->find($reasonId);
                 if ($reason === null) {
                     throw new RuntimeException('order references a comp reason outside the device tenant: '.$reasonId);
                 }
-
+                if ($reason->trashed()) {
+                    $device->syncIntegrityFlags[] = 'comp_reason_deleted:'.$reasonId;
+                }
                 if ($reason->max_amount !== null && $amountBaisas > (int) round(((float) $reason->max_amount) * 1000)) {
-                    throw new RuntimeException(sprintf(
-                        'comp exceeds the "%s" cap of %s OMR',
-                        $reason->name,
-                        (string) $reason->max_amount,
-                    ));
+                    $device->syncIntegrityFlags[] = 'comp_over_cap:'.$reasonId;
                 }
             }
 
@@ -725,6 +780,16 @@ class CreateOrderHandler implements SyncEventHandler
             'lines.*.qty' => ['required', 'numeric', 'gt:0'],
             'lines.*.unit_price_baisas' => ['required', 'integer', 'min:0'],
             'lines.*.line_total_baisas' => ['required', 'integer', 'min:0'],
+            // LAUNCH-P4 — a combo line's choices, per ONE combo (data contract).
+            'lines.*.combo' => ['sometimes', 'nullable', 'array'],
+            'lines.*.combo.*.slot_id' => ['required', 'integer'],
+            'lines.*.combo.*.product_id' => ['required', 'integer'],
+            'lines.*.combo.*.qty' => ['required', 'numeric', 'gt:0'],
+            'lines.*.combo.*.extra_price_baisas' => ['sometimes', 'integer', 'min:0'],
+            'lines.*.combo.*.notes' => ['nullable', 'string'],
+            'lines.*.combo.*.addons' => ['sometimes', 'array'],
+            'lines.*.combo.*.addons.*.add_on_id' => ['required', 'integer'],
+            'lines.*.combo.*.addons.*.price_delta_baisas' => ['sometimes', 'integer'],
             'discounts' => ['sometimes', 'array'],
             'discounts.*.discount_id' => ['nullable', 'integer'],
             // P-F9 — which pos_offers promotion granted this amount.
@@ -811,22 +876,30 @@ class CreateOrderHandler implements SyncEventHandler
     {
         $copies = [];
         $items = OrderItem::query()->where('order_id', $order->id)->with('addons')->orderBy('id')->get();
-        foreach ($items as $item) {
-            $addons = [];
-            foreach ($item->addons->sortBy('id') as $addon) {
-                $addons[(int) $addon->add_on_id][] = [
-                    'ingredient_snapshot_json' => $addon->ingredient_snapshot_json,
-                    'linked_product_id' => $addon->linked_product_id !== null ? (int) $addon->linked_product_id : null,
-                    'product_snapshot_json' => $addon->product_snapshot_json,
-                    'consumption_snapshot_json' => $addon->consumption_snapshot_json,
+        // LAUNCH-P4 — a combo line's children travel with it: they are part
+        // of the line's identity (its choices) and keep their own copies.
+        $childrenByParent = $items->filter(static fn (OrderItem $i): bool => $i->parent_order_item_id !== null)
+            ->groupBy('parent_order_item_id');
+        foreach ($items->filter(static fn (OrderItem $i): bool => $i->parent_order_item_id === null) as $item) {
+            $children = [];
+            $combo = [];
+            foreach ($childrenByParent->get($item->id, collect()) as $child) {
+                $perCombo = (float) $item->qty > 0 ? (float) $child->qty / (float) $item->qty : (float) $child->qty;
+                $childKey = $this->childKey((int) $child->combo_slot_id, (int) $child->product_id, $perCombo, $child->addons->pluck('add_on_id')->all());
+                $children[$childKey][] = [
+                    'recipe' => $child->recipe_snapshot_json,
+                    'components' => $child->component_snapshot_json,
+                    'addons' => $this->addonCopies($child),
                 ];
+                $combo[] = $childKey;
             }
 
-            $key = $this->lineKey((int) $item->product_id, $item->qty, $item->addons->pluck('add_on_id')->all());
+            $key = $this->lineKey((int) $item->product_id, $item->qty, $item->addons->pluck('add_on_id')->all(), $combo);
             $copies[$key][] = [
                 'recipe' => $item->recipe_snapshot_json,
                 'components' => $item->component_snapshot_json,
-                'addons' => $addons,
+                'addons' => $this->addonCopies($item),
+                'children' => $children,
             ];
         }
 
@@ -931,22 +1004,86 @@ class CreateOrderHandler implements SyncEventHandler
             (int) $line['product_id'],
             $line['qty'],
             array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $line['addons'] ?? []),
+            array_map(fn (array $component): string => $this->incomingChildKey($component), $line['combo'] ?? []),
         );
     }
 
     /**
      * A line's identity for the re-send rule: what its stock use depends on —
-     * the product, the quantity and the add-on set. Price, discount and note
-     * edits leave the line "unchanged".
+     * the product, the quantity and the add-on set (and, LAUNCH-P4, a
+     * combo's choices). Price, discount and note edits leave the line
+     * "unchanged".
+     *
+     * @param  list<int|string>  $addOnIds
+     * @param  list<string>  $comboKeys  the combo's choice keys ({@see childKey()})
+     */
+    private function lineKey(int $productId, mixed $qty, array $addOnIds, array $comboKeys = []): string
+    {
+        $ids = array_map('intval', $addOnIds);
+        sort($ids);
+        sort($comboKeys);
+
+        return $productId.'|'.number_format((float) $qty, 3, '.', '').'|'.implode(',', $ids)
+            .($comboKeys === [] ? '' : '|'.implode(';', $comboKeys));
+    }
+
+    /**
+     * LAUNCH-P4 — one combo choice's identity: slot, product, quantity per
+     * ONE combo and its add-on set.
      *
      * @param  list<int|string>  $addOnIds
      */
-    private function lineKey(int $productId, mixed $qty, array $addOnIds): string
+    private function childKey(int $slotId, int $productId, float $qtyPerCombo, array $addOnIds): string
     {
         $ids = array_map('intval', $addOnIds);
         sort($ids);
 
-        return $productId.'|'.number_format((float) $qty, 3, '.', '').'|'.implode(',', $ids);
+        return $slotId.':'.$productId.':'.number_format($qtyPerCombo, 3, '.', '').':'.implode(',', $ids);
+    }
+
+    /** @param array<string, mixed> $component an incoming combo choice */
+    private function incomingChildKey(array $component): string
+    {
+        return $this->childKey(
+            (int) $component['slot_id'],
+            (int) $component['product_id'],
+            (float) $component['qty'],
+            array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $component['addons'] ?? []),
+        );
+    }
+
+    /**
+     * The kept copy for this incoming combo choice of a kept (unchanged) line.
+     *
+     * @param  array<string, mixed>  $kept
+     * @param  array<string, mixed>  $component
+     * @return array<string, mixed>|null
+     */
+    private function takeKeptChildCopy(array &$kept, array $component): ?array
+    {
+        $key = $this->incomingChildKey($component);
+
+        return ($kept['children'][$key] ?? []) !== [] ? array_shift($kept['children'][$key]) : null;
+    }
+
+    /**
+     * Each add-on's frozen stock-use copies, by add-on id, in row order.
+     *
+     * @return array<int, list<array<string, mixed>>>
+     */
+    private function addonCopies(OrderItem $item): array
+    {
+        $addons = [];
+        foreach ($item->addons->sortBy('id') as $addon) {
+            $addons[(int) $addon->add_on_id][] = [
+                'ingredient_snapshot_json' => $addon->ingredient_snapshot_json,
+                'linked_product_id' => $addon->linked_product_id !== null ? (int) $addon->linked_product_id : null,
+                'product_snapshot_json' => $addon->product_snapshot_json,
+                'consumption_snapshot_json' => $addon->consumption_snapshot_json,
+            ];
+        }
+
+        return $addons;
     }
 
     /**

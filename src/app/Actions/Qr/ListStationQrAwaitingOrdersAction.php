@@ -50,7 +50,7 @@ final class ListStationQrAwaitingOrdersAction
                     $orders,
                     $companyId,
                     $branchId,
-                )->withCount(['items' => fn (Builder $items): Builder => $items->where('qty', '>', 0)])->oldest('id'),
+                )->withCount(['items' => fn (Builder $items): Builder => $items->where('qty', '>', 0)->whereNull('parent_order_item_id')])->oldest('id'),
             ])
             ->oldest('id')
             ->get();
@@ -79,7 +79,7 @@ final class ListStationQrAwaitingOrdersAction
             ->all();
         $direct = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
             ->where('source', Order::SOURCE_QR_WEB)->where('order_type', 'quick')
-            ->where('transferred_to_device_id', $device->id)->withoutLiveClaim()->withCount(['items' => fn (Builder $items): Builder => $items->where('qty', '>', 0)])->get();
+            ->where('transferred_to_device_id', $device->id)->withoutLiveClaim()->withCount(['items' => fn (Builder $items): Builder => $items->where('qty', '>', 0)->whereNull('parent_order_item_id')])->get();
         foreach ($direct as $order) {
             if (in_array($order->uuid, array_column($rows, 'order_uuid'), true)) {
                 continue;

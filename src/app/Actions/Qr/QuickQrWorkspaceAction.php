@@ -13,6 +13,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\Orders\ComboChildren;
 use App\Support\Pricing\BillMoney;
 use Illuminate\Support\Facades\DB;
 
@@ -81,7 +82,10 @@ final class QuickQrWorkspaceAction
                     throw new QrChargeException('order_not_editable', 409, 'A manager must resolve the existing comp before changing these items.');
                 }
                 $ids = $payload['item_ids'] ?? [$payload['item_id'] ?? 0];
-                $items = $payload['operation'] === 'clear' ? $order->items : $order->items->whereIn('id', $ids)->sortBy('id');
+                // LAUNCH-P4 — combo children follow their line; they are never
+                // edited on their own.
+                $lines = $order->items->filter(static fn (OrderItem $item): bool => $item->parent_order_item_id === null);
+                $items = $payload['operation'] === 'clear' ? $lines : $lines->whereIn('id', $ids)->sortBy('id');
                 if ($payload['operation'] !== 'clear' && (count($ids) !== $items->count()
                     || ! in_array($payload['item_id'], $ids, true))) {
                     throw new QrChargeException('order_changed', 409, 'The selected items no longer match this bill.');
@@ -167,6 +171,8 @@ final class QuickQrWorkspaceAction
         $nextLineDiscount = (int) round($oldLineDiscount * $remaining / $oldQty);
         $item->update(['qty' => $remaining, 'line_total' => Money::toOmr($nextRaw),
             'line_discount' => Money::toOmr($nextLineDiscount), 'status' => $remaining === 0 ? 'void' : $item->status]);
+        // LAUNCH-P4 — a combo line's chosen items follow its quantity.
+        ComboChildren::follow($item, $oldQty, (float) $remaining);
         if ($discount !== $nextDiscount) {
             OrderDiscount::query()->create(['order_id' => $order->id, 'source' => 'order',
                 'name_snapshot' => 'Quick order edit '.$requestId, 'amount_type_snapshot' => 'cancel_line',

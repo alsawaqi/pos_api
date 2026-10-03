@@ -263,22 +263,28 @@ class DeviceSyncCompVoidReasonTest extends TestCase
         $this->assertDatabaseCount('pos_order_comps', 0);
     }
 
-    public function test_comp_exceeding_the_reason_cap_fails_the_event(): void
+    /**
+     * LAUNCH-P4 H10 — a sale is never refused on reason metadata: a comp
+     * above the reason's cap (lowered after the device cached it) is kept and
+     * flagged on the sync result for review.
+     */
+    public function test_comp_exceeding_the_reason_cap_is_kept_and_flagged(): void
     {
         $this->device();
         $this->seedCatalogue();
         $this->seedReasons();
 
-        // Long Wait caps at 2.000 OMR; comping 2.500 must fail.
+        // Long Wait caps at 2.000 OMR; comping 2.500 is flagged, not refused.
         $res = $this->push('mdev_cv', [$this->createEvent((string) Str::uuid(), [
             'comp_total_baisas' => 2500,
             'grand_total_baisas' => 500,
             'comps' => [['comp_reason_id' => 1, 'amount_baisas' => 2500]],
         ])])->assertOk();
 
-        $this->assertSame('failed', $res->json('data.results.0.status'));
-        $this->assertStringContainsString('cap', $res->json('data.results.0.result.error'));
-        $this->assertDatabaseCount('pos_orders', 0);
+        $this->assertSame('processed', $res->json('data.results.0.status'));
+        $this->assertContains('comp_over_cap:1', $res->json('data.results.0.result.integrity_flags'));
+        $this->assertDatabaseCount('pos_orders', 1);
+        $this->assertDatabaseHas('pos_order_comps', ['comp_reason_id' => 1, 'amount' => 2.5]);
     }
 
     public function test_cross_tenant_comp_reason_fails_the_event(): void

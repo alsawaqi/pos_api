@@ -79,11 +79,16 @@ class VoidOrderHandler implements SyncEventHandler
         // unknown reason keeps the legacy behaviour (full reverse).
         $voidReason = null;
         if (isset($payload['void_reason_id'])) {
-            $voidReason = VoidReason::query()
+            // LAUNCH-P4 H10 — a reason deleted after the device cached it still
+            // resolves and is flagged; only another company's id refuses.
+            $voidReason = VoidReason::withTrashed()
                 ->where('company_id', $device->company_id)
                 ->find((int) $payload['void_reason_id']);
             if ($voidReason === null) {
                 throw new RuntimeException('void reason not found for this company: '.$payload['void_reason_id']);
+            }
+            if ($voidReason->trashed()) {
+                $device->syncIntegrityFlags[] = 'void_reason_deleted:'.$voidReason->id;
             }
         }
 

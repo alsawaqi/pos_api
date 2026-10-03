@@ -42,6 +42,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceQrTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceQrTableRoundController;
 use App\Http\Controllers\Api\V1\Device\DeviceQuickWorkspaceController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
+use App\Http\Controllers\Api\V1\Device\DeviceSoldOutController;
 use App\Http\Controllers\Api\V1\Device\DeviceStaffRoundReviewController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableClaimOwnerController;
@@ -286,11 +287,19 @@ Route::prefix('v1')->group(function (): void {
         // Config bundle (Â§11.4): full snapshot + incremental delta.
         Route::get('device/identity', function (Request $request) {
             $device = $request->user('pos_device');
+
             return response()->json(['data' => [
                 'uuid' => $device->uuid, 'company_id' => (int) $device->company_id,
                 'branch_id' => (int) $device->branch_id,
             ]]);
         })->name('device.identity');
+        // LAUNCH-P4 A5 — the branch's hand-set "sold out" switches: polled by
+        // devices every 60 s online and on resume; switched with the
+        // manager / supervisor (or manager-approval PIN) rule.
+        Route::get('device/sold-out', [DeviceSoldOutController::class, 'index'])->name('device.sold-out.index');
+        Route::post('device/products/{productId}/sold-out', [DeviceSoldOutController::class, 'update'])
+            ->whereNumber('productId')->name('device.sold-out.update');
+
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');
         Route::get('device/config/delta', [DeviceConfigController::class, 'delta'])->name('device.config.delta');
 

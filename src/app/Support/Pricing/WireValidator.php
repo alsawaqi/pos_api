@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Support\Pricing;
 
+use App\Models\Product;
 use App\Models\Tax;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -195,6 +196,9 @@ final class WireValidator
                 'comp_total_baisas' => $compTotal,
             ]);
         }
+
+        // LAUNCH-P4 — combo lines: flagged, never refused.
+        $this->checkCombos($lines, $companyId, $failures);
 
         $delivery = ($order['order_type'] ?? null) === 'delivery';
         if ($delivery) {
@@ -510,6 +514,77 @@ final class WireValidator
             : Taxes::taxTotalBaisasFor($taxedBase, $taxes);
         if ($expected !== $actualTaxTotal) {
             $this->failOnce($failures, 'tax_recompute', $expected, $actualTaxTotal);
+        }
+    }
+
+    /**
+     * LAUNCH-P4 — a combo line's choices against its live slots: each choice
+     * an option of its slot at the option's extra price, each slot's count
+     * (Σ qty per ONE combo) within min..max; a `combo` on a product that is
+     * not a combo is wrong too. The first problem is reported as `combo`.
+     *
+     * @param  list<mixed>  $lines
+     * @param  list<array{code: string, expected: mixed, actual: mixed}>  $failures
+     */
+    private function checkCombos(array $lines, int $companyId, array &$failures): void
+    {
+        $productIds = [];
+        foreach ($lines as $line) {
+            $productIds[] = (int) (((array) $line)['product_id'] ?? 0);
+        }
+        $combos = Product::withTrashed()->where('company_id', $companyId)->whereIn('id', $productIds ?: [0])
+            ->where('product_type', Product::TYPE_COMBO)->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        $comboSet = array_fill_keys($combos, true);
+        $slots = DB::table('pos_combo_slots')->whereIn('combo_product_id', $combos ?: [0])->get()->groupBy('combo_product_id');
+        $options = DB::table('pos_combo_slot_options')
+            ->whereIn('slot_id', $slots->flatten(1)->pluck('id')->all() ?: [0])->get()
+            ->groupBy('slot_id')->map(static fn ($rows) => $rows->keyBy('product_id'));
+
+        foreach ($lines as $index => $rawLine) {
+            $line = (array) $rawLine;
+            $productId = (int) ($line['product_id'] ?? 0);
+            $choices = is_array($line['combo'] ?? null) ? array_values($line['combo']) : [];
+            if (! isset($comboSet[$productId])) {
+                if ($choices !== []) {
+                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'combo' => false], ['line_index' => $index, 'choices' => count($choices)]);
+                }
+
+                continue;
+            }
+            $comboSlots = $slots->get($productId, collect())->keyBy('id');
+            $counts = [];
+            foreach ($choices as $rawChoice) {
+                $choice = (array) $rawChoice;
+                $slotId = (int) ($choice['slot_id'] ?? 0);
+                $option = $comboSlots->has($slotId) ? $options->get($slotId)?->get((int) ($choice['product_id'] ?? 0)) : null;
+                if ($option === null) {
+                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'option_in_slot' => $slotId], [
+                        'line_index' => $index, 'product_id' => (int) ($choice['product_id'] ?? 0),
+                    ]);
+
+                    return;
+                }
+                $extra = (int) round(((float) $option->extra_price) * 1000);
+                if ((int) ($choice['extra_price_baisas'] ?? 0) !== $extra) {
+                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'extra_price_baisas' => $extra], [
+                        'line_index' => $index, 'extra_price_baisas' => (int) ($choice['extra_price_baisas'] ?? 0),
+                    ]);
+
+                    return;
+                }
+                $counts[$slotId] = ($counts[$slotId] ?? 0) + (float) ($choice['qty'] ?? 0);
+            }
+            foreach ($comboSlots as $slot) {
+                $count = $counts[(int) $slot->id] ?? 0;
+                if ($count < (int) $slot->min_choices || $count > (int) $slot->max_choices) {
+                    $this->failOnce($failures, 'combo', [
+                        'line_index' => $index, 'slot_id' => (int) $slot->id,
+                        'choices_between' => [(int) $slot->min_choices, (int) $slot->max_choices],
+                    ], ['line_index' => $index, 'slot_id' => (int) $slot->id, 'choices' => $count]);
+
+                    return;
+                }
+            }
         }
     }
 

@@ -6,6 +6,8 @@ namespace App\Actions\Qr;
 
 use App\Models\BranchProduct;
 use App\Models\Product;
+use App\Support\BusinessClock;
+use App\Support\Catalogue\BranchCatalogue;
 use DateTimeInterface;
 
 /**
@@ -30,17 +32,30 @@ final readonly class QrProductAvailability
     /** No longer produced since LAUNCH-P2 (see the class comment). */
     public const OUT_OF_STOCK = 'out_of_stock';
 
+    /** LAUNCH-P4 — the branch switched it off by hand ("sold out"), on every channel. */
+    public const SOLD_OUT = 'sold_out';
+
     private function __construct(public bool $available, public ?string $reason) {}
 
-    public static function evaluate(Product $product, ?BranchProduct $branchProduct, DateTimeInterface $at): self
+    /**
+     * LAUNCH-P4 — the branch rule follows the product's branch scope
+     * ({@see BranchCatalogue}); a hand-set sold-out switch (never stock
+     * numbers) makes it unorderable after the merchant's own switches.
+     */
+    public static function evaluate(Product $product, ?BranchProduct $branchProduct, DateTimeInterface $at, bool $soldOut = false): self
     {
-        if ($branchProduct !== null && ! $branchProduct->is_available) {
+        if (! BranchCatalogue::availableAt($product, $branchProduct)) {
             return new self(false, self::BRANCH_UNAVAILABLE);
         }
         if ((string) $product->status !== 'active') {
             return new self(false, self::INACTIVE);
         }
-        if (! self::isInsideWindow($at->format('H:i:s'), $product->available_from, $product->available_until)) {
+        if ($soldOut) {
+            return new self(false, self::SOLD_OUT);
+        }
+        // LAUNCH-P4 H9 — the daily window is the merchant's wall clock
+        // (pos.business_timezone, Asia/Muscat), never UTC.
+        if (! self::isInsideWindow(BusinessClock::local($at)->format('H:i:s'), $product->available_from, $product->available_until)) {
             return new self(false, self::OUTSIDE_AVAILABILITY_WINDOW);
         }
 

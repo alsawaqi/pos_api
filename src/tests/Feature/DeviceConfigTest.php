@@ -465,6 +465,8 @@ class DeviceConfigTest extends TestCase
         DB::table('pos_branch_product')->insert([
             ['branch_id' => 11, 'product_id' => 2, 'is_available' => true, 'stock_qty' => null] + $t,
         ]);
+        // LAUNCH-P4 — "branch 11 only" is a 'selected' branch scope.
+        DB::table('pos_products')->where('id', 2)->update(['branch_scope' => 'selected']);
 
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
 
@@ -910,26 +912,35 @@ class DeviceConfigTest extends TestCase
     }
 
     /**
-     * A category narrowed to ANOTHER branch is still emitted (with its
-     * branch_ids) — the DEVICE hides it from the strip. Server-side
-     * filtering would strand it forever on delta devices, because a
-     * category dropped from a branch is not soft-deleted and never
-     * surfaces in the `deleted` purge map.
+     * LAUNCH-P4 (data contract, M1) — the server sends only active categories
+     * offered at the device's branch. A category narrowed to ANOTHER branch
+     * is left out, and a delta purges it through deleted.categories (it is
+     * not soft-deleted, so the changed-row purge is what reaches delta
+     * devices); a category still offered here keeps its branch_ids.
      */
-    public function test_category_branch_ids_are_emitted_but_never_server_filtered(): void
+    public function test_a_category_offered_at_another_branch_is_left_out_and_purged(): void
     {
         $this->seedCatalogue();
         $this->pairedDevice(); // branch 10
 
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertSame([1], array_column($data['categories'], 'id'));
+
+        $since = now()->subSecond();
         DB::table('pos_product_categories')->where('id', 1)->update([
-            'branch_availability_json' => json_encode([11]),
+            'branch_availability_json' => json_encode([11]), 'updated_at' => now(),
         ]);
 
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertSame([], $data['categories']);
+        $delta = $this->withToken('mdev_cfg')
+            ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))->assertOk()->json('data');
+        $this->assertSame([], $delta['categories']);
+        $this->assertSame([1], $delta['deleted']['categories']);
 
-        $this->assertCount(1, $data['categories']);
-        $this->assertSame(1, $data['categories'][0]['id']);
-        $this->assertSame([11], $data['categories'][0]['branch_ids']);
+        DB::table('pos_product_categories')->where('id', 1)->update(['branch_availability_json' => json_encode([10, 11])]);
+        $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
+        $this->assertSame([10, 11], $data['categories'][0]['branch_ids']);
     }
 
     public function test_unit_mode_low_stock_compares_branch_stock_to_the_threshold(): void

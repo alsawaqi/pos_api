@@ -495,6 +495,8 @@ final class QrDineInFoundationTest extends TestCase
             'is_internal' => false,
             'available_from' => null,
             'available_until' => null,
+            // LAUNCH-P4 — sold at the given branch only.
+            'branch_scope' => 'selected',
             'created_at' => now(),
             'updated_at' => now(),
             'deleted_at' => null,

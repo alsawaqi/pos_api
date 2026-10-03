@@ -29,6 +29,7 @@ final class CreateQrOrderAction
         private readonly DistinctQrPhoneGuard $phoneGuard,
         private readonly AllocateQrTempReferenceAction $tempReferences,
         private readonly OrderLineSnapshotter $snapshots,
+        private readonly QrComboChildren $children,
     ) {}
 
     /**
@@ -177,6 +178,10 @@ final class CreateQrOrderAction
                         'add_on_name_snapshot' => $resolvedAddon->addon->name,
                         'price_delta_snapshot' => Money::toOmr($resolvedAddon->priceDeltaBaisas),
                     ] + $addonSnapshots);
+                }
+                // LAUNCH-P4 — a combo line's chosen items become its children.
+                if ($resolved->isCombo()) {
+                    $this->children->write($item, $this->children->payload($resolved, (int) $session->company_id));
                 }
             }
 

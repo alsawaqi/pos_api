@@ -36,7 +36,16 @@ final class QrPricePresenter
                 'unit_price_baisas' => $line->unitPriceBaisas,
                 'line_discount_baisas' => $lineDiscounts[$index] ?? 0,
                 'line_total_baisas' => $line->unitPriceBaisas * $line->qty,
-            ], $loaded->resolvedLines, array_keys($loaded->resolvedLines)),
+            ] + ($line->isCombo() ? ['components' => array_map(static fn (QrResolvedComponent $component): array => [
+                // LAUNCH-P4 — a combo line's choices, per ONE combo.
+                'slot_id' => $component->slotId,
+                'product_id' => (int) $component->product->id,
+                'qty' => $component->qty,
+                'addon_ids' => $component->addonIds(),
+                'notes' => $component->notes,
+                'extra_price_baisas' => $component->extraPriceBaisas,
+                'price_baisas' => $component->priceBaisas(),
+            ], $line->components)] : []), $loaded->resolvedLines, array_keys($loaded->resolvedLines)),
             'subtotal_baisas' => $price->rawSubtotalBaisas,
             'discount_total_baisas' => $price->discountTotalBaisas,
             'tax_total_baisas' => $price->taxTotalBaisas,

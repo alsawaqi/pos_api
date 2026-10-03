@@ -9,6 +9,7 @@ use App\Actions\Tables\BookTableCancellationWasteAction;
 use App\Models\BranchStock;
 use App\Models\Device;
 use App\Models\Order;
+use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\QrOrderRound;
 use App\Models\StockMovement;
@@ -32,6 +33,12 @@ final class QuickOrderCancellationWasteAction
                     $ids[] = (int) $line['order_item_id'];
                 }
             }
+        }
+        // LAUNCH-P4 — a prepared combo line's chosen items were prepared too:
+        // their own recipes and shelves are what is wasted.
+        if ($ids !== []) {
+            array_push($ids, ...OrderItem::query()->where('order_id', $order->id)
+                ->whereIn('parent_order_item_id', $ids)->pluck('id')->map(static fn ($id): int => (int) $id)->all());
         }
         $ids = array_values(array_unique($ids));
         sort($ids);

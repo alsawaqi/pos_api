@@ -55,6 +55,13 @@ final class FrozenLegacyTableBill
         }
         $subtotal = 0;
         $lineDiscounts = 0;
+        // LAUNCH-P4 — a combo (lines with children) is not combined into a
+        // shared bill: the frozen round lines have no child shape here.
+        foreach ($items as $item) {
+            if (($item['parent_order_item_id'] ?? null) !== null) {
+                throw $this->unsupported();
+            }
+        }
         foreach ($items as $item) {
             if ($item['status'] === 'void' && (float) $item['qty'] === 0.0) {
                 continue;

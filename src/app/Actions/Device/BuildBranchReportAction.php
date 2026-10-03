@@ -8,6 +8,7 @@ use App\Models\Device;
 use App\Models\LoyaltyTransaction;
 use App\Models\Order;
 use App\Models\StockMovement;
+use App\Support\Money;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -247,6 +248,9 @@ class BuildBranchReportAction
     {
         return DB::table('pos_order_items')
             ->whereIn('order_id', $orderIds())
+            // LAUNCH-P4 — revenue lines only: a combo counts as its own line,
+            // the items chosen inside it (children, no money) do not.
+            ->whereNull('parent_order_item_id')
             ->selectRaw('product_name_snapshot AS name, COALESCE(SUM(qty), 0) AS qty, COALESCE(SUM(line_total), 0) AS total')
             ->groupBy('product_name_snapshot')
             ->orderByDesc('total')
@@ -347,7 +351,7 @@ class BuildBranchReportAction
 
     /**
      * Convert a decimal(…,3) OMR string/number (SQL SUM output) to integer
-     * baisas — the same rounding rule as {@see \App\Support\Money}.
+     * baisas — the same rounding rule as {@see Money}.
      */
     private function baisas(int|float|string|null $value): int
     {

@@ -95,14 +95,16 @@ final class AppendStaffRoundAction
             $now = now();
             $requestedLines = array_map(static fn (array $line): array => $line + ['addon_ids' => [], 'notes' => null], array_values($payload['lines']));
             $at = DateTimeImmutable::createFromInterface($now);
-            $classified = $this->pricing->classify((int) $device->company_id, (int) $device->branch_id, $requestedLines, $at);
+            // LAUNCH-P4 M5 — staff rounds use the staff set: every in-store
+            // product of the branch, whatever the QR menu switch says.
+            $classified = $this->pricing->classify((int) $device->company_id, (int) $device->branch_id, $requestedLines, $at, staff: true);
             $held = $classified['held'];
             $loaded = null;
             $price = null;
             if ($classified['priceable'] !== []) {
                 try {
                     // LAUNCH-P4 — a further round is priced in the bill's tax mode.
-                    $loaded = $this->pricing->handle((int) $device->company_id, (int) $device->branch_id, $classified['priceable'], $at,
+                    $loaded = $this->pricing->handleForStaff((int) $device->company_id, (int) $device->branch_id, $classified['priceable'], $at,
                         $order !== null ? (bool) $order->prices_include_tax : null);
                     $price = Totals::priceOrder($loaded->pricingInput);
                 } catch (QrCatalogueException $exception) {
@@ -249,6 +251,7 @@ final class AppendStaffRoundAction
                 'qty' => $line['qty'],
                 'notes' => $line['notes'],
                 'addon_ids' => $line['addon_ids'],
+            ] + (isset($line['combo']) && is_array($line['combo']) && $line['combo'] !== [] ? ['combo' => $line['combo']] : []) + [
                 'requested' => true,
                 'held_reason' => $heldLine['reason'],
                 'addon_id' => $heldLine['addon_id'],

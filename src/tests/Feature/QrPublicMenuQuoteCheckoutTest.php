@@ -88,7 +88,8 @@ final class QrPublicMenuQuoteCheckoutTest extends TestCase
     {
         $session = $this->activeSession();
         $unavailable = $this->product(['name' => 'Unavailable here']);
-        $otherBranch = $this->product(['name' => 'Other branch only']);
+        // LAUNCH-P4 — sold at branch 20 only: a 'selected' branch scope.
+        $otherBranch = $this->product(['name' => 'Other branch only', 'branch_scope' => 'selected']);
         $this->branchProduct($unavailable, false, '7.000', 10);
         $this->branchProduct($otherBranch, true, null, 20);
 

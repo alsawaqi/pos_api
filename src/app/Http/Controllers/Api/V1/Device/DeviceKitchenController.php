@@ -9,6 +9,7 @@ use App\Models\Ingredient;
 use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
+use App\Support\Catalogue\BranchCatalogue;
 use App\Support\Recipes\PrepExploder;
 use App\Support\StockDecimal;
 use Brick\Math\BigRational;
@@ -66,14 +67,9 @@ class DeviceKitchenController
             ->get()
             ->groupBy('product_id');
 
+        // LAUNCH-P4 — the branch-scope rule (stock rows never restrict).
         $products = $products->filter(function (Product $p) use ($branchRows, $branchId): bool {
-            $rows = $branchRows->get($p->id);
-            if ($rows === null || $rows->isEmpty()) {
-                return true;
-            }
-            $mine = $rows->firstWhere('branch_id', $branchId);
-
-            return $mine !== null && (bool) $mine->is_available;
+            return BranchCatalogue::availableAt($p, $branchRows->get($p->id)?->firstWhere('branch_id', $branchId));
         })->values();
 
         $recipesByProduct = DB::table('pos_product_recipes')

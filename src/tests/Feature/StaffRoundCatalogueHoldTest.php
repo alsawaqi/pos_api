@@ -43,7 +43,8 @@ final class StaffRoundCatalogueHoldTest extends TestCase
         if ($reason === 'inactive') {
             $product->update(['status' => 'inactive']);
         } elseif ($reason === 'outside_availability_window') {
-            $product->update(['available_from' => '15:00:00', 'available_until' => '16:00:00']);
+            // LAUNCH-P4 H9 — Muscat wall clock: 12:00 UTC is 16:00 here.
+            $product->update(['available_from' => '19:00:00', 'available_until' => '20:00:00']);
         } elseif ($reason === 'product_missing') {
             $payload['lines'][0]['product_id'] = 999999;
         } else {

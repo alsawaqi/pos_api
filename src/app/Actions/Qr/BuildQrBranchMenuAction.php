@@ -9,14 +9,30 @@ use App\Models\AddOnGroup;
 use App\Models\BranchProduct;
 use App\Models\Product;
 use App\Models\ProductCategory;
+use App\Support\BusinessClock;
+use App\Support\Catalogue\BranchCatalogue;
 use App\Support\Money;
-use DateTimeImmutable;
+use App\Support\Pricing\CompanyTaxPolicy;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
-/** Builds the customer branch menu without the device catalogue's delta/purge semantics. */
+/**
+ * Builds the customer branch menu without the device catalogue's delta/purge semantics.
+ *
+ * LAUNCH-P4:
+ *  - only active products (L4: an inactive product is left out, not
+ *    greyed), in-store ones shown on the QR menu (channels), sold at this
+ *    branch by its branch scope; a product switched off here stays greyed;
+ *  - a hand-set "sold out" product is shown, greyed and not orderable
+ *    (`sold_out: true`, unavailable_reason 'sold_out');
+ *  - a combo carries `combo.slots[].options[]` with each chosen item's
+ *    name, photo, extra price, availability and add-on groups (the item's
+ *    own groups are in `addon_groups`); a combo takes no add-ons itself;
+ *  - `tax` says whether menu prices include VAT; windows use the
+ *    merchant's wall clock (H9).
+ */
 final class BuildQrBranchMenuAction
 {
     public function __construct(
@@ -29,23 +45,44 @@ final class BuildQrBranchMenuAction
      */
     public function handle(int $companyId, int $branchId, ?DateTimeInterface $at = null): array
     {
-        $at ??= DateTimeImmutable::createFromInterface(now());
-        $products = $this->products->forBranch($companyId, $branchId)
+        $at = BusinessClock::local($at);
+        $products = $this->products->forBranch($companyId, $branchId)->where('status', 'active')
             ->orderBy('display_order')->orderBy('id')->get();
+
+        // Combo slots and their options (the chosen items need not be on the
+        // menu themselves: a side sold only inside a meal).
+        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->pluck('id')
+            ->map(static fn ($id): int => (int) $id)->all();
+        $slots = DB::table('pos_combo_slots')->whereIn('combo_product_id', $comboIds === [] ? [0] : $comboIds)
+            ->orderBy('sort_order')->orderBy('id')->get();
+        $options = DB::table('pos_combo_slot_options')->whereIn('slot_id', $slots->pluck('id')->all() ?: [0])
+            ->orderBy('sort_order')->orderBy('id')->get()->groupBy('slot_id');
+        $optionIds = $options->flatten(1)->pluck('product_id')->map(static fn ($id): int => (int) $id)->unique()->values()->all();
+        $optionProducts = $this->products->soldByBranch($companyId, $branchId)->where('is_internal', false)
+            ->where('product_type', '<>', Product::TYPE_COMBO)
+            ->whereIn('pos_products.id', $optionIds === [] ? [0] : $optionIds)->get()->keyBy('id');
+
+        $groupProducts = $products->reject(static fn (Product $p): bool => $p->isCombo())
+            ->keyBy('id')->union($optionProducts);
         $productIds = $products->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        $allIds = array_values(array_unique(array_merge($productIds, $optionIds)));
+        $groupProductIds = $groupProducts->keys()->map(static fn ($id): int => (int) $id)->all();
         $categoryIds = $products->pluck('category_id')->filter(static fn ($id): bool => $id !== null)
+            ->map(static fn ($id): int => (int) $id)->unique()->values()->all();
+        $groupCategoryIds = $groupProducts->pluck('category_id')->filter(static fn ($id): bool => $id !== null)
             ->map(static fn ($id): int => (int) $id)->unique()->values()->all();
 
         $branchProducts = BranchProduct::query()->where('branch_id', $branchId)
-            ->whereIn('product_id', $productIds === [] ? [0] : $productIds)->get()->keyBy('product_id');
+            ->whereIn('product_id', $allIds === [] ? [0] : $allIds)->get()->keyBy('product_id');
+        $soldOut = BranchCatalogue::soldOutAt($branchId, $allIds);
         $categories = ProductCategory::query()->where('company_id', $companyId)
             ->whereIn('id', $categoryIds === [] ? [0] : $categoryIds)
             ->orderBy('display_order')->orderBy('id')->get();
         $productBindings = DB::table('pos_addon_group_products')
-            ->whereIn('product_id', $productIds === [] ? [0] : $productIds)
+            ->whereIn('product_id', $groupProductIds === [] ? [0] : $groupProductIds)
             ->orderBy('display_order')->orderBy('id')->get()->groupBy('product_id');
         $categoryBindings = DB::table('pos_addon_group_categories')
-            ->whereIn('category_id', $categoryIds === [] ? [0] : $categoryIds)
+            ->whereIn('category_id', array_values(array_unique(array_merge($categoryIds, $groupCategoryIds))) ?: [0])
             ->orderBy('id')->get()->groupBy('category_id');
         $boundGroupIds = $productBindings->flatten(1)->merge($categoryBindings->flatten(1))
             ->pluck('add_on_group_id')->map(static fn ($id): int => (int) $id)
@@ -72,9 +109,33 @@ final class BuildQrBranchMenuAction
             $at,
         );
         $groupOrder = array_flip($activeGroupIds);
+        $groupIdsFor = function (Product $product) use ($productBindings, $categoryBindings, $globalGroupIds, $activeGroupSet, $groupOrder): array {
+            if ($product->isCombo()) {
+                return [];
+            }
+            $groupIds = array_values(array_unique(array_merge(
+                $globalGroupIds,
+                $this->bindingIds($productBindings->get($product->id), $activeGroupSet),
+                $product->category_id === null
+                    ? []
+                    : $this->bindingIds($categoryBindings->get($product->category_id), $activeGroupSet),
+            )));
+            usort($groupIds, static fn (int $left, int $right): int => ($groupOrder[$left] ?? PHP_INT_MAX) <=> ($groupOrder[$right] ?? PHP_INT_MAX));
+
+            return $groupIds;
+        };
+        $availabilityOf = static fn (Product $product): QrProductAvailability => QrProductAvailability::evaluate(
+            $product, $branchProducts->get($product->id), $at, isset($soldOut[(int) $product->id]),
+        );
+        $slotsByCombo = $slots->groupBy('combo_product_id');
+        $taxPolicy = CompanyTaxPolicy::for($companyId);
 
         return [
             'branding' => app(ReadQrBranding::class)->handle($companyId, $branchId),
+            'tax' => [
+                'vat_registered' => $taxPolicy->vatRegistered,
+                'prices_include_tax' => $taxPolicy->pricesIncludeTax(),
+            ],
             'categories' => $categories->map(function (ProductCategory $category) use ($categoryBindings, $activeGroupSet): array {
                 return [
                     'id' => (int) $category->id,
@@ -89,24 +150,11 @@ final class BuildQrBranchMenuAction
                 ];
             })->values()->all(),
             'products' => $products->map(function (Product $product) use (
-                $at, $branchProducts, $productBindings, $categoryBindings,
-                $globalGroupIds, $activeGroupSet, $groupOrder,
+                $availabilityOf, $groupIdsFor, $soldOut, $slotsByCombo, $options, $optionProducts,
             ): array {
-                /** @var BranchProduct|null $branchProduct */
-                $branchProduct = $branchProducts->get($product->id);
-                $availability = QrProductAvailability::evaluate($product, $branchProduct, $at);
-                $groupIds = array_merge(
-                    $globalGroupIds,
-                    $this->bindingIds($productBindings->get($product->id), $activeGroupSet),
-                    $product->category_id === null
-                        ? []
-                        : $this->bindingIds($categoryBindings->get($product->category_id), $activeGroupSet),
-                );
-                $groupIds = array_values(array_unique($groupIds));
-                usort($groupIds, static fn (int $left, int $right): int => ($groupOrder[$left] ?? PHP_INT_MAX) <=> ($groupOrder[$right] ?? PHP_INT_MAX));
+                $availability = $availabilityOf($product);
                 $basePriceBaisas = Money::toBaisas($product->base_price);
-
-                return [
+                $row = [
                     'id' => (int) $product->id,
                     'uuid' => $product->uuid,
                     'category_id' => $product->category_id !== null ? (int) $product->category_id : null,
@@ -114,18 +162,60 @@ final class BuildQrBranchMenuAction
                     'name' => $product->name,
                     'name_ar' => $product->name_ar,
                     'description' => $product->description,
+                    'description_ar' => $product->description_ar,
                     'image_url' => $product->image_url,
                     'base_price_baisas' => $basePriceBaisas,
                     'base_price_display' => Money::toOmr($basePriceBaisas),
                     'display_order' => (int) $product->display_order,
                     'status' => $product->status,
                     'stock_mode' => $product->stock_mode,
+                    'product_type' => (string) ($product->product_type ?? Product::TYPE_STANDARD),
                     'available_from' => $product->available_from,
                     'available_until' => $product->available_until,
                     'available' => $availability->available,
                     'unavailable_reason' => $availability->reason,
-                    'addon_group_ids' => $groupIds,
+                    'sold_out' => isset($soldOut[(int) $product->id]),
+                    'addon_group_ids' => $groupIdsFor($product),
                 ];
+                if ($product->isCombo()) {
+                    $row['combo'] = ['slots' => $slotsByCombo->get($product->id, collect())->map(
+                        static fn (object $slot): array => [
+                            'id' => (int) $slot->id,
+                            'name' => $slot->name,
+                            'name_ar' => $slot->name_ar,
+                            'min' => (int) $slot->min_choices,
+                            'max' => (int) $slot->max_choices,
+                            'sort_order' => (int) $slot->sort_order,
+                            'options' => $options->get($slot->id, collect())
+                                ->filter(static fn (object $option): bool => $optionProducts->has((int) $option->product_id))
+                                ->map(static function (object $option) use ($optionProducts, $availabilityOf, $groupIdsFor, $soldOut): array {
+                                    /** @var Product $item */
+                                    $item = $optionProducts->get((int) $option->product_id);
+                                    $itemAvailability = $availabilityOf($item);
+                                    $extra = Money::toBaisas($option->extra_price);
+
+                                    return [
+                                        'product_id' => (int) $item->id,
+                                        'name' => $item->name,
+                                        'name_ar' => $item->name_ar,
+                                        'description' => $item->description,
+                                        'description_ar' => $item->description_ar,
+                                        'image_url' => $item->image_url,
+                                        'extra_price_baisas' => $extra,
+                                        'extra_price_display' => Money::toOmr($extra),
+                                        'is_default' => (bool) $option->is_default,
+                                        'sort_order' => (int) $option->sort_order,
+                                        'available' => $itemAvailability->available,
+                                        'unavailable_reason' => $itemAvailability->reason,
+                                        'sold_out' => isset($soldOut[(int) $item->id]),
+                                        'addon_group_ids' => $groupIdsFor($item),
+                                    ];
+                                })->values()->all(),
+                        ],
+                    )->values()->all()];
+                }
+
+                return $row;
             })->values()->all(),
             'addon_groups' => $addonGroups->map(function (AddOnGroup $group) use (
                 $addonsByGroup,

@@ -14,6 +14,7 @@ use App\Models\QrOrderRound;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use App\Support\Money;
+use App\Support\Orders\ComboChildren;
 use App\Support\Pricing\BillMoney;
 use Carbon\CarbonInterface;
 use RuntimeException;
@@ -138,6 +139,12 @@ final class CancelStaffLineAction
                 }
                 $k = min($q - $c, $remaining);
                 $cancelledItems[] = [$item, $k];
+                // LAUNCH-P4 — a combo line's chosen items are what was made:
+                // their share of the cancelled quantity books the waste.
+                foreach (OrderItem::query()->where('order_id', $order->id)->where('parent_order_item_id', $item->id)
+                    ->where('status', '<>', OrderItem::STATUS_VOID)->orderBy('id')->get() as $child) {
+                    $cancelledItems[] = [$child, round((float) $child->qty * $k / ($q - $c), 3)];
+                }
                 $unit = (int) $line['unit_price_baisas'];
                 $originalDiscount = (int) ($line['line_discount_baisas'] ?? 0);
                 $oldDiscount = intdiv($originalDiscount * ($q - $c), $q);
@@ -153,6 +160,8 @@ final class CancelStaffLineAction
                     $attributes['status'] = OrderItem::STATUS_VOID;
                 }
                 $item->update($attributes);
+                // LAUNCH-P4 — a combo line's chosen items follow its quantity.
+                ComboChildren::follow($item, (float) ($q - $c), (float) ($q - $c - $k));
                 $this->lineAudit($order, (int) $item->id, $reduction, $payload['client_request_id']);
                 $deltaSubtotal += $unit * $k;
                 $deltaDiscount += $reduction;

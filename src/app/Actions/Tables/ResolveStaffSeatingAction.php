@@ -57,6 +57,17 @@ final class ResolveStaffSeatingAction
                 'lines.*.addon_ids' => ['sometimes', 'array', 'max:50', new DistinctLineAddons],
                 'lines.*.addon_ids.*' => ['integer', 'min:1'],
                 'lines.*.notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
+                // LAUNCH-P4 — a combo line's choices, per ONE combo (the device
+                // wire shape); the server prices them, any sent price is ignored.
+                'lines.*.combo' => ['sometimes', 'nullable', 'array', 'max:50'],
+                'lines.*.combo.*.slot_id' => ['required', 'integer', 'min:1'],
+                'lines.*.combo.*.product_id' => ['required', 'integer', 'min:1'],
+                'lines.*.combo.*.qty' => ['sometimes', 'integer', 'min:1', 'max:99'],
+                'lines.*.combo.*.addon_ids' => ['sometimes', 'array', 'max:50'],
+                'lines.*.combo.*.addon_ids.*' => ['integer', 'min:1'],
+                'lines.*.combo.*.addons' => ['sometimes', 'array', 'max:50'],
+                'lines.*.combo.*.addons.*.add_on_id' => ['required', 'integer', 'min:1'],
+                'lines.*.combo.*.notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
                 'lines.*.unit_price_baisas' => ['missing'],
                 'lines.*.line_total_baisas' => ['missing'],
                 'subtotal_baisas' => ['missing'],

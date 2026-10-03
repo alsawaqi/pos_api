@@ -33,6 +33,7 @@ use App\Models\StaffMessageRead;
 use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
+use App\Support\Catalogue\BranchCatalogue;
 use App\Support\OrderNumbering;
 use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Recipes\RecipeCopy;
@@ -97,40 +98,34 @@ class BuildDeviceConfigAction
         )->get();
 
         // ---- Catalogue (company-scoped) ----
+        // LAUNCH-P4 — only ACTIVE categories offered at THIS branch (their
+        // branch list, M1); any other one changed since the cursor rides
+        // deleted.categories, so devices need not filter (they still may).
         $categories = $this->changed(
-            ProductCategory::query()->where('company_id', $companyId)->orderBy('display_order'),
+            ProductCategory::query()->where('company_id', $companyId)->where('status', 'active')->orderBy('display_order'),
             $since
-        )->get();
+        )->get()->filter(fn (ProductCategory $c): bool => $this->categoryAtBranch($c, $branchId))->values();
 
-        // Per-branch availability + unit stock for THIS branch. A product is
-        // shown to the device when it's assigned-and-available at this branch,
-        // OR not assigned to any branch at all (default: available everywhere,
-        // which keeps pre-feature catalogues working). pos_branch_product also
-        // carries the per-branch unit stock attached to each product below.
+        // Per-branch availability + unit stock for THIS branch.
+        // pos_branch_product also carries the per-branch unit stock attached
+        // to each product below.
         $branchProductByProduct = DB::table('pos_branch_product')
             ->where('branch_id', $branchId)
             ->get()
             ->keyBy('product_id');
 
-        $productsQuery = Product::query()
-            ->where('company_id', $companyId)
-            // P-G2 — internal items (cups/lids) never reach the POS menu
-            // or the customer tablet; their stock is consumed server-side
-            // as components at order.pay. Newly-internal ids surface in
-            // the delta's deleted.products purge list below.
-            ->where('is_internal', false)
-            ->where(function (Builder $q) use ($branchId): void {
-                $q->whereExists(function ($sub) use ($branchId): void {
-                    $sub->selectRaw('1')->from('pos_branch_product')
-                        ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
-                        ->where('pos_branch_product.branch_id', $branchId)
-                        ->where('pos_branch_product.is_available', true);
-                })->orWhereNotExists(function ($sub): void {
-                    $sub->selectRaw('1')->from('pos_branch_product')
-                        ->whereColumn('pos_branch_product.product_id', 'pos_products.id');
-                });
-            })
-            ->orderBy('display_order');
+        // LAUNCH-P4 — the server sends only ACTIVE products sold at THIS
+        // branch by their branch scope ({@see BranchCatalogue}: 'all' = every
+        // branch except one switched off here; 'selected' = only branches
+        // switched on; stock rows never restrict). Anything else that changed
+        // since the cursor rides deleted.products. Channel flags
+        // (sold_in_store / sold_on_delivery / listed) and the branch's
+        // sold-out switch ride on each product for the device to apply per
+        // order type — a product sold only inside combos still reaches the
+        // device for its combo builder.
+        $productsQuery = $this->sellableProducts($companyId, $branchId)->orderBy('display_order');
+        $soldOut = BranchCatalogue::soldOutAt($branchId);
+        $reemitAll = $since !== null && $this->addonGroupsChangedSince($companyId, $since);
 
         // Delta change-detection for products must ALSO fire when only the
         // per-branch shelf moved — NOT just on pos_products.updated_at. A
@@ -145,20 +140,27 @@ class BuildDeviceConfigAction
         // EXISTS on THIS branch's pivot row changed after the cursor (the
         // pivot carries timestamps); the full sync ($since === null) keeps
         // emitting every product with its live shelf and is left untouched.
-        if ($since !== null) {
-            $productsQuery->where(function (Builder $q) use ($since, $branchId): void {
-                $q->where('pos_products.updated_at', '>', $since)
-                    ->orWhereExists(function ($sub) use ($since, $branchId): void {
-                        $sub->selectRaw('1')->from('pos_branch_product')
-                            ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
-                            ->where('pos_branch_product.branch_id', $branchId)
-                            ->where('pos_branch_product.updated_at', '>', $since);
-                    });
-            });
+        // LAUNCH-P4 — also when this branch's sold-out switch for it changed,
+        // when a combo's slots or options changed, and (M2) every product
+        // when an add-on group changed: a global group joins every product.
+        if ($since !== null && ! $reemitAll) {
+            $this->changedProducts($productsQuery, $branchId, $since);
         }
 
         $products = $productsQuery->get();
         $productIds = $products->pluck('id')->all();
+
+        // LAUNCH-P4 — combos: their slots and options (per ONE combo).
+        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->pluck('id')->all();
+        $comboSlots = DB::table('pos_combo_slots')->whereIn('combo_product_id', $comboIds ?: [0])
+            ->orderBy('sort_order')->orderBy('id')->get();
+        $comboOptions = DB::table('pos_combo_slot_options')->whereIn('slot_id', $comboSlots->pluck('id')->all() ?: [0])
+            ->orderBy('sort_order')->orderBy('id')->get()->groupBy('slot_id');
+        $slotsByCombo = $comboSlots->groupBy('combo_product_id');
+        // M2 — "Apply to every product" groups join every product's list.
+        $globalGroupIds = AddOnGroup::query()->where('company_id', $companyId)->where('is_global', true)
+            ->where('status', 'active')->orderBy('display_order')->orderBy('id')->pluck('id')
+            ->map(static fn ($id): int => (int) $id)->all();
 
         $recipeRowsByProduct = DB::table('pos_product_recipes')
             ->whereIn('product_id', $productIds ?: [0])
@@ -464,7 +466,7 @@ class BuildDeviceConfigAction
                 $c,
                 $groupIdsByCategory->get($c->id),
             ))->all(),
-            'products' => $products->map(fn (Product $p): array => $this->mapProduct(
+            'products' => $products->map(fn (Product $p): array => array_replace($this->mapProduct(
                 $p,
                 $recipesByProduct->get($p->id),
                 $groupIdsByProduct->get($p->id),
@@ -472,7 +474,7 @@ class BuildDeviceConfigAction
                 $deliveryPricesByProduct->get($p->id),
                 $minThresholdByIngredient,
                 $branchBalanceByIngredient,
-            ))->all(),
+            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $slotsByCombo->get($p->id), $comboOptions)))->all(),
             'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
@@ -664,6 +666,7 @@ class BuildDeviceConfigAction
             'addon_groups' => [], 'addons' => [], 'ingredients' => [], 'discounts' => [],
             'offers' => [], 'staff_messages' => [], 'loyalty_rules' => [], 'customers' => [],
             'delivery_providers' => [], 'expense_categories' => [],
+            'void_reasons' => [], 'comp_reasons' => [],
         ];
 
         if ($since === null) {
@@ -673,7 +676,14 @@ class BuildDeviceConfigAction
         return [
             'floors' => $this->trashedIds(Floor::query()->where('company_id', $companyId)->where('branch_id', $branchId), $since),
             'tables' => $this->trashedIds(Table::query()->where('company_id', $companyId)->whereIn('floor_id', $branchFloorIds ?: [0]), $since),
-            'categories' => $this->trashedIds(ProductCategory::query()->where('company_id', $companyId), $since),
+            // LAUNCH-P4 — plus categories changed since the cursor that are no
+            // longer offered here (switched off, or this branch left their list).
+            'categories' => array_values(array_unique(array_merge(
+                $this->trashedIds(ProductCategory::query()->where('company_id', $companyId), $since),
+                ProductCategory::query()->where('company_id', $companyId)->where('updated_at', '>', $since)->get()
+                    ->reject(fn (ProductCategory $c): bool => $c->status === 'active' && $this->categoryAtBranch($c, $branchId))
+                    ->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+            ))),
             // P-G2 — soft-deleted products PLUS products flipped internal
             // since the cursor: the changed-rows list filters internal items
             // out, so without this purge a tile flipped internal after it
@@ -692,27 +702,18 @@ class BuildDeviceConfigAction
             // Symmetric to the per-branch shelf-qty delta re-emit above: an
             // EXISTS on THIS branch's pivot row changed after the cursor and
             // now hidden. Scoped to the device's company via the Product query.
+            //
+            // LAUNCH-P4 — generalised: every product changed since the cursor
+            // (its row, this branch's row or sold-out switch) that is not
+            // sellable here now — inactive, internal, or outside its branch
+            // scope — is purged, so devices no longer filter on status.
             'products' => array_values(array_unique(array_merge(
                 $this->trashedIds(Product::query()->where('company_id', $companyId), $since),
-                Product::query()
-                    ->where('company_id', $companyId)
-                    ->where('is_internal', true)
-                    ->where('updated_at', '>', $since)
-                    ->pluck('id')
-                    ->map(fn ($id): int => (int) $id)
-                    ->all(),
-                Product::query()
-                    ->where('company_id', $companyId)
-                    ->whereExists(function ($sub) use ($since, $branchId): void {
-                        $sub->selectRaw('1')->from('pos_branch_product')
-                            ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
-                            ->where('pos_branch_product.branch_id', $branchId)
-                            ->where('pos_branch_product.updated_at', '>', $since)
-                            ->where('pos_branch_product.is_available', false);
-                    })
-                    ->pluck('id')
-                    ->map(fn ($id): int => (int) $id)
-                    ->all(),
+                array_values(array_diff(
+                    tap(Product::query()->where('company_id', $companyId), fn (Builder $q) => $this->changedProducts($q, $branchId, $since))
+                        ->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    $this->sellableProducts($companyId, $branchId)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                )),
             ))),
             'addon_groups' => $this->trashedIds(AddOnGroup::query()->where('company_id', $companyId), $since),
             'addons' => $this->trashedIds(AddOn::query()->where('company_id', $companyId), $since),
@@ -728,15 +729,34 @@ class BuildDeviceConfigAction
             'staff_messages' => $this->trashedIds(StaffMessage::query()->where('company_id', $companyId), $since),
             'loyalty_rules' => $this->trashedIds(LoyaltyRule::query()->where('company_id', $companyId), $since),
             'customers' => $this->trashedIds(Customer::query()->where('company_id', $companyId), $since),
+            // LAUNCH-P4 H10 — plus providers switched off since the cursor.
             'delivery_providers' => DB::table('pos_delivery_providers')
                 ->where('company_id', $companyId)
-                ->whereNotNull('deleted_at')
-                ->where('deleted_at', '>', $since)
+                ->where(fn ($q) => $q->where(fn ($d) => $d->whereNotNull('deleted_at')->where('deleted_at', '>', $since))
+                    ->orWhere(fn ($i) => $i->where('is_active', false)->where('updated_at', '>', $since)))
                 ->pluck('id')
                 ->map(fn ($id): int => (int) $id)
                 ->all(),
             'expense_categories' => $this->trashedIds(ExpenseCategory::query()->where('company_id', $companyId), $since),
+            // LAUNCH-P4 H10 — deleted or switched-off void / comp reasons leave
+            // the device at once (a paid sale using one is flagged, never refused).
+            'void_reasons' => $this->retiredReasonIds(VoidReason::query()->where('company_id', $companyId), $since),
+            'comp_reasons' => $this->retiredReasonIds(CompReason::query()->where('company_id', $companyId), $since),
         ];
+    }
+
+    /**
+     * LAUNCH-P4 H10 — reason ids soft-deleted, or switched off, after $since.
+     *
+     * @param  Builder<Model>  $query
+     * @return list<int>
+     */
+    private function retiredReasonIds(Builder $query, Carbon $since): array
+    {
+        return $query->withTrashed()
+            ->where(fn (Builder $q) => $q->where(fn (Builder $d) => $d->whereNotNull('deleted_at')->where('deleted_at', '>', $since))
+                ->orWhere(fn (Builder $i) => $i->where('is_active', false)->where('updated_at', '>', $since)))
+            ->orderBy('id')->pluck('id')->map(fn ($id): int => (int) $id)->values()->all();
     }
 
     /**
@@ -1031,13 +1051,144 @@ class BuildDeviceConfigAction
             // Per-delivery-provider price overrides (§6.3). The device resolves
             // a delivery line as: this map's provider price → delivery_price_baisas
             // → base_price_baisas.
+            // LAUNCH-P4 — `listed` false hides the product on that provider;
+            // a blank price resolves here to the product's delivery price,
+            // else its base price, so price_baisas is never null.
             'delivery_prices' => $deliveryPriceRows
                 ? $deliveryPriceRows->map(fn ($r): array => [
                     'provider_id' => (int) $r->delivery_provider_id,
-                    'price_baisas' => $this->baisas($r->price),
+                    'price_baisas' => $this->baisas($r->price ?? $p->delivery_price ?? $p->base_price),
+                    'listed' => (bool) ($r->listed ?? true),
                 ])->values()->all()
                 : [],
         ];
+    }
+
+    /**
+     * LAUNCH-P4 — the product fields the data contract adds:
+     *
+     *   product_type      'standard' | 'combo'
+     *   sold_in_store     offered for in-store order types (quick, dine_in,
+     *                     to_go, car) — the device filters its grid on it
+     *   sold_on_delivery  offered on delivery orders (with delivery_prices
+     *                     [].listed per provider)
+     *   sold_out          this branch switched it off by hand (never stock)
+     *   description_ar    the Arabic description
+     *   addon_group_ids   own + category-free bindings plus every active
+     *                     "Apply to every product" group (M2); none for a
+     *                     combo (its items carry the add-ons)
+     *   combo             for a combo: {slots: [{id, name, name_ar, min, max,
+     *                     sort_order, options: [{product_id,
+     *                     extra_price_baisas, is_default, sort_order}]}]}
+     *
+     * @param  array<int, true>  $soldOut
+     * @param  list<int>  $globalGroupIds
+     * @param  Collection<int, \stdClass>|null  $groupRows
+     * @param  Collection<int, \stdClass>|null  $slots
+     * @param  Collection<int|string, Collection<int, \stdClass>>  $options
+     * @return array<string, mixed>
+     */
+    private function launchP4ProductFields(Product $p, array $soldOut, array $globalGroupIds, $groupRows, $slots, Collection $options): array
+    {
+        $combo = $p->isCombo();
+        $own = $groupRows ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all() : [];
+        $fields = [
+            'product_type' => $combo ? Product::TYPE_COMBO : Product::TYPE_STANDARD,
+            'sold_in_store' => (bool) ($p->sold_in_store ?? true),
+            'sold_on_delivery' => (bool) ($p->sold_on_delivery ?? true),
+            'sold_out' => isset($soldOut[(int) $p->id]),
+            'description_ar' => $p->description_ar,
+            'addon_group_ids' => $combo ? [] : array_values(array_unique(array_merge($own, $globalGroupIds))),
+        ];
+        if ($combo) {
+            $fields['combo'] = ['slots' => collect($slots ?? [])->map(fn (object $slot): array => [
+                'id' => (int) $slot->id,
+                'name' => $slot->name,
+                'name_ar' => $slot->name_ar,
+                'min' => (int) $slot->min_choices,
+                'max' => (int) $slot->max_choices,
+                'sort_order' => (int) $slot->sort_order,
+                'options' => collect($options->get($slot->id) ?? [])->map(fn (object $option): array => [
+                    'product_id' => (int) $option->product_id,
+                    'extra_price_baisas' => (int) $this->baisas($option->extra_price),
+                    'is_default' => (bool) $option->is_default,
+                    'sort_order' => (int) $option->sort_order,
+                ])->values()->all(),
+            ])->values()->all()];
+        }
+
+        return $fields;
+    }
+
+    /**
+     * LAUNCH-P4 — the products this branch's devices may sell: active, not
+     * internal, sold here by branch scope ({@see BranchCatalogue}).
+     *
+     * @return Builder<Product>
+     */
+    private function sellableProducts(int $companyId, int $branchId): Builder
+    {
+        return BranchCatalogue::soldAt(
+            Product::query()->where('company_id', $companyId)
+                // P-G2 — internal items (cups/lids) never reach the POS menu.
+                ->where('is_internal', false)
+                ->where('status', 'active'),
+            $branchId,
+        );
+    }
+
+    /**
+     * Delta change-detection for products: the product row, THIS branch's
+     * shelf / availability row, THIS branch's sold-out switch, or (LAUNCH-P4)
+     * a combo's slots or options changed after the cursor.
+     *
+     * @param  Builder<Product>  $query
+     */
+    private function changedProducts(Builder $query, int $branchId, Carbon $since): void
+    {
+        $query->where(function (Builder $q) use ($since, $branchId): void {
+            $q->where('pos_products.updated_at', '>', $since)
+                ->orWhereExists(function ($sub) use ($since, $branchId): void {
+                    $sub->selectRaw('1')->from('pos_branch_product')
+                        ->whereColumn('pos_branch_product.product_id', 'pos_products.id')
+                        ->where('pos_branch_product.branch_id', $branchId)
+                        ->where('pos_branch_product.updated_at', '>', $since);
+                })
+                ->orWhereExists(function ($sub) use ($since, $branchId): void {
+                    $sub->selectRaw('1')->from('pos_product_sold_out')
+                        ->whereColumn('pos_product_sold_out.product_id', 'pos_products.id')
+                        ->where('pos_product_sold_out.branch_id', $branchId)
+                        ->where('pos_product_sold_out.updated_at', '>', $since);
+                })
+                ->orWhereExists(function ($sub) use ($since): void {
+                    $sub->selectRaw('1')->from('pos_combo_slots')
+                        ->whereColumn('pos_combo_slots.combo_product_id', 'pos_products.id')
+                        ->where(function ($changed) use ($since): void {
+                            $changed->where('pos_combo_slots.updated_at', '>', $since)
+                                ->orWhereExists(function ($option) use ($since): void {
+                                    $option->selectRaw('1')->from('pos_combo_slot_options')
+                                        ->whereColumn('pos_combo_slot_options.slot_id', 'pos_combo_slots.id')
+                                        ->where('pos_combo_slot_options.updated_at', '>', $since);
+                                });
+                        });
+                });
+        });
+    }
+
+    /** M2 — any add-on group edited or removed after the cursor (a global group joins every product). */
+    private function addonGroupsChangedSince(int $companyId, Carbon $since): bool
+    {
+        return AddOnGroup::withTrashed()->where('company_id', $companyId)
+            ->where(fn (Builder $q) => $q->where('updated_at', '>', $since)->orWhere('deleted_at', '>', $since))
+            ->exists();
+    }
+
+    /** LAUNCH-P4 M1 — a category is offered at a branch when it has no branch list or lists it. */
+    private function categoryAtBranch(ProductCategory $category, int $branchId): bool
+    {
+        $branches = $category->branch_availability_json;
+
+        return $branches === null || in_array($branchId, array_map('intval', (array) $branches), true);
     }
 
     /**

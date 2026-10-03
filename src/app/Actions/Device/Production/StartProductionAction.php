@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
 use App\Models\StockMovement;
+use App\Support\Catalogue\BranchCatalogue;
 use App\Support\Recipes\PrepExploder;
 use App\Support\StockDecimal;
 use Illuminate\Support\Facades\DB;
@@ -256,16 +257,13 @@ final readonly class StartProductionAction
      */
     private function assertAvailableAtBranch(int $productId, int $branchId): void
     {
-        $rows = DB::table('pos_branch_product')
-            ->where('product_id', $productId)
-            ->get(['branch_id', 'is_available']);
-
-        if ($rows->isEmpty()) {
-            return;
-        }
-
-        $mine = $rows->firstWhere('branch_id', $branchId);
-        if ($mine === null || ! (bool) $mine->is_available) {
+        // LAUNCH-P4 — the branch-scope rule ({@see BranchCatalogue}): stock
+        // rows another branch's deliveries or batches created never hide the
+        // product here (H6).
+        $product = DB::table('pos_products')->where('id', $productId)->first(['branch_scope']);
+        $mine = DB::table('pos_branch_product')->where('product_id', $productId)
+            ->where('branch_id', $branchId)->first(['is_available']);
+        if ($product === null || ! BranchCatalogue::availableAt($product, $mine)) {
             throw new RuntimeException('This product is not available at your branch.');
         }
     }

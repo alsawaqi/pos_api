@@ -19,7 +19,10 @@ use RuntimeException;
 /** Appends one already-priced round to order children without touching prior rows. */
 final class AppendQrPricedLinesAction
 {
-    public function __construct(private readonly OrderLineSnapshotter $snapshots) {}
+    public function __construct(
+        private readonly OrderLineSnapshotter $snapshots,
+        private readonly QrComboChildren $children,
+    ) {}
 
     /**
      * @param  CarbonInterface|null  $recipeAt  LAUNCH-P3 P3-6: a device staff
@@ -64,6 +67,10 @@ final class AppendQrPricedLinesAction
                     'add_on_name_snapshot' => $resolvedAddon->addon->name,
                     'price_delta_snapshot' => Money::toOmr($resolvedAddon->priceDeltaBaisas),
                 ] + $addonSnapshots);
+            }
+            // LAUNCH-P4 — a combo line's chosen items become its children.
+            if ($resolved->isCombo()) {
+                $this->children->write($item, $this->children->payload($resolved, (int) $session->company_id, $recipeAt));
             }
         }
 
@@ -121,7 +128,9 @@ final class AppendQrPricedLinesAction
                     'notes' => $resolved->notes !== '' ? $resolved->notes : null,
                 ],
                 'addons' => $addons,
-            ];
+            ] + ($resolved->isCombo()
+                ? ['children' => $this->children->payload($resolved, (int) $session->company_id, $recipeAt)]
+                : []);
         }
 
         $discounts = [];
@@ -252,6 +261,13 @@ final class AppendQrPricedLinesAction
                     'product_snapshot_json' => $storedAddon['product_snapshot_json'],
                     'consumption_snapshot_json' => $storedAddon['consumption_snapshot_json'],
                 ]);
+            }
+            // LAUNCH-P4 — the combo children frozen with the round.
+            if (isset($storedItem['children'])) {
+                if (! is_array($storedItem['children'])) {
+                    throw new RuntimeException('Invalid QR round confirmation combo payload.');
+                }
+                $this->children->write($item, $storedItem['children']);
             }
         }
 

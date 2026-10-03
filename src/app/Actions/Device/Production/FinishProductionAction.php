@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductStockMovement;
 use App\Models\StockMovement;
+use App\Support\Catalogue\BranchCatalogue;
 use App\Support\StockDecimal;
 use Brick\Math\BigDecimal;
 use Brick\Math\RoundingMode;
@@ -86,10 +87,14 @@ final readonly class FinishProductionAction
                 ->lockForUpdate()
                 ->first();
             if ($row === null) {
+                // LAUNCH-P4 H6 — a shelf row a batch creates never restricts
+                // (or grants) the product's branches: neutral under branch
+                // scope 'all', "not selected" under 'selected'.
+                $product = DB::table('pos_products')->where('id', (int) $production->product_id)->first(['branch_scope']);
                 $row = new BranchProduct([
                     'branch_id' => $branchId,
                     'product_id' => (int) $production->product_id,
-                    'is_available' => true,
+                    'is_available' => $product === null || BranchCatalogue::newRowAvailability($product),
                 ]);
             }
             $row->stock_qty = (float) ($row->stock_qty ?? 0) + $qty;

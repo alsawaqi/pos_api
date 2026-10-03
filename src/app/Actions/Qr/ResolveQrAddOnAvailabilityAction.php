@@ -7,6 +7,7 @@ namespace App\Actions\Qr;
 use App\Models\AddOn;
 use App\Models\BranchProduct;
 use App\Models\Product;
+use App\Support\Catalogue\BranchCatalogue;
 use DateTimeInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -89,11 +90,15 @@ final class ResolveQrAddOnAvailabilityAction
             ->whereIn('product_id', $requiredIds === [] ? [0] : $requiredIds)
             ->get()
             ->keyBy('product_id');
+        // LAUNCH-P4 — a product switched to "sold out" here greys the add-ons
+        // that sell it, on every channel.
+        $soldOut = BranchCatalogue::soldOutAt($branchId, $requiredIds);
 
         return $addons->mapWithKeys(function (AddOn $addon) use (
             $requiredByAddon,
             $products,
             $branchProducts,
+            $soldOut,
             $at,
         ): array {
             foreach ($requiredByAddon[(int) $addon->id] ?? [] as $productId => $kind) {
@@ -110,7 +115,7 @@ final class ResolveQrAddOnAvailabilityAction
 
                 /** @var BranchProduct|null $branchProduct */
                 $branchProduct = $branchProducts->get($productId);
-                $availability = QrProductAvailability::evaluate($product, $branchProduct, $at);
+                $availability = QrProductAvailability::evaluate($product, $branchProduct, $at, isset($soldOut[(int) $productId]));
                 if (! $availability->available) {
                     return [(int) $addon->id => [
                         'available' => false,

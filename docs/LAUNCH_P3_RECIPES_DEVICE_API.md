@@ -152,3 +152,13 @@ the live ones, and `stock_mode` is the current one.
 Only a made-to-order product (`stock_mode = 'ingredient'`) copies a recipe at sale:
 cooked (consumed at production), unit (bought in) and untracked products never deduct
 a leftover recipe, on the device and QR paths alike.
+
+**Leftover shelf counts (fix order 1, K7).** On pay and void (`ConsumeInventoryAction`)
+an order line's own product moves its branch shelf count (`pos_branch_product.stock_qty`)
+only when its current `stock_mode` (read live, soft-deleted products included) is
+`unit` or `cooked`. A product switched to untracked or made-to-order can keep a
+leftover count; it never moves. This is the same rule as the pos_admin reversal copy.
+Components and product add-ons are unchanged (components are unit/cooked by portal
+rule; a product add-on moves by its frozen `stock_mode`). The mode is read at pay and
+at void, so a product whose mode changes between the two is moved by one and not the
+other.

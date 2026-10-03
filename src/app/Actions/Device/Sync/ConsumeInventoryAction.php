@@ -84,6 +84,15 @@ class ConsumeInventoryAction
             ->get()
             ->groupBy('product_id');
 
+        // LAUNCH-P3 fix order 1 K7 — the line product's shelf moves only when
+        // it is a shelf product (unit / cooked), read live (soft-deleted rows
+        // included), the same rule as the pos_admin reversal copy: a product
+        // switched to untracked or made-to-order can keep a leftover
+        // stock_qty, which a sale or its void must never move.
+        $shelfModes = DB::table('pos_products')
+            ->whereIn('id', $order->items->pluck('product_id')->filter()->all() ?: [0])
+            ->pluck('stock_mode', 'id');
+
         foreach ($order->items as $item) {
             $itemQty = (float) $item->qty;
 
@@ -91,7 +100,9 @@ class ConsumeInventoryAction
             // the pos_branch_product.stock_qty counter when this product is
             // unit-tracked at the order's branch. Independent of the recipe
             // ingredient depletion below; NULL/absent = untracked -> no-op.
-            $this->moveProductStock($order, (int) $item->product_id, $sign * $itemQty, $staffId, $at);
+            if (in_array((string) ($shelfModes[(int) $item->product_id] ?? ''), ['unit', 'cooked'], true)) {
+                $this->moveProductStock($order, (int) $item->product_id, $sign * $itemQty, $staffId, $at);
+            }
 
             // PD3b — merge the frozen recipe + live components with the
             // option add/remove deltas (frozen consumption_snapshot_json),

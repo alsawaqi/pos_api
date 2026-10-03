@@ -819,6 +819,9 @@ class DeviceSyncOrderTest extends TestCase
     public function test_paying_a_unit_tracked_product_decrements_its_branch_stock(): void
     {
         $this->seedCatalogue();
+        // LAUNCH-P3 fix order 1 K7: only a shelf product (unit / cooked) moves
+        // its shelf count; a made-to-order Latte's leftover count never does.
+        DB::table('pos_products')->where('id', 1)->update(['stock_mode' => 'unit']);
         $this->device(); // company 100 / branch 10
         DB::table('pos_branch_product')->insert([
             ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => 20.000, 'created_at' => now(), 'updated_at' => now()],
@@ -853,6 +856,8 @@ class DeviceSyncOrderTest extends TestCase
     public function test_voiding_a_paid_order_restores_branch_product_stock(): void
     {
         $this->seedCatalogue();
+        // Fix order 1 K7: a shelf product (see the test above).
+        DB::table('pos_products')->where('id', 1)->update(['stock_mode' => 'unit']);
         $this->device();
         DB::table('pos_branch_product')->insert([
             ['branch_id' => 10, 'product_id' => 1, 'is_available' => true, 'stock_qty' => 20.000, 'created_at' => now(), 'updated_at' => now()],

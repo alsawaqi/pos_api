@@ -108,10 +108,12 @@ class ProductWasteHandler implements SyncEventHandler
         }
 
         return DB::transaction(function () use ($event, $device, $payload, $resolved, $companyId, $branchId, $staffId, $note, $wastedAt, $preparedQuickCancellation): array {
-            $authority = $this->preparedTableWasteAuthority($event, $device, $payload, $wastedAt);
-            // Internal capability only: the QR cancellation action holds the
+            // A proved table cancellation caps its own waste (throws past it)
+            // and is stamped on the result. $preparedQuickCancellation is an
+            // internal capability only: the QR cancellation action holds the
             // scoped order/items, caps these quantities and commits its audit
             // atomically. No HTTP/sync payload field can supply this argument.
+            $authority = $this->preparedTableWasteAuthority($event, $device, $payload, $wastedAt);
             $wastedLines = 0;
             $totalQty = 0.0;
             $shortfalls = [];

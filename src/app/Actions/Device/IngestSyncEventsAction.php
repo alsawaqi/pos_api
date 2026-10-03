@@ -247,10 +247,12 @@ class IngestSyncEventsAction
             if (! array_is_list($value)) {
                 ksort($value);
             }
+
             return array_map($canonical, $value);
         };
         $fingerprint = fn (string $type, array $payload): string => hash('sha256',
             json_encode([$type, $canonical($payload)], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
+
         return hash_equals($fingerprint($row->event_type, $row->payload_json),
             $fingerprint($event['event_type'], $event['payload']));
     }

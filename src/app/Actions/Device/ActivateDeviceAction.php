@@ -121,7 +121,7 @@ final readonly class ActivateDeviceAction
                 'auditable_type' => 'App\\Models\\DeviceActivationToken', 'auditable_id' => $tokenId,
                 'metadata' => json_encode(['device_id' => (int) $device->getKey(), 'reason' => 'too_many_refused_activations',
                     'refused_attempts' => $refusals]),
-                'created_at' => now(), 'updated_at' => now(),
+                'created_at' => now(), // pos_audit_logs has no updated_at
             ]);
         });
     }

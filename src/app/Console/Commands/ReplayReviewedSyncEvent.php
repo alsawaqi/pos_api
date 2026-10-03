@@ -44,7 +44,7 @@ final class ReplayReviewedSyncEvent extends Command
                 'branch_id' => $review->branch_id, 'event' => 'sync.history.replay_completed',
                 'auditable_type' => SyncEvent::class, 'auditable_id' => $event->id,
                 'metadata' => json_encode(['review_id' => $review->id, 'status' => $status]),
-                'created_at' => now(), 'updated_at' => now(),
+                'created_at' => now(), // pos_audit_logs has no updated_at
             ]);
         });
         $this->line('event='.$event->id.' status='.$status.' company='.$review->company_id.' branch='.$review->branch_id);

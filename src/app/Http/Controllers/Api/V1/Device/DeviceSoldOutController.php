@@ -107,7 +107,7 @@ final class DeviceSoldOutController
                 'auditable_type' => 'App\\Models\\Product', 'auditable_id' => $product->id,
                 'metadata' => json_encode(['device_id' => (int) $device->id, 'staff_id' => (int) $staff->id,
                     'approver_staff_id' => $approverId, 'source' => 'device']),
-                'created_at' => $now, 'updated_at' => $now,
+                'created_at' => $now, // pos_audit_logs has no updated_at
             ]);
 
             return true;

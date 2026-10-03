@@ -19,8 +19,15 @@ return new class extends Migration
             $t->string('event');
             $t->string('auditable_type')->nullable();
             $t->unsignedBigInteger('auditable_id')->nullable();
+            $t->string('ip_address', 45)->nullable();
+            $t->string('user_agent')->nullable();
+            $t->json('old_values')->nullable();
+            $t->json('new_values')->nullable();
             $t->json('metadata')->nullable();
-            $t->timestamps();
+            // Exactly like the real pos_audit_logs (pos_admin): created_at
+            // only. A writer that also sends updated_at fails on Postgres
+            // (found on the T3, 2026-10-03), so the test table must refuse it.
+            $t->timestamp('created_at')->nullable();
         });
         Schema::create('pos_sync_event_reviews', function (Blueprint $t): void {
             $t->id();

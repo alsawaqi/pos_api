@@ -201,6 +201,11 @@ final readonly class StartProductionAction
                 // LAUNCH-P2 — ledger precision (4dp) once: line, movement and
                 // balance move by the same amount; the cost keeps 6 decimals.
                 $qty = round($qty, StockDecimal::QUANTITY_SCALE);
+                // Fix order 1 L6 — a line that rounds to nothing (a pinch of
+                // saffron in a 1-piece batch) writes no junk 0 rows.
+                if ($qty === 0.0) {
+                    return;
+                }
 
                 ProductionLine::create([
                     'production_id' => $production->id,

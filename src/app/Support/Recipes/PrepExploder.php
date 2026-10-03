@@ -108,6 +108,20 @@ final class PrepExploder
     }
 
     /**
+     * The exploded raw lines with EXACT quantities (rationals, never rounded),
+     * for arithmetic that must not round first — fix order 1 L6: the
+     * kitchen's "can make up to N" divides a balance by the exact per-piece
+     * amount.
+     *
+     * @param  iterable<array{ingredient_id: int|string, quantity: mixed, unit?: string|null, group?: string}>  $lines
+     * @return list<array{ingredient_id: int, quantity: BigRational, unit: string|null, unit_cost: string, group: string, line: int}>
+     */
+    public function explodeRational(iterable $lines, int|string $multiplier = 1): array
+    {
+        return $this->explodeExact($lines, $multiplier);
+    }
+
+    /**
      * The cost of the lines, prep items costed through their recipes:
      * Σ(exact raw quantity × raw unit cost), rounded once to 6 decimals.
      *

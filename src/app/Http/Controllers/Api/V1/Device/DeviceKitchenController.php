@@ -10,6 +10,9 @@ use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
 use App\Support\Recipes\PrepExploder;
+use App\Support\StockDecimal;
+use Brick\Math\BigRational;
+use Brick\Math\RoundingMode;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -96,7 +99,11 @@ class DeviceKitchenController
         $exploder->preload($recipesByProduct->flatten(1)->pluck('ingredient_id')->all());
 
         $mapProduct = function (Product $p) use ($recipesByProduct, $branchRows, $branchId, $balances, $exploder): array {
-            $recipeRows = $exploder->explode(($recipesByProduct->get($p->id) ?? collect())->map(static fn (object $r): array => [
+            // Fix order 1 L6 — per-piece amounts stay exact: the screen gets
+            // them at 8 decimals (the till's "N × quantity" check then matches
+            // what the batch deducts, recipe × N rounded once), and "can make
+            // up to N" divides each balance by the EXACT per-piece amount.
+            $recipeRows = $exploder->explodeRational(($recipesByProduct->get($p->id) ?? collect())->map(static fn (object $r): array => [
                 'ingredient_id' => (int) $r->ingredient_id,
                 'quantity' => $r->quantity,
                 'unit' => $r->unit_at_set,
@@ -105,21 +112,24 @@ class DeviceKitchenController
             $max = null;
             $recipe = [];
             foreach ($recipeRows as $r) {
-                $perPiece = (float) $r['quantity'];
-                $balance = (float) ($balances[$r['ingredient_id']] ?? 0);
+                /** @var BigRational $exact */
+                $exact = $r['quantity'];
+                $rawBalance = $balances[$r['ingredient_id']] ?? 0;
+                $balance = (float) $rawBalance;
                 $ingredient = $exploder->ingredient($r['ingredient_id']);
 
                 $recipe[] = [
                     'ingredient_id' => $r['ingredient_id'],
                     'name' => $ingredient?->name ?? ('#'.$r['ingredient_id']),
                     'name_ar' => $ingredient?->name_ar,
-                    'quantity' => $perPiece,
+                    'quantity' => (float) (string) $exact->toScale(PrepExploder::PER_UNIT_SCALE, RoundingMode::HALF_UP),
                     'unit' => $r['unit'],
                     'branch_balance' => $balance,
                 ];
 
-                if ($perPiece > 0) {
-                    $canMake = (int) floor($balance / $perPiece + 1e-9);
+                if ($exact->isPositive()) {
+                    $canMake = BigRational::of(StockDecimal::exact($rawBalance))->dividedBy($exact)
+                        ->toScale(0, RoundingMode::FLOOR)->toInt();
                     $max = $max === null ? $canMake : min($max, $canMake);
                 }
             }

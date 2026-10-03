@@ -23,6 +23,14 @@ the ledger's 4 decimals before × qty; the portal's save-time guard (M1-a) refus
 recipe whose exploded per-unit line would round to 0 or move by more than 1 %.
 Amounts written to the ledger as they are (a batch's lines, recipe × pieces) round to 4.
 
+**Kitchen (fix order 1, L6).** `GET /device/kitchen` sends each per-piece line at 8
+decimals, so the till's "N × quantity" check matches what a batch of N deducts
+(recipe × N, rounded once). `max_producible` is the minimum over lines of
+floor(balance ÷ exact per-piece amount): a cake using 0.00003 kg of saffron a piece
+with 0.002 kg on hand makes 66 (the 4-decimal 0 per piece gave 1233, from sugar). A
+batch line that rounds to 0 at 4 decimals (a pinch of saffron in a 1-piece batch)
+writes no production line and no stock movement.
+
 Guards (the portal refuses these on save; the API must never fail a sale or loop): a
 cycle, a 4th level, a prep without a yield (> 0) and a component of another company
 are skipped (that part deducts and costs nothing) and logged as a warning.

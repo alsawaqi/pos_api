@@ -50,6 +50,11 @@ use Throwable;
  */
 class SyncEventDispatcher
 {
+    /** LAUNCH-P3 fix order 1 M2 — how far behind the receive time a client stamp may be before it is flagged. */
+    public const CLIENT_TIME_BEHIND_FLAG_HOURS = 24;
+
+    public const CLIENT_TIME_BEHIND_FLAG = 'client_time_behind_24h';
+
     public function __construct(
         private readonly CreateOrderHandler $createOrder,
         private readonly HoldOrderHandler $holdOrder,
@@ -169,6 +174,7 @@ class SyncEventDispatcher
                 }
                 $device->syncIntegrityFlags = [];
                 $result = $handler->handle($lockedEvent, $device);
+                $this->flagClockBehind($lockedEvent, $device);
                 if ($device->syncIntegrityFlags !== []) {
                     $result['integrity_flags'] = array_values(array_unique($device->syncIntegrityFlags));
                 }
@@ -276,6 +282,38 @@ class SyncEventDispatcher
             }
 
             // best-effort; the domain event stands regardless of push delivery
+        }
+    }
+
+    /**
+     * LAUNCH-P3 fix order 1 M2 — an event whose client_timestamp is more than
+     * 24 hours behind the time the server received it is flagged
+     * (result.integrity_flags, additive) and logged: either a long offline
+     * backlog or a device clock running behind, which dates stock and picks
+     * the recipe in force at that time. The event still settles.
+     */
+    private function flagClockBehind(SyncEvent $event, Device $device): void
+    {
+        if ($event->client_timestamp === null || $event->server_received_at === null) {
+            return;
+        }
+        $behind = $event->server_received_at->getTimestamp() - $event->client_timestamp->getTimestamp();
+        if ($behind <= self::CLIENT_TIME_BEHIND_FLAG_HOURS * 3600) {
+            return;
+        }
+
+        $device->syncIntegrityFlags[] = self::CLIENT_TIME_BEHIND_FLAG;
+        try {
+            Log::warning('LAUNCH-P3: a device event is stamped more than 24 h before it was received', [
+                'event_id' => (int) $event->getKey(),
+                'event_type' => (string) $event->event_type,
+                'device_id' => (int) $device->getKey(),
+                'client_timestamp' => $event->client_timestamp->copy()->utc()->toIso8601String(),
+                'server_received_at' => $event->server_received_at->copy()->utc()->toIso8601String(),
+                'behind_seconds' => $behind,
+            ]);
+        } catch (Throwable) {
+            // Best-effort; the event settles regardless.
         }
     }
 }

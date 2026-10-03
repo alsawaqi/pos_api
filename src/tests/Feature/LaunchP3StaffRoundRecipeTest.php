@@ -49,6 +49,9 @@ final class LaunchP3StaffRoundRecipeTest extends TestCase
             'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Latte', 'base_price' => '1.500',
             'tax_rate' => '0.00', 'stock_mode' => 'ingredient', 'status' => 'active',
         ]);
+        // The Latte existed before its recipe edits (fix order 1 M2 floors a
+        // sale moment at the product's creation).
+        DB::table('pos_products')->where('id', $this->latte->id)->update(['created_at' => '2026-09-01 08:00:00']);
         DB::table('pos_ingredients')->insert([
             'id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Milk', 'unit' => 'l',
             'default_unit_cost' => '0.400000', 'status' => 'active', 'created_at' => now(), 'updated_at' => now(),
@@ -68,7 +71,7 @@ final class LaunchP3StaffRoundRecipeTest extends TestCase
      * @param  list<array<string, mixed>>  $lines
      * @return array<string, mixed>
      */
-    private function round(Carbon $takenAt, array $lines, string $outcome): array
+    private function round(Carbon $takenAt, array $lines, string $outcome, array $extra = []): array
     {
         $payload = [
             'seating_key' => $this->seating->client_request_id, 'table_id' => (int) $this->seating->table_id,
@@ -79,7 +82,7 @@ final class LaunchP3StaffRoundRecipeTest extends TestCase
         return $this->withToken($this->device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
             'client_event_id' => (string) Str::uuid(), 'event_type' => 'table.session.round',
             'client_timestamp' => $payload['submitted_at'], 'payload' => $payload,
-        ]]])->assertOk()
+        ] + $extra]])->assertOk()
             ->assertJsonPath('data.results.0.status', 'processed')
             ->assertJsonPath('data.results.0.result.outcome', $outcome)
             ->json('data.results.0.result');
@@ -101,6 +104,23 @@ final class LaunchP3StaffRoundRecipeTest extends TestCase
         $copied = OrderItem::query()->orderBy('id')->get()
             ->map(static fn (OrderItem $item): float => (float) $item->recipe_snapshot_json[0]['qty'])->all();
         $this->assertSame([0.25, 0.3], $copied);
+    }
+
+    public function test_a_staff_round_from_a_clock_reset_to_2000_copies_no_earlier_than_the_device_activation(): void
+    {
+        // Fix order 1 M2: the Latte was created with its recipe on 09-01 (a
+        // "[]" first version); the handheld was activated on 09-20.
+        DB::table('pos_product_recipe_versions')->insert([
+            'product_id' => $this->latte->id, 'recipe_json' => '[]', 'edited_by_user_id' => 1, 'note' => null,
+            'edited_at' => '2026-09-01 08:00:00',
+        ]);
+        $this->device->forceFill(['assignment_activated_at' => '2026-09-20 09:00:00', 'token_issued_at' => '2026-09-20 09:00:00'])->save();
+
+        $this->round(Carbon::parse('2000-01-01 00:05:00', 'UTC'), [$this->latteLine()], 'appended', ['identity' => [
+            'company_id' => 100, 'branch_id' => 10, 'device_uuid' => $this->device->uuid,
+        ]]);
+
+        $this->assertSame(0.25, (float) OrderItem::query()->sole()->recipe_snapshot_json[0]['qty']);
     }
 
     public function test_a_staff_round_held_for_review_freezes_the_same_copy(): void

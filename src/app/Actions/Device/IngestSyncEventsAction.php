@@ -74,11 +74,12 @@ class IngestSyncEventsAction
                 continue;
             }
             $identity = $event['identity'] ?? null;
+            $clientTimestamp = self::clientTimestamp($event['client_timestamp']);
             // Legacy APKs carry no identity tag. Allow at most five minutes
             // of clock skew, never a backlog preceding this credential epoch.
             $cutoff = $device->assignment_activated_at ?? $device->token_issued_at;
             $predatesCredential = $existing === null && $identity === null && $cutoff !== null
-                && Carbon::parse($event['client_timestamp'])->lt(Carbon::parse($cutoff)->subMinutes(5));
+                && $clientTimestamp->lt(Carbon::parse($cutoff)->subMinutes(5));
             if ($predatesCredential || ($identity !== null && (
                 (int) ($identity['company_id'] ?? 0) !== (int) $device->company_id
                 || (int) ($identity['branch_id'] ?? 0) !== (int) $device->branch_id
@@ -91,7 +92,7 @@ class IngestSyncEventsAction
                 $row = SyncEvent::firstOrCreate(
                     ['device_id' => $device->id, 'client_event_id' => $event['client_event_id']],
                     ['event_type' => $event['event_type'], 'payload_json' => $event['payload'],
-                        'client_timestamp' => Carbon::parse($event['client_timestamp']),
+                        'client_timestamp' => $clientTimestamp,
                         'server_received_at' => now(), 'ack_status' => SyncEvent::STATUS_NEEDS_REVIEW,
                         'result_json' => ['error' => 'identity_mismatch', 'code' => 'identity_mismatch', 'permanent' => true]
                             + ($identity === null ? [] : ['claimed_identity' => [
@@ -173,7 +174,7 @@ class IngestSyncEventsAction
                     'branch_id' => $device->branch_id,
                     'event_type' => $event['event_type'],
                     'payload_json' => $event['payload'],
-                    'client_timestamp' => Carbon::parse($event['client_timestamp']),
+                    'client_timestamp' => $clientTimestamp,
                     'server_received_at' => now(),
                     'ack_status' => SyncEvent::STATUS_RECEIVED,
                 ]);
@@ -217,6 +218,17 @@ class IngestSyncEventsAction
                 'device_id' => (int) $device->getKey(),
             ],
         ];
+    }
+
+    /**
+     * LAUNCH-P3 fix order 1 K6 — the device's client_timestamp as a UTC
+     * instant. A stamp with an offset ("…T15:00:00+04:00") keeps its offset
+     * at parse and is converted to UTC, so the ledger column (UTC wall time,
+     * no zone) stores 11:00:00, not the local 15:00:00.
+     */
+    private static function clientTimestamp(mixed $value): Carbon
+    {
+        return Carbon::parse((string) $value)->utc();
     }
 
     /**

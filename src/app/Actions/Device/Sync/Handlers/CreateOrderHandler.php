@@ -28,6 +28,8 @@ use App\Support\CustomerIdentity;
 use App\Support\Money;
 use App\Support\Recipes\RecipeCopy;
 use App\Support\Recipes\RecipeInForce;
+use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -46,10 +48,13 @@ use RuntimeException;
  * {@see Money}.
  *
  * LAUNCH-P3 — the recipe copied is the one in force at the device's sale
- * time (P3-6: the event's client timestamp, clamped to now), prep items are
- * exploded into raw ingredients (P3-4) and only a made-to-order product
- * copies a recipe (P3-7); see {@see RecipeCopy}. A re-sent open order keeps
- * the copies its unchanged lines already had ({@see keptLineCopies()}).
+ * time (P3-6: the event's client timestamp, clamped to now; fix order 1 M2:
+ * never before the device's credential epoch or the product's creation),
+ * prep items are exploded into raw ingredients (P3-4) and only a
+ * made-to-order product copies a recipe (P3-7); see {@see RecipeCopy}. A
+ * re-sent open order keeps the copies its unchanged lines already had
+ * ({@see keptLineCopies()}); its new or changed lines copy no earlier than
+ * the order's last accepted write ({@see resendMoment()}).
  */
 class CreateOrderHandler implements SyncEventHandler
 {
@@ -188,8 +193,15 @@ class CreateOrderHandler implements SyncEventHandler
             ];
 
             // LAUNCH-P3 P3-6 — recipes are copied as they were at the device's
-            // sale time: this event's client timestamp, clamped to now.
-            $copy = new RecipeCopy((int) $device->company_id, RecipeInForce::saleMoment($event->client_timestamp));
+            // sale time: this event's client timestamp, clamped to now and
+            // (fix order 1 M2) never before the device's credential epoch.
+            // On a re-send only new or changed lines copy, never earlier than
+            // the order's last accepted write (L1, {@see resendMoment()}).
+            $moment = RecipeInForce::saleMoment($event->client_timestamp, null, $device->assignment_activated_at ?? $device->token_issued_at);
+            if ($existing !== null) {
+                $moment = $this->resendMoment($existing, $event, $moment);
+            }
+            $copy = new RecipeCopy((int) $device->company_id, $moment);
             $keptCopies = [];
 
             if ($existing !== null) {
@@ -208,7 +220,7 @@ class CreateOrderHandler implements SyncEventHandler
                 }
 
                 // Read before the purge: unchanged lines keep these copies.
-                $keptCopies = $this->keptLineCopies($existing);
+                $keptCopies = $this->keptLineCopies($existing, $order['lines']);
                 $this->purgeOrderChildren($existing);
                 $existing->update($columns);
                 $model = $existing;
@@ -231,6 +243,8 @@ class CreateOrderHandler implements SyncEventHandler
                 // LAUNCH-P3 P3-6 — a re-sent open order keeps the copy a line
                 // already had unless the line changed (another product, qty
                 // or add-on set); a new or changed line copies at this sale.
+                // Fix order 1 L2: a kept recipe only while the product is
+                // still made-to-order (P3-7 holds for kept copies too).
                 $kept = $this->takeKeptLineCopy($keptCopies, $line);
 
                 $item = OrderItem::create([
@@ -241,7 +255,9 @@ class CreateOrderHandler implements SyncEventHandler
                     'unit_price_snapshot' => Money::toOmr((int) $line['unit_price_baisas']),
                     'line_discount' => Money::toOmr((int) ($line['line_discount_baisas'] ?? 0)),
                     'line_total' => Money::toOmr((int) $line['line_total_baisas']),
-                    'recipe_snapshot_json' => $kept !== null ? $kept['recipe'] : $copy->productRecipe($product),
+                    'recipe_snapshot_json' => $kept !== null
+                        ? ((string) $product?->stock_mode === 'ingredient' ? $kept['recipe'] : null)
+                        : $copy->productRecipe($product),
                     'component_snapshot_json' => $kept !== null ? $kept['components'] : $this->snapshotComponents($productId),
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $line['notes'] ?? null,
@@ -252,7 +268,7 @@ class CreateOrderHandler implements SyncEventHandler
                     $addOnId = (int) $addon['add_on_id'];
                     $addOn = AddOn::withTrashed()->where('company_id', $device->company_id)->find($addOnId);
                     $keptAddon = $kept !== null && ($kept['addons'][$addOnId] ?? []) !== []
-                        ? array_shift($kept['addons'][$addOnId])
+                        ? $this->withCurrentProductType(array_shift($kept['addons'][$addOnId]), $device->company_id)
                         : null;
                     // PD3b — per-option stock-usage lines, frozen at create.
                     // When present they SUPERSEDE the legacy single-ingredient
@@ -763,9 +779,16 @@ class CreateOrderHandler implements SyncEventHandler
      * takes one ({@see takeKeptLineCopy()}), so an unchanged line keeps the
      * recipe it was sold with even after a later recipe edit.
      *
+     * Fix order 1 L2 — when the re-send has fewer lines of a key than the
+     * order had (an identical line was removed), the NEWEST copies are the
+     * ones kept: the removed line is taken to be the older one. The kept
+     * copies stay in line order, so a re-send of every line keeps each
+     * line's own copy.
+     *
+     * @param  list<array<string, mixed>>  $incomingLines  the re-send's lines
      * @return array<string, list<array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}>>
      */
-    private function keptLineCopies(Order $order): array
+    private function keptLineCopies(Order $order, array $incomingLines): array
     {
         $copies = [];
         $items = OrderItem::query()->where('order_id', $order->id)->with('addons')->orderBy('id')->get();
@@ -788,7 +811,81 @@ class CreateOrderHandler implements SyncEventHandler
             ];
         }
 
+        $incoming = [];
+        foreach ($incomingLines as $line) {
+            $key = $this->incomingLineKey($line);
+            $incoming[$key] = ($incoming[$key] ?? 0) + 1;
+        }
+        foreach ($copies as $key => $list) {
+            $surplus = count($list) - ($incoming[$key] ?? 0);
+            if ($surplus > 0) {
+                $copies[$key] = array_slice($list, $surplus);
+            }
+        }
+
         return $copies;
+    }
+
+    /**
+     * Fix order 1 L1 — the moment new or changed lines of a re-sent order
+     * copy at: this event's moment, but never earlier than the order's last
+     * accepted write (those lines did not exist when it was made). When this
+     * event's client time does not move past that write's client time, the
+     * device did not stamp the moment of the change — the handheld stamps
+     * every order.hold / order.transfer with the order's open time — so the
+     * time the server accepted that write is the floor instead. Never later
+     * than now.
+     */
+    private function resendMoment(Order $existing, SyncEvent $event, CarbonInterface $moment): CarbonInterface
+    {
+        $previous = $existing->client_event_id === null ? null : SyncEvent::query()
+            ->where('client_event_id', $existing->client_event_id)
+            ->when($existing->device_id !== null, static fn ($q) => $q->where('device_id', $existing->device_id))
+            ->first(['client_timestamp', 'server_received_at']);
+        if ($previous?->client_timestamp === null) {
+            return $moment;
+        }
+
+        $floor = CarbonImmutable::instance($previous->client_timestamp)->utc();
+        $client = $event->client_timestamp !== null ? CarbonImmutable::instance($event->client_timestamp)->utc() : null;
+        if (($client === null || $client->lessThanOrEqualTo($floor)) && $previous->server_received_at !== null) {
+            $received = CarbonImmutable::instance($previous->server_received_at)->utc();
+            $floor = $received->greaterThan($floor) ? $received : $floor;
+        }
+
+        $now = CarbonImmutable::now()->utc();
+        $floor = $floor->greaterThan($now) ? $now : $floor;
+
+        return $floor->greaterThan($moment) ? $floor : $moment;
+    }
+
+    /**
+     * Fix order 1 L2 — a kept add-on copy of a product-as-add-on takes the
+     * product's CURRENT stock_mode and keeps its frozen recipe only while
+     * that mode is 'ingredient' (made-to-order): a product switched to
+     * cooked or unit moves its shelf instead, an untracked one nothing.
+     *
+     * @param  array<string, mixed>  $addon
+     * @return array<string, mixed>
+     */
+    private function withCurrentProductType(array $addon, int|string|null $companyId): array
+    {
+        $snapshot = $addon['product_snapshot_json'] ?? null;
+        if (! is_array($snapshot) || ! isset($snapshot['product_id'])) {
+            return $addon;
+        }
+
+        $mode = Product::withTrashed()->where('company_id', $companyId)->whereKey((int) $snapshot['product_id'])->value('stock_mode');
+        if ($mode === null) {
+            return $addon;
+        }
+        $snapshot['stock_mode'] = (string) $mode;
+        if ($mode !== 'ingredient') {
+            $snapshot['recipe'] = null;
+        }
+        $addon['product_snapshot_json'] = $snapshot;
+
+        return $addon;
     }
 
     /**
@@ -801,13 +898,21 @@ class CreateOrderHandler implements SyncEventHandler
      */
     private function takeKeptLineCopy(array &$kept, array $line): ?array
     {
-        $key = $this->lineKey(
+        $key = $this->incomingLineKey($line);
+
+        return ($kept[$key] ?? []) !== [] ? array_shift($kept[$key]) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $line  an incoming payload line
+     */
+    private function incomingLineKey(array $line): string
+    {
+        return $this->lineKey(
             (int) $line['product_id'],
             $line['qty'],
             array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $line['addons'] ?? []),
         );
-
-        return ($kept[$key] ?? []) !== [] ? array_shift($kept[$key]) : null;
     }
 
     /**

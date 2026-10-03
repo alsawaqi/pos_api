@@ -115,7 +115,8 @@ final class AppendStaffRoundAction
             // LAUNCH-P3 P3-6 — a staff round may have been queued offline: its
             // lines copy the recipe in force when it was taken on the device
             // (the client moment clamped to now), even if confirmed later.
-            $recipeAt = RecipeInForce::saleMoment($clientAt, $now);
+            // Fix order 1 M2: never before the device's credential epoch.
+            $recipeAt = RecipeInForce::saleMoment($clientAt, $now, $device->assignment_activated_at ?? $device->token_issued_at);
             $merged = $row->status === TableSession::STATUS_MERGED && $row->close_reason === TableSession::CLOSE_MERGED;
             $needsReview = $merged || $held !== [];
             $reviewReasons = array_merge($merged ? ['merged'] : [], $held !== [] ? ['catalogue'] : []);

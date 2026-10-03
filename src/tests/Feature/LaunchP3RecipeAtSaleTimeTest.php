@@ -43,10 +43,13 @@ class LaunchP3RecipeAtSaleTimeTest extends TestCase
         $this->seedPosStaff([7]);
         $t = ['created_at' => now(), 'updated_at' => now()];
 
+        // The Latte existed long before its recipe edits (fix order 1 M2
+        // floors a sale moment at the product's creation).
         DB::table('pos_products')->insert([
             'id' => self::LATTE, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Latte',
             'base_price' => 1.500, 'status' => 'active', 'stock_mode' => 'ingredient',
-        ] + $t);
+            'created_at' => now()->subDays(30), 'updated_at' => now()->subDays(30),
+        ]);
         DB::table('pos_ingredients')->insert([
             'id' => self::MILK, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Milk',
             'unit' => 'l', 'default_unit_cost' => '0.400000', 'status' => 'active',

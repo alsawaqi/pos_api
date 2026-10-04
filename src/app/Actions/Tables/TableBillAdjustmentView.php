@@ -60,7 +60,12 @@ final class TableBillAdjustmentView
         $customer = $order->customer_id === null ? null : Customer::withTrashed()->whereKey($order->customer_id)
             ->where('company_id', $order->company_id)->first();
 
-        return ['adjustment_state' => $state, 'customer' => $customer === null ? null : [
+        // LAUNCH-P5 fix order 1 — the exact base the server applies a table
+        // discount to (pre-tax net of the accepted rounds, in the bill's tax
+        // mode): a percent discount = round(basis × percent_bp / 10000), half
+        // away from zero — the amount_baisas of its approval proof.
+        return ['adjustment_state' => $state, 'adjustment_basis_baisas' => RefreshQrOrderTotalsAction::net($a),
+            'customer' => $customer === null ? null : [
             'id' => (int) $customer->id, 'name' => $customer->name, 'phone' => $customer->phone]];
     }
 

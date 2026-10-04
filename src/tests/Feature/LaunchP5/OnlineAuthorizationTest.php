@@ -152,6 +152,25 @@ class OnlineAuthorizationTest extends TestCase
         $this->assertSame('verified', DB::table('pos_approvals')->value('result'));
     }
 
+    public function test_the_table_detail_exposes_the_discount_basis_the_proof_amount_is_computed_from(): void
+    {
+        [$device, $seat, , $prefix] = $this->table();
+        $basis = $this->p5Online($device, 'GET', '/api/v1/device/tables/'.$seat->table_id.'/detail')->assertOk()
+            ->json('data.bill.adjustment_basis_baisas');
+        $this->assertIsInt($basis);
+        $this->assertGreaterThan(0, $basis);
+
+        // 33.33 %: the proof's amount is round(basis × percent_bp / 10000).
+        $id = (string) Str::uuid();
+        $amount = (int) round($basis * 3333 / 10000);
+        $this->postAs($device, 'tables/'.$seat->uuid.'/adjust', $prefix + ['auth_v' => 1, 'client_request_id' => $id,
+            'adjustment' => ['kind' => 'discount', 'mode' => 'percent', 'percent_bp' => 3333, 'label' => 'Manual'],
+            'authorization' => $this->p5Approval($device, 'discount.manual', 8, 7, $seat->client_request_id, $amount, $id)])
+            ->assertOk()->assertJsonPath('data.outcome', 'adjusted');
+        $row = DB::table('pos_approvals')->sole();
+        $this->assertSame(['verified', number_format($amount / 1000, 3)], [$row->result, number_format((float) $row->amount, 3)]);
+    }
+
     public function test_sold_out_takes_the_block_and_an_old_build_keeps_its_approver_id(): void
     {
         $device = $this->p5Device('mdev_so');

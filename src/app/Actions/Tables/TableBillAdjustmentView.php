@@ -66,7 +66,7 @@ final class TableBillAdjustmentView
         // away from zero — the amount_baisas of its approval proof.
         return ['adjustment_state' => $state, 'adjustment_basis_baisas' => RefreshQrOrderTotalsAction::net($a),
             'customer' => $customer === null ? null : [
-            'id' => (int) $customer->id, 'name' => $customer->name, 'phone' => $customer->phone]];
+                'id' => (int) $customer->id, 'name' => $customer->name, 'phone' => $customer->phone]];
     }
 
     public static function publicTotals(Order $order): array

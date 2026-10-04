@@ -221,8 +221,27 @@ class AppServiceProvider extends ServiceProvider
         // POS staff PIN login is a 6-digit brute-force surface — throttle it
         // hard per-device (the device is already resolved by the guard before
         // this limiter runs), independent of the generous device-api budget.
+        //
+        // PHASE-1A D-2 / D-6 (LAUNCH-P5 A4) — the manager PIN has its OWN
+        // bucket (`manager-pin`, keyed the same way), so a device that burned
+        // its login budget can still reach the manager PIN that unlocks it,
+        // and the reverse. Both answer 429 with the standard envelope:
+        // errors[0].code = too_many_attempts + errors[0].retry_after_seconds
+        // (an integer) + the Retry-After header.
+        $pinRateLimited = static fn (Request $request, array $headers) => response()->json([
+            'data' => null,
+            'errors' => [[
+                'code' => 'too_many_attempts',
+                'message' => 'Too many attempts. Wait a moment and try again.',
+                'retry_after_seconds' => (int) ($headers['Retry-After'] ?? 60),
+            ]],
+        ], 429, $headers);
         RateLimiter::for('pos-login', fn (Request $request) => Limit::perMinute(10)
-            ->by('pos-login:'.(string) ($request->user()?->getAuthIdentifier() ?? self::rateLimitIpKey($request->ip()))));
+            ->by('pos-login:'.(string) ($request->user()?->getAuthIdentifier() ?? self::rateLimitIpKey($request->ip())))
+            ->response($pinRateLimited));
+        RateLimiter::for('manager-pin', fn (Request $request) => Limit::perMinute(10)
+            ->by('manager-pin:'.(string) ($request->user()?->getAuthIdentifier() ?? self::rateLimitIpKey($request->ip())))
+            ->response($pinRateLimited));
     }
 
     /**

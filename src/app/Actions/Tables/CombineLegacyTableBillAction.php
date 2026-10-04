@@ -143,7 +143,6 @@ final class CombineLegacyTableBillAction
                 'approved_by_staff_id' => (int) $manager->id, 'reason' => $input['reason'],
                 'item_id_map' => $copy['item_id_map'], 'result' => $result,
             ], (int) $device->id);
-
             return $result;
         });
     }
@@ -265,10 +264,10 @@ final class CombineLegacyTableBillAction
         }
     }
 
+    /** LAUNCH-P5 — the approver positions (approvals.give) of the resolved tick list. */
     private function policy(Device $device): mixed
     {
-        return DB::table('pos_company_settings')->where('company_id', $device->company_id)
-            ->where('key', 'manager_approval_positions')->value('value');
+        return $this->managers->approvalPositions((int) $device->company_id);
     }
 
     private function refusal(string $code, string $message): QrDineInException

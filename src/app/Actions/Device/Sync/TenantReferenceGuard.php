@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync;
 use App\Actions\Device\VerifyManagerPinAction;
 use App\Models\Device;
 use App\Models\PosStaff;
+use App\Support\Staff\StaffBranches;
 use RuntimeException;
 
 /**
@@ -21,6 +22,11 @@ use RuntimeException;
  * withTrashed(): a since-terminated cashier's offline-queued event must still
  * settle, so soft-deleted staff still pass. A thrown RuntimeException stamps
  * the event `failed` (retryable) rather than silently nulling the audit trail.
+ *
+ * LAUNCH-P5 (A6): an event stamped with a staff member who is no longer
+ * active (suspended, terminated or deleted) settles but is flagged
+ * `staff_inactive:<id>`; "works at the device's branch" means the home branch
+ * or a pos_staff_branches row.
  */
 final class TenantReferenceGuard
 {
@@ -31,9 +37,15 @@ final class TenantReferenceGuard
      */
     public static function assertStaffInTenant(Device $device, ?int $staffId, string $message): void
     {
-        if ($staffId !== null && ! PosStaff::withTrashed()
-            ->where('company_id', $device->company_id)->whereKey($staffId)->exists()) {
+        if ($staffId === null) {
+            return;
+        }
+        $staff = PosStaff::withTrashed()->where('company_id', $device->company_id)->whereKey($staffId)->first();
+        if ($staff === null) {
             throw new RuntimeException($message);
+        }
+        if ($staff->trashed() || (string) $staff->status !== PosStaff::STATUS_ACTIVE) {
+            $device->syncIntegrityFlags[] = 'staff_inactive:'.$staffId;
         }
     }
 
@@ -45,7 +57,7 @@ final class TenantReferenceGuard
         }
         $staff = PosStaff::withTrashed()->findOrFail($staffId);
         $positions = app(VerifyManagerPinAction::class)->approvalPositions((int) $device->company_id);
-        if ((int) $staff->branch_id !== (int) $device->branch_id && ! in_array($staff->position, $positions, true)) {
+        if (! StaffBranches::staffWorksAt($staffId, (int) $device->branch_id) && ! in_array($staff->position, $positions, true)) {
             $device->syncIntegrityFlags[] = 'staff_branch_changed:'.$staffId;
         }
     }
@@ -59,6 +71,9 @@ final class TenantReferenceGuard
         $positions = app(VerifyManagerPinAction::class)->approvalPositions((int) $device->company_id);
         if (! PosStaff::withTrashed()->whereKey($staffId)->whereIn('position', $positions)->exists()) {
             $device->syncIntegrityFlags[] = 'approver_position_changed:'.$staffId;
+        }
+        if (! StaffBranches::staffWorksAt($staffId, (int) $device->branch_id)) {
+            $device->syncIntegrityFlags[] = 'approver_branch_changed:'.$staffId;
         }
     }
 }

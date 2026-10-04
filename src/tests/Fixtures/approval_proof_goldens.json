@@ -1,0 +1,59 @@
+{
+    "description": "LAUNCH-P5 approval proof golden vectors. K = PBKDF2-HMAC-SHA256(pin UTF-8, hex2bin(salt_hex), iterations, 32 bytes). check = hex(SHA-256(\"mithqal-approver-check-v1\" . K)). canonical = \"v1|\" action \"|\" device_uuid \"|\" approver_staff_id \"|\" approved_at \"|\" subject_uuid_or_empty \"|\" amount_baisas_or_empty \"|\" ref_or_empty. proof = hex(HMAC-SHA256(key K, canonical UTF-8)). Generated with PHP hash_pbkdf2/hash/hash_hmac.",
+    "vectors": [
+        {
+            "pin": "123456",
+            "salt_hex": "00112233445566778899aabbccddeeff",
+            "iterations": 1000,
+            "action": "discount.manual",
+            "device_uuid": "3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+            "approver_staff_id": 42,
+            "approved_at": "2026-10-04T09:15:30.123Z",
+            "subject_uuid": "9b8a7c6d-5e4f-4321-8765-0fedcba98765",
+            "amount_baisas": 250,
+            "ref": "discount:0",
+            "k_hex": "5f96a43ec085d7e812c2d0fc4b797107078dce886b2ddcb376e63c5b07cdbac0",
+            "check_hex": "5664ccb4100decbfaafc7e92e874d864ea2f4df332e82bfbd58a1e98733d1b47",
+            "canonical": "v1|discount.manual|3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d|42|2026-10-04T09:15:30.123Z|9b8a7c6d-5e4f-4321-8765-0fedcba98765|250|discount:0",
+            "proof_hex": "11b20e52a5045d40a26534a308b741b457a864596b2b30c47b7e0667e8847507",
+            "wrong_pin": "111111",
+            "wrong_pin_check_hex": "47aa864394d6e72c0f3f14d3059943d78a2d76341ebbbd1f95ffe7a1e0fe9fbe"
+        },
+        {
+            "pin": "987654",
+            "salt_hex": "ffeeddccbbaa99887766554433221100",
+            "iterations": 1000,
+            "action": "order.void_paid",
+            "device_uuid": "3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+            "approver_staff_id": 7,
+            "approved_at": "2026-10-04T23:59:59.000Z",
+            "subject_uuid": "",
+            "amount_baisas": null,
+            "ref": null,
+            "k_hex": "71d6dddebc589797381619b6c5e6674e4df13e019f5d047c306a72163dca512c",
+            "check_hex": "e1568b9ac23e41cc630e27b34eb970f52d07eacdba1cb5e31bd128c966bc4313",
+            "canonical": "v1|order.void_paid|3f1b2c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d|7|2026-10-04T23:59:59.000Z|||",
+            "proof_hex": "a13d9ffbd7812d7d11b1ddb678ab4a9dff2e7b8c2cdcd802f350760fe667da99",
+            "wrong_pin": "111111",
+            "wrong_pin_check_hex": "317e9028d076a58126ac4e53817d1ea308c43ad52765ea17c0423a84036486a2"
+        },
+        {
+            "pin": "000000",
+            "salt_hex": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "iterations": 100000,
+            "action": "comp",
+            "device_uuid": "11111111-2222-4333-8444-555555555555",
+            "approver_staff_id": 1,
+            "approved_at": "2026-01-01T00:00:00.000Z",
+            "subject_uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "amount_baisas": 1500,
+            "ref": "comp:1",
+            "k_hex": "58dc9e55864a409c0e473c84fb66fcecb409fb65327bec6b73d635701a77aa7e",
+            "check_hex": "38d32170265fe6161e883f03b88e90a818d3e9764f61a5859fa4048750a33ba1",
+            "canonical": "v1|comp|11111111-2222-4333-8444-555555555555|1|2026-01-01T00:00:00.000Z|aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee|1500|comp:1",
+            "proof_hex": "54f49ec31e71ae774fd0165ebb94f2e07b5320ef6e01f6cd9e7b9bd3b3682121",
+            "wrong_pin": "111111",
+            "wrong_pin_check_hex": "962da05622ed0ade50af99822d9139911cd10aa07d9e4cbbbb00119c0d45b662"
+        }
+    ]
+}

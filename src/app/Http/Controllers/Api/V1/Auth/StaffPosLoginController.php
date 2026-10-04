@@ -9,6 +9,8 @@ use App\Actions\Device\StaffLoginAction;
 use App\Http\Requests\Api\V1\Auth\StaffLoginRequest;
 use App\Models\Branch;
 use App\Models\Device;
+use App\Support\Staff\AttendanceBook;
+use App\Support\Staff\StaffBranches;
 use Illuminate\Http\JsonResponse;
 use RuntimeException;
 
@@ -25,6 +27,7 @@ class StaffPosLoginController
     public function __construct(
         private readonly StaffLoginAction $login,
         private readonly GeofenceGuard $geofence,
+        private readonly AttendanceBook $attendance,
     ) {}
 
     public function __invoke(StaffLoginRequest $request): JsonResponse
@@ -79,6 +82,13 @@ class StaffPosLoginController
             ], 401);
         }
 
+        // LAUNCH-P5 — every branch the person works at (home first) and their
+        // attendance state (open: is a clock-in already recorded). Both ride
+        // inside `staff` and at the top of `data` (additive; old builds read
+        // only the first five staff keys).
+        $branchIds = StaffBranches::branchIds($staff);
+        $attendance = $this->attendance->state((int) $device->company_id, (int) $staff->id);
+
         return response()->json([
             'data' => [
                 'staff' => [
@@ -87,7 +97,11 @@ class StaffPosLoginController
                     'name' => $staff->name,
                     'position' => $staff->position,
                     'branch_id' => (int) $staff->branch_id,
+                    'branch_ids' => $branchIds,
+                    'attendance' => $attendance,
                 ],
+                'branch_ids' => $branchIds,
+                'attendance' => $attendance,
             ],
             'errors' => [],
         ]);

@@ -6,78 +6,81 @@ namespace App\Actions\Device;
 
 use App\Models\Device;
 use App\Models\PosStaff;
-use Illuminate\Support\Facades\DB;
+use App\Support\Staff\ApproverVerifier;
+use App\Support\Staff\PinLockedException;
+use App\Support\Staff\PinLockout;
+use App\Support\Staff\PositionPermissions;
+use App\Support\Staff\StaffBranches;
 use Illuminate\Support\Facades\Hash;
 use RuntimeException;
 
 /**
- * P-F1 — verify a manager's PIN at a paired device, the fallback for the
- * fingerprint gate on sensitive POS actions (comps, cancellations, gifts).
+ * P-F1 — verify an approver's PIN at a paired device: the online manager-PIN
+ * check of verify-manager-pin, unlock-pin-lock and the six PIN-checked
+ * actions (card void/refund, kitchen batch cancel, day-end give-away, QR
+ * payment review, QR expired cancel, bill combine).
  *
- * The device is already authenticated (device_token → pos_device guard), so
- * the company is known. We scan the ACTIVE staff of that company whose
- * position is in the company's `manager_approval_positions` policy
- * (pos_company_settings; default managers-only, mirroring what
- * BuildDeviceConfigAction emits to the device) and bcrypt-check the PIN
- * against each — the StaffLoginAction mechanism. The operator does NOT have
- * to be the logged-in staff member: any allowed staff member's PIN
- * authorizes the action.
+ * LAUNCH-P5 (owner decision 2, H4, M3):
+ *  - an approver is an ACTIVE staff member of the device's company whose
+ *    position holds `approvals.give` in the resolved tick list
+ *    ({@see PositionPermissions}) AND who works at the DEVICE'S BRANCH (home
+ *    branch or pos_staff_branches) — no longer any branch of the company;
+ *  - PHASE-1A D-5: the per-device manager-PIN lockout ({@see PinLockout},
+ *    its own counter, separate from the login one) is evaluated before the
+ *    PIN is checked; the 5th consecutive wrong PIN answers 423;
+ *  - the verify-manager-pin endpoint (not the six actions, whose refusals
+ *    must write nothing) then makes the approver's offline verifier when the
+ *    row has none yet ({@see ApproverVerifier}).
  *
- * Branch scoping (deliberate choice): unlike PIN *login* (strictly
- * branch-bound, §5.4.2), approval ACCEPTS any branch of the company so a
- * roaming area manager can authorize at whichever branch they're visiting.
- * Staff of the device's own branch are checked FIRST, so on the (already
- * company-unique) off chance of a PIN collision the local manager wins.
- *
- * No match throws — the controller maps it to the same generic 401
- * invalid_pin the login endpoint uses; we never reveal whether a PIN exists
- * or belongs to a non-approved position.
+ * The operator does NOT have to be the logged-in staff member: any allowed
+ * approver's PIN authorizes the action. No match throws — every caller maps
+ * it to a generic "invalid PIN", never revealing whether a PIN exists or
+ * belongs to a non-approver.
  */
 final readonly class VerifyManagerPinAction
 {
+    public function __construct(
+        private PinLockout $lockout,
+        private PositionPermissions $permissions,
+    ) {}
+
+    /**
+     * @throws PinLockedException
+     */
     public function verify(Device $device, string $pin): PosStaff
     {
-        $candidates = PosStaff::query()
+        $this->lockout->guard($device, PinLockout::MANAGER);
+
+        $candidates = StaffBranches::worksAt(PosStaff::query()
             ->where('company_id', $device->company_id)
             ->where('status', PosStaff::STATUS_ACTIVE)
-            ->whereIn('position', $this->approvalPositions((int) $device->company_id))
+            ->whereIn('position', $this->approvalPositions((int) $device->company_id)), (int) $device->branch_id)
             ->orderByRaw('CASE WHEN branch_id = ? THEN 0 ELSE 1 END', [(int) $device->branch_id])
+            ->orderBy('id')
             ->get();
 
         foreach ($candidates as $staff) {
             if (Hash::check($pin, (string) $staff->pin_hash)) {
+                $this->lockout->succeeded($device, PinLockout::MANAGER);
+
                 return $staff;
             }
         }
+
+        $this->lockout->failed($device, PinLockout::MANAGER);
 
         throw new RuntimeException('Invalid PIN.');
     }
 
     /**
-     * The company's `manager_approval_positions` policy, defaulting to
-     * managers-only when unset — the same read + normalisation
-     * BuildDeviceConfigAction::positionListSetting() emits in /device/config,
-     * so the device-side gate and this server-side check can't diverge.
+     * The company's approver positions: those holding `approvals.give` in the
+     * resolved tick list (which also feeds the old
+     * `manager_approval_positions` config key, so device and server agree).
      *
      * @return list<string>
      */
     public function approvalPositions(int $companyId): array
     {
-        $raw = DB::table('pos_company_settings')
-            ->where('company_id', $companyId)
-            ->where('key', 'manager_approval_positions')
-            ->value('value');
-
-        $positions = is_string($raw) ? json_decode($raw, true) : $raw;
-        if (! is_array($positions)) {
-            $positions = [];
-        }
-
-        $positions = array_values(array_filter(
-            array_map(static fn ($p): string => is_string($p) ? trim($p) : '', $positions),
-            static fn (string $p): bool => $p !== '',
-        ));
-
-        return $positions === [] ? ['manager'] : $positions;
+        return $this->permissions->positionsWith($companyId, 'approvals.give');
     }
 }

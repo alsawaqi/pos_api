@@ -400,7 +400,8 @@ final class CombineLegacyTableBillTest extends TestCase
         fwrite(STDOUT, "\nUNIFIED_COMBINE_RESULT_JSON=".json_encode($first->json(), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n");
         $this->withToken($this->device->plainTextToken)->postJson($path, $input)->assertOk()->assertExactJson($first->json());
         $route = app('router')->getRoutes()->getByName('device.tables.combine');
-        $this->assertContains('throttle:pos-login', $route->gatherMiddleware());
+        // PHASE-1A D-2 (LAUNCH-P5) — the manager-PIN routes have their own bucket.
+        $this->assertContains('throttle:manager-pin', $route->gatherMiddleware());
     }
 
     public function test_a_failed_journal_write_rolls_back_every_copy_and_the_source_status_then_allows_exact_retry(): void

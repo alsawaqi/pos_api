@@ -64,8 +64,16 @@ class DeviceKitchenPinVerifyTest extends TestCase
         $this->assertTrue($res->json('ok'));
         $this->assertSame('Sami', $res->json('staff.name'));
 
-        // No managers-only fallback: a manager does NOT pass until the merchant
-        // ticks 'manager' explicitly.
+        // LAUNCH-P5 — with no tick list and no saved list, kitchen.screen
+        // resolves to the shared defaults: kitchen AND manager.
+        $this->withToken('mdev_kpin')
+            ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '4321'])
+            ->assertOk()
+            ->assertJsonPath('staff.name', 'Mona');
+
+        // A saved kitchen-only list (today's "no managers" choice) keeps
+        // managers out: the manager does NOT pass.
+        $this->setKitchenPolicy([]);
         $this->withToken('mdev_kpin')
             ->postJson('/api/v1/device/auth/verify-kitchen-pin', ['pin' => '4321'])
             ->assertStatus(401)

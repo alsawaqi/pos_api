@@ -133,17 +133,27 @@ class DeviceManagerPinVerifyTest extends TestCase
             ->assertStatus(401);
     }
 
-    public function test_a_manager_from_another_branch_of_the_company_is_accepted(): void
+    public function test_a_manager_of_another_branch_approves_only_where_they_work(): void
     {
-        // Branch scoping choice: a roaming area manager (same company,
-        // different branch) may approve at this device.
+        // LAUNCH-P5 (H4, M3) — an approver must work at the DEVICE'S branch
+        // (home branch or pos_staff_branches); a roaming area manager is
+        // given each branch in the portal.
         $this->device(); // branch 10
-        $this->staff('123456', ['branch_id' => 11]);
+        $id = $this->staff('123456', ['branch_id' => 11]);
+
+        $this->withToken('mdev_mgr')
+            ->postJson(self::URL, ['pin' => '123456'])
+            ->assertStatus(401)
+            ->assertJsonPath('errors.0.code', 'invalid_pin');
+
+        DB::table('pos_staff_branches')->insert(['company_id' => 100, 'staff_id' => $id, 'branch_id' => 10,
+            'created_at' => now(), 'updated_at' => now()]);
 
         $this->withToken('mdev_mgr')
             ->postJson(self::URL, ['pin' => '123456'])
             ->assertOk()
-            ->assertJsonPath('ok', true);
+            ->assertJsonPath('ok', true)
+            ->assertJsonPath('staff.id', $id);
     }
 
     public function test_a_manager_from_another_company_never_matches(): void
@@ -210,18 +220,28 @@ class DeviceManagerPinVerifyTest extends TestCase
             ->assertJsonValidationErrors(['pin']);
     }
 
-    public function test_verification_is_rate_limited_per_device(): void
+    public function test_verification_is_rate_limited_per_device_in_its_own_bucket(): void
     {
         $this->device();
         $this->staff('123456');
 
-        // Shares the pos-login limiter: 10 attempts/min; the 11th is throttled.
+        // PHASE-1A D-2 (LAUNCH-P5) — the manager PIN has its OWN `manager-pin`
+        // limiter (10/min per device), no longer the pos-login one. Correct
+        // PINs keep the D-5 lockout out of the way; the 11th call is throttled
+        // with the machine-readable D-6 payload.
         for ($i = 0; $i < 10; $i++) {
-            $this->withToken('mdev_mgr')->postJson(self::URL, ['pin' => '000000'])
-                ->assertStatus(401);
+            $this->withToken('mdev_mgr')->postJson(self::URL, ['pin' => '123456'])->assertOk();
         }
 
-        $this->withToken('mdev_mgr')->postJson(self::URL, ['pin' => '000000'])
-            ->assertStatus(429);
+        $res = $this->withToken('mdev_mgr')->postJson(self::URL, ['pin' => '123456'])
+            ->assertStatus(429)
+            ->assertJsonPath('errors.0.code', 'too_many_attempts');
+        $this->assertIsInt($res->json('errors.0.retry_after_seconds'));
+        $this->assertNotNull($res->headers->get('Retry-After'));
+
+        // The login bucket is untouched: the PIN login still answers.
+        $this->withToken('mdev_mgr')->postJson('/api/v1/auth/pos/login', ['pin' => '999999'])
+            ->assertStatus(401)
+            ->assertJsonPath('errors.0.code', 'invalid_pin');
     }
 }

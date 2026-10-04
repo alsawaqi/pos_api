@@ -167,17 +167,22 @@ class DeviceStaffLoginTest extends TestCase
 
         // The route is authenticated before throttling, so the existing key
         // remains the device even when forged forwarding headers vary.
+        // PHASE-1A D-3 (LAUNCH-P5): wrong PINs now LOCK at the 5th (423), so
+        // the 10/min limiter is shown with correct PINs, which clear the lock
+        // counter each time; the 11th call is throttled with the D-6 payload.
         for ($i = 0; $i < 10; $i++) {
             $this->withHeader('X-Forwarded-For', '198.51.100.'.(100 + $i))
                 ->withToken('mdev_pos')
-                ->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
-                ->assertStatus(401);
+                ->postJson('/api/v1/auth/pos/login', ['pin' => '123456'])
+                ->assertOk();
         }
 
-        $this->withHeader('X-Forwarded-For', '198.51.100.110')
+        $throttled = $this->withHeader('X-Forwarded-For', '198.51.100.110')
             ->withToken('mdev_pos')
             ->postJson('/api/v1/auth/pos/login', ['pin' => '000000'])
-            ->assertStatus(429);
+            ->assertStatus(429)
+            ->assertJsonPath('errors.0.code', 'too_many_attempts');
+        $this->assertIsInt($throttled->json('errors.0.retry_after_seconds'));
 
         $this->app['auth']->forgetGuards();
 

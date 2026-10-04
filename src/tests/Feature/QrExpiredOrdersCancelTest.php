@@ -23,6 +23,11 @@ final class QrExpiredOrdersCancelTest extends QrPendingTestCase
         parent::setUp();
         $this->manager = DB::table('pos_staff')->insertGetId(['uuid' => Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
             'name' => 'Q1 synthetic manager', 'pin_hash' => Hash::make('4321'), 'position' => 'manager', 'status' => 'active']);
+        // LAUNCH-P5 — an approver must work at the device's branch; the
+        // scope tests below also use a branch-20 device, so this manager works
+        // at both branches (pos_staff_branches).
+        DB::table('pos_staff_branches')->insert(['company_id' => 100, 'staff_id' => $this->manager, 'branch_id' => 20,
+            'created_at' => now(), 'updated_at' => now()]);
     }
 
     private function preview(?Order $order = null)

@@ -5,8 +5,10 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Auth\DeviceActivateController;
 use App\Http\Controllers\Api\V1\Auth\DevicePairController;
 use App\Http\Controllers\Api\V1\Auth\StaffPosLoginController;
+use App\Http\Controllers\Api\V1\Auth\UnlockPinLockController;
 use App\Http\Controllers\Api\V1\Auth\VerifyKitchenPinController;
 use App\Http\Controllers\Api\V1\Auth\VerifyManagerPinController;
+use App\Http\Controllers\Api\V1\Device\DeviceApproversController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchDevicesController;
 use App\Http\Controllers\Api\V1\Device\DeviceBranchReportController;
 use App\Http\Controllers\Api\V1\Device\DeviceClearEmptyTableSessionController;
@@ -44,6 +46,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceQuickWorkspaceController;
 use App\Http\Controllers\Api\V1\Device\DeviceShiftController;
 use App\Http\Controllers\Api\V1\Device\DeviceSoldOutController;
 use App\Http\Controllers\Api\V1\Device\DeviceStaffRoundReviewController;
+use App\Http\Controllers\Api\V1\Device\DeviceStaffStatusController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableBoardController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableClaimOwnerController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableCombineController;
@@ -140,7 +143,7 @@ Route::prefix('v1')->group(function (): void {
 
     // Everything below requires a valid device token, throttled per-device.
     Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
-        Route::post('device/payments/{paymentUuid}/reversals', [PaymentReversalsController::class, 'reserve'])->middleware('throttle:pos-login');
+        Route::post('device/payments/{paymentUuid}/reversals', [PaymentReversalsController::class, 'reserve'])->middleware('throttle:manager-pin');
         Route::post('device/payments/reversals/{uuid}/result', [PaymentReversalsController::class, 'result']);
         Route::get('device/payments/reversals', [PaymentReversalsController::class, 'index']);
         Route::get('device/orders/{uuid}/payments', [PaymentReversalsController::class, 'payments']);
@@ -150,19 +153,35 @@ Route::prefix('v1')->group(function (): void {
             ->middleware('throttle:pos-login')
             ->name('pos.login');
 
-        // P-F1 â€” manager PIN fallback for the device's approval gates (comps,
-        // cancellations, gifts). Shares the hard per-device `pos-login`
-        // limiter bucket, so the combined PIN brute-force surface stays at
-        // 10/min per device across login + approval.
+        // P-F1 â€” manager PIN check for the device's approval gates.
+        // PHASE-1A D-2 (LAUNCH-P5) — every route that checks a manager PIN
+        // (this one, the kitchen walk-up, the unlock below, card reversal,
+        // bill combine, the QR reviews, production cancel and disposition)
+        // is on its OWN per-device `manager-pin` bucket, separate from
+        // `pos-login`, so a device that burned its login budget can still
+        // reach the manager PIN that unlocks it (and the reverse).
         Route::post('device/auth/verify-manager-pin', VerifyManagerPinController::class)
-            ->middleware('throttle:pos-login')
+            ->middleware('throttle:manager-pin')
             ->name('device.verify-manager-pin');
+
+        // PHASE-1A D-7 — a manager PIN clears this device's LOGIN lock on the
+        // server (a screen-only unlock would hit 423 again and double it).
+        Route::post('device/auth/unlock-pin-lock', UnlockPinLockController::class)
+            ->middleware('throttle:manager-pin')
+            ->name('device.unlock-pin-lock');
+
+        // LAUNCH-P5 — the branch's approvers with their offline verifier
+        // material (never K), and the ids of the staff still active at the
+        // branch (devices log out anyone missing). Polled by devices.
+        Route::get('device/approvers', DeviceApproversController::class)->name('device.approvers');
+        Route::get('device/staff-status', DeviceStaffStatusController::class)->name('device.staff-status');
 
         // P-G1.6 â€” the Kitchen walk-up gate: a kitchen staff member's code
         // lets the Kitchen screen open on someone else's till session (the
-        // session then runs AS the verified chef). Same brute-force bucket.
+        // session then runs AS the verified chef). The manager-pin bucket and
+        // lockout: it answers whether a PIN is valid, managers included.
         Route::post('device/auth/verify-kitchen-pin', VerifyKitchenPinController::class)
-            ->middleware('throttle:pos-login')
+            ->middleware('throttle:manager-pin')
             ->name('device.verify-kitchen-pin');
 
         // Â§11.5 â€” broadcast channel authorization, on-contract at
@@ -221,7 +240,7 @@ Route::prefix('v1')->group(function (): void {
             ->whereNumber('tableId')->middleware('throttle:qr-table-device-read')
             ->name('device.tables.combine-preview');
         Route::post('device/tables/{tableId}/combine', [DeviceTableCombineController::class, 'store'])
-            ->whereNumber('tableId')->middleware('throttle:pos-login')
+            ->whereNumber('tableId')->middleware('throttle:manager-pin')
             ->name('device.tables.combine');
         Route::get('device/tables/feed', DeviceTableFeedController::class)
             ->middleware('throttle:qr-table-device-read')
@@ -239,9 +258,9 @@ Route::prefix('v1')->group(function (): void {
             ->middleware('throttle:qr-table-device-read')
             ->name('device.order-attention');
         Route::get('device/qr/pending-orders/cancel-preview', [DeviceQrExpiredOrdersController::class, 'preview'])->middleware('throttle:qr-table-device-read');
-        Route::post('device/qr/pending-orders/cancel', [DeviceQrExpiredOrdersController::class, 'cancel'])->middleware(['throttle:qr-table-device-write', 'throttle:pos-login']);
+        Route::post('device/qr/pending-orders/cancel', [DeviceQrExpiredOrdersController::class, 'cancel'])->middleware(['throttle:qr-table-device-write', 'throttle:manager-pin']);
         Route::post('device/qr/pending-orders/{uuid}/payment-review', DeviceQrPaymentReviewController::class)
-            ->middleware(['throttle:qr-table-device-write', 'throttle:pos-login'])->name('device.qr.pending-orders.payment-review');
+            ->middleware(['throttle:qr-table-device-write', 'throttle:manager-pin'])->name('device.qr.pending-orders.payment-review');
         Route::get('device/qr/pending-orders', [DeviceQrPendingOrdersController::class, 'index'])
             ->middleware('throttle:qr-table-device-read')
             ->name('device.qr.pending-orders');
@@ -341,22 +360,22 @@ Route::prefix('v1')->group(function (): void {
         // the two-phase batch lifecycle. Who may OPEN the Kitchen screen
         // is the merchant's kitchen_positions setting, enforced
         // device-side from /device/config. Cancel carries a manager PIN
-        // verified server-side, so it shares the pos-login brute-force
-        // bucket with login + verify-manager-pin.
+        // verified server-side, so it uses the manager-pin brute-force
+        // bucket and lockout (PHASE-1A D-2).
         Route::get('device/kitchen', [DeviceKitchenController::class, 'show'])->name('device.kitchen');
         Route::post('device/productions', [DeviceProductionsController::class, 'store'])->name('device.productions.store');
         Route::post('device/productions/{uuid}/finish', [DeviceProductionsController::class, 'finish'])->name('device.productions.finish');
         Route::post('device/productions/{uuid}/cancel', [DeviceProductionsController::class, 'cancel'])
-            ->middleware('throttle:pos-login')
+            ->middleware('throttle:manager-pin')
             ->name('device.productions.cancel');
 
         // P-G1.5 â€” day-end disposition of expired cooked pieces (online-
         // only, runs right before shift close). The POST can carry a
         // manager PIN (give-away / carry-over approval), so it shares the
-        // pos-login brute-force bucket.
+        // manager-pin brute-force bucket and lockout.
         Route::get('device/disposition', [DeviceDispositionController::class, 'show'])->name('device.disposition.show');
         Route::post('device/disposition', [DeviceDispositionController::class, 'store'])
-            ->middleware('throttle:pos-login')
+            ->middleware('throttle:manager-pin')
             ->name('device.disposition.store');
 
         // P-G6 â€” staff-announcement read receipts. Announcements arrive

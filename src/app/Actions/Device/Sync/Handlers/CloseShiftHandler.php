@@ -98,11 +98,10 @@ class CloseShiftHandler implements SyncEventHandler
             throw new RuntimeException('invalid shift.close payload: shift_uuid required');
         }
 
-        $shift = Shift::query()
-            ->where('uuid', $shiftUuid)
-            ->where('company_id', $device->company_id)
-            ->where('branch_id', $device->branch_id)
-            ->first();
+        // Fix order 1 L2 — the close holds its shift row from the start (the
+        // dispatcher's transaction), so a late-cash or late pay-out write
+        // waits for it and a cash sale in flight is counted by one side.
+        $shift = self::shiftForClose($device, $shiftUuid)->first();
         if ($shift === null) {
             throw new RuntimeException('shift not found for close: '.$shiftUuid);
         }
@@ -199,6 +198,21 @@ class CloseShiftHandler implements SyncEventHandler
             ] + ($review === [] ? [] : ['needs_review' => true, 'review_order_uuids' => $review])
               + ($authorization === null ? [] : ['authorization' => $authorization]);
         });
+    }
+
+    /**
+     * The shift a close names, in the device's company and branch, locked
+     * for update (fix order 1 L2).
+     *
+     * @return \Illuminate\Database\Eloquent\Builder<Shift>
+     */
+    public static function shiftForClose(Device $device, string $shiftUuid): \Illuminate\Database\Eloquent\Builder
+    {
+        return Shift::query()
+            ->where('uuid', $shiftUuid)
+            ->where('company_id', $device->company_id)
+            ->where('branch_id', $device->branch_id)
+            ->lockForUpdate();
     }
 
     /**
@@ -306,11 +320,18 @@ class CloseShiftHandler implements SyncEventHandler
             ->whereNotNull('captured_at')->get();
         $late = null;
         foreach ($payments as $payment) {
+            // Fix order 1 L2 — lock every shift whose window holds the payment,
+            // open ones included: a close in flight holds its row (it locks it
+            // first), so this waits for it and then sees it closed; a close
+            // that starts later waits for this sale and counts it.
             $shifts = Shift::query()->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)
-                ->where('status', Shift::STATUS_CLOSED)
-                ->where('opened_at', '<=', $payment->captured_at)->where('closed_at', '>=', $payment->captured_at)
-                ->orderBy('id')->get();
+                ->where('opened_at', '<=', $payment->captured_at)
+                ->where(fn ($q) => $q->whereNull('closed_at')->orWhere('closed_at', '>=', $payment->captured_at))
+                ->orderBy('id')->lockForUpdate()->get();
             foreach ($shifts as $shift) {
+                if ($shift->status !== Shift::STATUS_CLOSED || $shift->closed_at === null || $shift->closed_at->lt($payment->captured_at)) {
+                    continue;
+                }
                 $claims = Payment::query()
                     ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
                     ->where('pos_payments.id', $payment->id)
@@ -319,13 +340,16 @@ class CloseShiftHandler implements SyncEventHandler
                 if (! $claims) {
                     continue;
                 }
+                // In SQL, so two devices' late cash never overwrite each other.
                 $baisas = Money::toBaisas($payment->amount);
-                $shift->update([
-                    'late_sales_baisas' => (int) $shift->late_sales_baisas + $baisas,
+                DB::table('pos_shifts')->where('id', $shift->id)->update([
+                    'late_sales_baisas' => DB::raw('late_sales_baisas + '.$baisas),
                     'needs_review' => true,
-                    'note' => self::appendNote($shift->note, 'Late cash sale '.$order->uuid.' ('.Money::toOmr($baisas).')'),
+                    'note' => self::appendNoteSql('Late cash sale '.$order->uuid.' ('.Money::toOmr($baisas).')'),
+                    'updated_at' => now(),
                 ]);
-                $late = ['shift_uuid' => (string) $shift->uuid, 'late_sales_baisas' => (int) $shift->late_sales_baisas];
+                $late = ['shift_uuid' => (string) $shift->uuid,
+                    'late_sales_baisas' => (int) DB::table('pos_shifts')->where('id', $shift->id)->value('late_sales_baisas')];
                 break;
             }
         }

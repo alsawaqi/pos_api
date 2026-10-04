@@ -678,7 +678,8 @@ class DeviceConfigTest extends TestCase
 
         // FULL config carries the policy…
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
-        $this->assertSame(['manager', 'supervisor'], $data['settings']['manager_approval_positions']);
+        // LAUNCH-P5 — derived from the tick list, in its position order.
+        $this->assertSame(['supervisor', 'manager'], $data['settings']['manager_approval_positions']);
 
         // …and so does every DELTA (settings are always emitted, not
         // delta-tracked) — even when nothing else changed since.
@@ -687,7 +688,7 @@ class DeviceConfigTest extends TestCase
             ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))
             ->assertOk()
             ->json('data');
-        $this->assertSame(['manager', 'supervisor'], $delta['settings']['manager_approval_positions']);
+        $this->assertSame(['supervisor', 'manager'], $delta['settings']['manager_approval_positions']);
         $this->assertSame(['manager'], $delta['settings']['order_cancel_positions']);
     }
 
@@ -732,7 +733,8 @@ class DeviceConfigTest extends TestCase
 
         // FULL config carries the policy…
         $data = $this->withToken('mdev_cfg')->getJson('/api/v1/device/config')->assertOk()->json('data');
-        $this->assertSame(['manager', 'supervisor'], $data['settings']['reports_positions']);
+        // LAUNCH-P5 — derived from the tick list, in its position order.
+        $this->assertSame(['supervisor', 'manager'], $data['settings']['reports_positions']);
 
         // …and so does every DELTA (settings are always emitted, not
         // delta-tracked) — even when nothing else changed since.
@@ -741,7 +743,7 @@ class DeviceConfigTest extends TestCase
             ->getJson('/api/v1/device/config/delta?since='.urlencode($since->toIso8601String()))
             ->assertOk()
             ->json('data');
-        $this->assertSame(['manager', 'supervisor'], $delta['settings']['reports_positions']);
+        $this->assertSame(['supervisor', 'manager'], $delta['settings']['reports_positions']);
         $this->assertSame(['manager'], $delta['settings']['manager_approval_positions']);
     }
 
@@ -1112,6 +1114,9 @@ class DeviceConfigTest extends TestCase
                 'table_sessions_mode',
                 'qr_table_card_enabled',
                 'qr_scan_geofence_mode',
+                // LAUNCH-P5 — the tick list and the shift-end reminder.
+                'position_permissions',
+                'shift_end_reminder_at',
             ], array_keys($json['data']['settings']));
             $this->assertArrayNotHasKey(
                 'dine_in_round_mode',

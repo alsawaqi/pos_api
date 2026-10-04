@@ -1,0 +1,63 @@
+{
+  "description": "LAUNCH-P5 default tick list. true = allowed without approval. discount_max_percent = the largest manual discount (as % of the order subtotal) allowed without approval when discount.manual is true. Missing positions, actions or limits always resolve to these values.",
+  "positions": ["cashier", "waiter", "kitchen", "supervisor", "manager"],
+  "actions": [
+    "order.void_unpaid", "order.void_paid", "table.cancel_line", "table.cancel_bill",
+    "discount.manual", "comp", "gift", "loyalty.redeem", "sold_out.toggle",
+    "receipt.reprint", "kitchen.reprint", "reports.view", "kitchen.screen",
+    "shift.close_other", "payout", "stock.waste", "stock.count", "training.use", "approvals.give"
+  ],
+  "defaults": {
+    "cashier": {
+      "discount_max_percent": 10,
+      "actions": {
+        "order.void_unpaid": false, "order.void_paid": false, "table.cancel_line": false, "table.cancel_bill": false,
+        "discount.manual": true, "comp": false, "gift": false, "loyalty.redeem": false, "sold_out.toggle": false,
+        "receipt.reprint": true, "kitchen.reprint": false, "reports.view": false, "kitchen.screen": false,
+        "shift.close_other": false, "payout": false, "stock.waste": true, "stock.count": true, "training.use": true, "approvals.give": false
+      }
+    },
+    "waiter": {
+      "discount_max_percent": 10,
+      "actions": {
+        "order.void_unpaid": false, "order.void_paid": false, "table.cancel_line": false, "table.cancel_bill": false,
+        "discount.manual": true, "comp": false, "gift": false, "loyalty.redeem": false, "sold_out.toggle": false,
+        "receipt.reprint": true, "kitchen.reprint": false, "reports.view": false, "kitchen.screen": false,
+        "shift.close_other": false, "payout": false, "stock.waste": true, "stock.count": true, "training.use": true, "approvals.give": false
+      }
+    },
+    "kitchen": {
+      "discount_max_percent": 0,
+      "actions": {
+        "order.void_unpaid": false, "order.void_paid": false, "table.cancel_line": false, "table.cancel_bill": false,
+        "discount.manual": false, "comp": false, "gift": false, "loyalty.redeem": false, "sold_out.toggle": false,
+        "receipt.reprint": true, "kitchen.reprint": false, "reports.view": false, "kitchen.screen": true,
+        "shift.close_other": false, "payout": false, "stock.waste": true, "stock.count": true, "training.use": true, "approvals.give": false
+      }
+    },
+    "supervisor": {
+      "discount_max_percent": 25,
+      "actions": {
+        "order.void_unpaid": true, "order.void_paid": false, "table.cancel_line": true, "table.cancel_bill": false,
+        "discount.manual": true, "comp": false, "gift": false, "loyalty.redeem": true, "sold_out.toggle": true,
+        "receipt.reprint": true, "kitchen.reprint": true, "reports.view": false, "kitchen.screen": false,
+        "shift.close_other": true, "payout": true, "stock.waste": true, "stock.count": true, "training.use": true, "approvals.give": false
+      }
+    },
+    "manager": {
+      "discount_max_percent": 100,
+      "actions": {
+        "order.void_unpaid": true, "order.void_paid": true, "table.cancel_line": true, "table.cancel_bill": true,
+        "discount.manual": true, "comp": true, "gift": true, "loyalty.redeem": true, "sold_out.toggle": true,
+        "receipt.reprint": true, "kitchen.reprint": true, "reports.view": true, "kitchen.screen": true,
+        "shift.close_other": true, "payout": true, "stock.waste": true, "stock.count": true, "training.use": true, "approvals.give": true
+      }
+    }
+  },
+  "migration_from_old_keys": {
+    "manager_approval_positions": "approvals.give: true for exactly the listed positions",
+    "reports_positions": "reports.view: true for exactly the listed positions",
+    "kitchen_positions": "kitchen.screen: true for exactly the listed positions, and always for kitchen",
+    "order_cancel_positions": "NOT mapped (today it only opens the cancel screen, which then still needs a manager); order.void_paid keeps its default"
+  }
+}

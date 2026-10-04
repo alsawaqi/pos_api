@@ -37,6 +37,9 @@ use App\Support\Catalogue\BranchCatalogue;
 use App\Support\OrderNumbering;
 use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Recipes\RecipeCopy;
+use App\Support\Staff\PositionPermissions;
+use App\Support\Staff\ShiftEndReminder;
+use App\Support\Staff\StaffBranches;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
@@ -65,6 +68,7 @@ class BuildDeviceConfigAction
         private readonly TableSessionsMode $tableSessionsMode,
         private readonly QrTableCardEnabled $tableCardEnabled,
         private readonly QrScanGeofenceMode $scanGeofenceMode,
+        private readonly PositionPermissions $permissions,
     ) {}
 
     /**
@@ -324,8 +328,8 @@ class BuildDeviceConfigAction
         // ephemeral; the portal keeps the full history). A read receipt
         // touch()es the message, so the updated read-set resurfaces in
         // deltas; retractions surface in deleted.staff_messages.
-        $branchStaffIds = PosStaff::query()
-            ->where('branch_id', $branchId)
+        // LAUNCH-P5 — staff of this branch = home branch or pos_staff_branches.
+        $branchStaffIds = StaffBranches::worksAt(PosStaff::query()->where('company_id', $companyId), $branchId)
             ->pluck('id')
             ->all();
         $staffMessages = $this->changed(
@@ -411,26 +415,30 @@ class BuildDeviceConfigAction
             ->get()
             ->groupBy('category_id');
 
+        // LAUNCH-P5 — the resolved tick list (every position × action, the
+        // defaults filling anything missing). The three old lists below are
+        // derived from it, so old app builds and the server agree.
+        $positionPermissions = $this->permissions->forCompany($companyId);
+
         $data = [
             // Company POS policy the device enforces (v2 #14). Always emitted
             // (full + delta) so a policy change reaches the device promptly — it
             // is a tiny scalar block, not a delta-tracked collection.
             'settings' => [
+                // Old builds only: opens the Order History cancel screen (not
+                // mapped into the tick list; order.void_paid decides now).
                 'order_cancel_positions' => $this->positionListSetting($companyId, 'order_cancel_positions'),
                 // P-F1 — staff positions whose PIN authorizes sensitive POS
-                // actions (comps, cancellations, gifts) as the fingerprint
-                // fallback. Verified server-side by /device/auth/verify-manager-pin.
-                'manager_approval_positions' => $this->positionListSetting($companyId, 'manager_approval_positions'),
+                // actions. LAUNCH-P5: the positions holding approvals.give —
+                // the same set /device/auth/verify-manager-pin accepts.
+                'manager_approval_positions' => PositionPermissions::holders($positionPermissions, 'approvals.give'),
                 // P-F6 — staff positions allowed to open the device's branch
-                // Reports dashboard (GET /device/reports/branch). The DEVICE
-                // gates its Reports screen on this list.
-                'reports_positions' => $this->positionListSetting($companyId, 'reports_positions'),
-                // P-G1 — staff positions allowed to open the device's Kitchen
-                // production section (start/finish/cancel cooked-product
-                // batches). The DEVICE gates its Kitchen screen on this list.
-                // The 'kitchen' role is ALWAYS in the list (kitchen staff always
-                // have access); the saved positions add OTHER roles.
-                'kitchen_positions' => $this->kitchenPositions($companyId),
+                // Reports dashboard. LAUNCH-P5: the positions holding reports.view.
+                'reports_positions' => PositionPermissions::holders($positionPermissions, 'reports.view'),
+                // P-G1 — staff positions allowed to open the Kitchen screen.
+                // LAUNCH-P5: the positions holding kitchen.screen (the kitchen
+                // position always does).
+                'kitchen_positions' => PositionPermissions::holders($positionPermissions, 'kitchen.screen'),
                 // P-F8 — merchant-defined order numbering policy. Always the
                 // full normalised five-key shape ({enabled:false, prefix:'',
                 // pad:4, scope:'branch', daily_reset:false} when unset). The
@@ -444,6 +452,12 @@ class BuildDeviceConfigAction
                 'table_sessions_mode' => $this->tableSessionsMode->forBranch($companyId, $branchId),
                 'qr_table_card_enabled' => $this->tableCardEnabled->forBranch($companyId, $branchId) ? 'on' : 'off',
                 'qr_scan_geofence_mode' => $this->scanGeofenceMode->forBranch($companyId, $branchId),
+                // LAUNCH-P5 — { position: { actions: { key: bool }, discount_max_percent } }
+                // for all 5 positions and 19 actions (defaults fill any gap).
+                'position_permissions' => $positionPermissions,
+                // LAUNCH-P5 — the branch's shift-end reminder time, "HH:MM"
+                // (Asia/Muscat), or null when off.
+                'shift_end_reminder_at' => ShiftEndReminder::forBranch($companyId, $branchId),
             ],
             // LAUNCH-P1 2a — this device's own settings (full + delta, a tiny
             // scalar block like 'settings'). location_mode 'any' turns the
@@ -576,8 +590,8 @@ class BuildDeviceConfigAction
 
     /**
      * A staff-position-list policy read from the merchant-written
-     * pos_company_settings (v2 #14 order_cancel_positions, P-F1
-     * manager_approval_positions, P-F6 reports_positions). Falls back to
+     * pos_company_settings (v2 #14 order_cancel_positions; since LAUNCH-P5
+     * the other three lists are derived from the tick list). Falls back to
      * managers-only when the merchant hasn't set a policy — the safe
      * default matching the device's legacy "manager approval" gate.
      *
@@ -601,37 +615,6 @@ class BuildDeviceConfigAction
         ));
 
         return $positions === [] ? ['manager'] : $positions;
-    }
-
-    /**
-     * The effective kitchen-access set emitted to the device. Unlike the
-     * sibling position policies, the 'kitchen' role ALWAYS has kitchen access,
-     * so it is always unioned into the list; the saved positions add OTHER
-     * roles. An empty saved list therefore emits ['kitchen'] (kitchen-role-only)
-     * — NOT a managers-only fallback. Kept in lock-step with
-     * {@see VerifyKitchenPinAction} so the device gate and the walk-up PIN gate
-     * agree.
-     *
-     * @return list<string>
-     */
-    private function kitchenPositions(int $companyId): array
-    {
-        $raw = DB::table('pos_company_settings')
-            ->where('company_id', $companyId)
-            ->where('key', 'kitchen_positions')
-            ->value('value');
-
-        $positions = is_string($raw) ? json_decode($raw, true) : $raw;
-        if (! is_array($positions)) {
-            $positions = [];
-        }
-
-        $positions = array_values(array_filter(
-            array_map(static fn ($p): string => is_string($p) ? trim($p) : '', $positions),
-            static fn (string $p): bool => $p !== '',
-        ));
-
-        return array_values(array_unique([...$positions, 'kitchen']));
     }
 
     /**

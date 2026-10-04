@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\SyncRefusal;
 use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\Device;
 use App\Models\SyncEvent;
@@ -29,6 +30,11 @@ final class StaffClockHandler implements SyncEventHandler
 
     public function handle(SyncEvent $event, Device $device): array
     {
+        // LAUNCH-P5 fix order 1 (F8) — attendance is recorded on a till or a
+        // handheld only; anything else is refused for good.
+        if (! $device->isAttended()) {
+            throw new SyncRefusal('device_not_attended', 'Only a till or a handheld can record attendance.', permanent: true);
+        }
         $payload = (array) $event->payload_json;
         $validator = Validator::make($payload, [
             'attendance_uuid' => ['required', 'uuid'],

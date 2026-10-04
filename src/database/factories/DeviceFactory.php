@@ -56,7 +56,9 @@ class DeviceFactory extends Factory
             'uuid' => (string) Str::uuid(),
             'serial_number' => 'SN-'.strtoupper(Str::random(10)),
             'name' => 'Test Terminal',
-            'device_type' => 'pos_terminal',
+            // The production vocabulary (pos_admin rewrote the scaffolding's
+            // 'pos_terminal' to 'fixed_pos'): a till by default.
+            'device_type' => 'fixed_pos',
             'company_id' => 1,
             'branch_id' => 1,
             'status' => 'assigned',

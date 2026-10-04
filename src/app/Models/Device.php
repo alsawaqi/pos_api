@@ -159,4 +159,17 @@ class Device extends Model implements Authenticatable
     {
         return $this->device_type === 'payment_station';
     }
+
+    /**
+     * LAUNCH-P5 fix order 1 (F8) — the device types staff log in on (a till
+     * and a handheld). Only these may log staff in, check a manager PIN,
+     * unlock a PIN lock, read the approvers or the staff status, and record
+     * attendance; a customer tablet or a payment station faces the customer.
+     */
+    public const ATTENDED_TYPES = ['fixed_pos', 'handheld'];
+
+    public function isAttended(): bool
+    {
+        return in_array($this->device_type, self::ATTENDED_TYPES, true);
+    }
 }

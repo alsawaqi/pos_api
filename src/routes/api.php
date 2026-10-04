@@ -72,6 +72,7 @@ use App\Http\Controllers\Api\V1\PublicQr\QrTableBindController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableFinishController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableRoundController;
+use App\Http\Middleware\EnsureAttendedDevice;
 use App\Http\Middleware\RefuseTrainingMode;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
@@ -151,8 +152,11 @@ Route::prefix('v1')->group(function (): void {
         Route::get('device/orders/{uuid}/payments', [PaymentReversalsController::class, 'payments']);
         // POS staff PIN login on a paired device (Â§11.1). Extra-throttled
         // (throttle:pos-login) as the PIN brute-force surface.
+        // LAUNCH-P5 fix order 1 (F8) — the staff PIN routes and the approver
+        // material below are for a till or a handheld only (403
+        // device_not_attended for a customer tablet or a payment station).
         Route::post('auth/pos/login', StaffPosLoginController::class)
-            ->middleware('throttle:pos-login')
+            ->middleware([EnsureAttendedDevice::class, 'throttle:pos-login'])
             ->name('pos.login');
 
         // P-F1 â€” manager PIN check for the device's approval gates.
@@ -163,20 +167,22 @@ Route::prefix('v1')->group(function (): void {
         // `pos-login`, so a device that burned its login budget can still
         // reach the manager PIN that unlocks it (and the reverse).
         Route::post('device/auth/verify-manager-pin', VerifyManagerPinController::class)
-            ->middleware('throttle:manager-pin')
+            ->middleware([EnsureAttendedDevice::class, 'throttle:manager-pin'])
             ->name('device.verify-manager-pin');
 
         // PHASE-1A D-7 — a manager PIN clears this device's LOGIN lock on the
         // server (a screen-only unlock would hit 423 again and double it).
         Route::post('device/auth/unlock-pin-lock', UnlockPinLockController::class)
-            ->middleware('throttle:manager-pin')
+            ->middleware([EnsureAttendedDevice::class, 'throttle:manager-pin'])
             ->name('device.unlock-pin-lock');
 
         // LAUNCH-P5 — the branch's approvers with their offline verifier
         // material (never K), and the ids of the staff still active at the
         // branch (devices log out anyone missing). Polled by devices.
-        Route::get('device/approvers', DeviceApproversController::class)->name('device.approvers');
-        Route::get('device/staff-status', DeviceStaffStatusController::class)->name('device.staff-status');
+        Route::get('device/approvers', DeviceApproversController::class)
+            ->middleware(EnsureAttendedDevice::class)->name('device.approvers');
+        Route::get('device/staff-status', DeviceStaffStatusController::class)
+            ->middleware(EnsureAttendedDevice::class)->name('device.staff-status');
 
         // P-G1.6 â€” the Kitchen walk-up gate: a kitchen staff member's code
         // lets the Kitchen screen open on someone else's till session (the

@@ -94,22 +94,40 @@ final class AuthorizationGate
     }
 
     /**
+     * The gated actions a device block may name (pos_approvals.action is
+     * varchar(32)); anything else is dropped (fix order 1 L3).
+     */
+    public const BLOCK_ACTIONS = ['discount.manual', 'comp', 'gift', 'loyalty.redeem', 'order.void_unpaid', 'order.void_paid',
+        'payout', 'shift.close_other', 'table.cancel_line', 'table.cancel_bill', 'sold_out.toggle'];
+
+    /** pos_approvals.ref is varchar(64). */
+    public const MAX_REF_LENGTH = 64;
+
+    /**
      * The block a device sent, normalised, or null when absent/not an object.
+     * L3 — an unknown action becomes null (the block is ignored where its
+     * action decides anything); a ref longer than 64 characters is cut short
+     * and the block marked `invalid` (recorded failed `invalid_block`), so a
+     * long value can never fail the insert and wedge the event.
      *
      * @return array{action: ?string, ref: ?string, mode: ?string, actor_staff_id: ?int, approver_staff_id: ?int,
-     *     approved_at: ?string, method: ?string, proof: ?string}|null
+     *     approved_at: ?string, method: ?string, proof: ?string, invalid: bool}|null
      */
     public static function block(mixed $raw): ?array
     {
         if (! is_array($raw) || array_is_list($raw) && $raw !== []) {
             return null;
         }
-        $int = static fn (mixed $v): ?int => is_int($v) || (is_string($v) && ctype_digit($v)) ? (int) $v : null;
+        $int = static fn (mixed $v): ?int => is_int($v) || (is_string($v) && ctype_digit($v) && strlen($v) <= 18) ? (int) $v : null;
         $str = static fn (mixed $v): ?string => is_string($v) && $v !== '' ? $v : (is_int($v) ? (string) $v : null);
+        $action = $str($raw['action'] ?? null);
+        $ref = $str($raw['ref'] ?? null);
+        $tooLong = $ref !== null && mb_strlen($ref) > self::MAX_REF_LENGTH;
 
         return [
-            'action' => $str($raw['action'] ?? null),
-            'ref' => $str($raw['ref'] ?? null),
+            'action' => in_array($action, self::BLOCK_ACTIONS, true) ? $action : null,
+            'ref' => $tooLong ? mb_substr($ref, 0, self::MAX_REF_LENGTH) : $ref,
+            'invalid' => $tooLong,
             'mode' => $str($raw['mode'] ?? null),
             'actor_staff_id' => $int($raw['actor_staff_id'] ?? null),
             'approver_staff_id' => $int($raw['approver_staff_id'] ?? null),
@@ -182,6 +200,12 @@ final class AuthorizationGate
                 $this->knownActor($device, $actor), null, 'no_authorization', 'approval'), null);
         }
 
+        if ($block['invalid'] ?? false) {
+            // L3 — a ref longer than the column: recorded (cut short), never checked.
+            return $this->record($device, $ctx, $ref, new AuthorizationOutcome(AuthorizationOutcome::FAILED,
+                $this->knownActor($device, $actor), null, 'invalid_block', $block['mode'] === 'position' ? 'position' : 'approval',
+                $block['method']), $block);
+        }
         if (array_key_exists('expected_ref', $ctx) && $block['ref'] !== $ctx['expected_ref']) {
             // F3 — one block per request: a block made for another request
             // (or none) never authorizes this one.
@@ -215,7 +239,7 @@ final class AuthorizationGate
     public function refuse(Device $device, array $ctx, array $block, string $reason): AuthorizationOutcome
     {
         return $this->record($device, $ctx, $ctx['ref'] ?? $block['ref'], new AuthorizationOutcome(AuthorizationOutcome::FAILED,
-            $this->knownActor($device, $ctx['actor_staff_id'] ?? null), null, $reason,
+            $this->knownActor($device, $ctx['actor_staff_id'] ?? null), null, ($block['invalid'] ?? false) ? 'invalid_block' : $reason,
             $block['mode'] === 'position' ? 'position' : 'approval', $block['method']), $block);
     }
 

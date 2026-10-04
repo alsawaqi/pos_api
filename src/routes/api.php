@@ -72,6 +72,7 @@ use App\Http\Controllers\Api\V1\PublicQr\QrTableBindController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableFinishController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableRoundController;
+use App\Http\Middleware\RefuseTrainingMode;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -142,7 +143,8 @@ Route::prefix('v1')->group(function (): void {
         ->name('public.qr.table-finish');
 
     // Everything below requires a valid device token, throttled per-device.
-    Route::middleware(['auth:pos_device', 'throttle:device-api'])->group(function (): void {
+    // LAUNCH-P5 (A8) — any device call carrying training: true is refused.
+    Route::middleware(['auth:pos_device', 'throttle:device-api', RefuseTrainingMode::class])->group(function (): void {
         Route::post('device/payments/{paymentUuid}/reversals', [PaymentReversalsController::class, 'reserve'])->middleware('throttle:manager-pin');
         Route::post('device/payments/reversals/{uuid}/result', [PaymentReversalsController::class, 'result']);
         Route::get('device/payments/reversals', [PaymentReversalsController::class, 'index']);

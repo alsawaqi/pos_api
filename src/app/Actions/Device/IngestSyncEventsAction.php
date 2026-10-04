@@ -53,6 +53,16 @@ class IngestSyncEventsAction
         $duplicates = 0;
 
         foreach ($events as $event) {
+            // LAUNCH-P5 (A8) — training mode never reaches the books: an event
+            // carrying training: true is refused (permanently) and not stored.
+            if (self::isTraining($event['payload'] ?? [])) {
+                $results[] = ['client_event_id' => $event['client_event_id'], 'duplicate' => false,
+                    'status' => SyncEvent::STATUS_FAILED, 'event_id' => null, 'server_received_at' => now()->toIso8601String(),
+                    'processed_at' => null, 'result' => ['error' => 'Training-mode work is never sent to the server.',
+                        'code' => 'training_refused', 'permanent' => true]];
+
+                continue;
+            }
             $existing = SyncEvent::query()->where('device_id', $device->getKey())
                 ->where('client_event_id', $event['client_event_id'])->first();
             // An acknowledged settlement is terminal. Never replay it or turn
@@ -219,6 +229,17 @@ class IngestSyncEventsAction
                 'device_id' => (int) $device->getKey(),
             ],
         ];
+    }
+
+    /** LAUNCH-P5 (A8) — `training: true` on an event payload (or its order). */
+    public static function isTraining(mixed $payload): bool
+    {
+        if (! is_array($payload)) {
+            return false;
+        }
+        $flag = $payload['training'] ?? ($payload['order']['training'] ?? null);
+
+        return $flag === true || $flag === 1 || $flag === '1' || $flag === 'true';
     }
 
     /**

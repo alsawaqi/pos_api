@@ -23,6 +23,7 @@ final class CancelTableBillAction
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly AppendTableSessionEventAction $journal,
         private readonly CloseTableSessionForOrderAction $close,
+        private readonly TableAuthorization $authorization,
     ) {}
 
     public function handle(Device $device, array $payload, CarbonInterface $clientAt, CarbonInterface $receivedAt, ?string $uuid = null): array
@@ -53,6 +54,10 @@ final class CancelTableBillAction
                 throw AdjustTableBillAction::refusal('bill_terminal', 'This bill is already paid or cancelled.');
             }
             $this->lines->assertCancellable($order, $seat);
+            // LAUNCH-P5 — table.cancel_bill: a P5 build's block is checked
+            // (refused 403 when not authorized); an old build keeps the
+            // required authorized_by text.
+            $auth = $this->authorization->check($device, $payload, 'table.cancel_bill');
             $groups = $this->groups($order);
             if ($groups === []) {
                 throw AdjustTableBillAction::refusal('nothing_to_cancel', 'This bill has no accepted items. Use Clear Table for an empty table.');
@@ -99,9 +104,9 @@ final class CancelTableBillAction
                 'status' => 'void', 'grand_total_baisas' => 0];
             $this->journal->handle($seat, 'bill_cancelled', [
                 'action' => 'bill_cancelled', 'client_request_id' => $payload['client_request_id'],
-                'line_request_ids' => $ids, 'reason' => $payload['reason'], 'authorized_by' => $payload['authorized_by'],
+                'line_request_ids' => $ids, 'reason' => $payload['reason'], 'authorized_by' => $payload['authorized_by'] ?? null,
                 'staff_id' => $payload['staff_id'] ?? null, 'request_hash' => $hash, 'result' => $ack,
-            ], (int) $device->id);
+            ] + ($auth?->approvedBy() !== null ? ['approved_by_staff_id' => $auth->approvedBy()] : []), (int) $device->id);
 
             return $result('cancelled') + $ack;
         });

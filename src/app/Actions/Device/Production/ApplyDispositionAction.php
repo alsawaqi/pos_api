@@ -10,6 +10,8 @@ use App\Models\Device;
 use App\Models\PosStaff;
 use App\Models\Product;
 use App\Models\ProductStockMovement;
+use App\Support\Staff\AuthorizationGate;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -36,6 +38,7 @@ final readonly class ApplyDispositionAction
 {
     public function __construct(
         private VerifyManagerPinAction $verifyManagerPin,
+        private AuthorizationGate $approvals,
     ) {}
 
     /**
@@ -77,7 +80,7 @@ final readonly class ApplyDispositionAction
             $approver = $this->verifyManagerPin->verify($device, $pin);
         }
 
-        return DB::transaction(function () use ($items, $approver, $staffId, $companyId, $branchId): array {
+        return DB::transaction(function () use ($device, $items, $approver, $staffId, $companyId, $branchId): array {
             $now = now();
             $moved = 0;
             $audited = 0;
@@ -136,11 +139,17 @@ final readonly class ApplyDispositionAction
                 }
             }
 
+            // LAUNCH-P5 — the approvals record of this PIN-verified action
+            // (only a give-away / carry-over carries a manager PIN).
+            if ($approver !== null) {
+                $this->approvals->recordOnline($device, 'disposition', 'disposition', null, null, (int) $approver->id, $staffId);
+            }
+
             return ['moved' => $moved, 'audited' => $audited];
         });
     }
 
-    private function ledger(int $companyId, int $productId, int $branchId, string $type, float $qty, ?int $staffId, string $note, \Illuminate\Support\Carbon $at): void
+    private function ledger(int $companyId, int $productId, int $branchId, string $type, float $qty, ?int $staffId, string $note, Carbon $at): void
     {
         ProductStockMovement::create([
             'company_id' => $companyId,

@@ -26,6 +26,9 @@ final class ApplyReversalOrderEffectsAction
             now(),
             'VOID (card reversal '.$reversal->uuid.')',
             VoidReason::withTrashed()->findOrFail($reversal->void_reason_id),
+            // LAUNCH-P5 — the requester voided it; the PIN-verified manager approved it.
+            $reversal->requested_by_staff_id !== null ? (int) $reversal->requested_by_staff_id : null,
+            $reversal->approved_by_staff_id !== null ? (int) $reversal->approved_by_staff_id : null,
         );
     }
 

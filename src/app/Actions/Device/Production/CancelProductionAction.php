@@ -11,6 +11,7 @@ use App\Models\Ingredient;
 use App\Models\PosStaff;
 use App\Models\Production;
 use App\Models\StockMovement;
+use App\Support\Staff\AuthorizationGate;
 use App\Support\StockDecimal;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -35,6 +36,7 @@ final readonly class CancelProductionAction
 {
     public function __construct(
         private VerifyManagerPinAction $verifyManagerPin,
+        private AuthorizationGate $approvals,
     ) {}
 
     public function handle(Device $device, string $uuid, string $pin, ?int $staffId): Production
@@ -57,7 +59,7 @@ final readonly class CancelProductionAction
             }
         }
 
-        return DB::transaction(function () use ($uuid, $staffId, $approver, $companyId, $branchId): Production {
+        return DB::transaction(function () use ($device, $uuid, $staffId, $approver, $companyId, $branchId): Production {
             $production = Production::query()
                 ->where('company_id', $companyId)
                 ->where('uuid', $uuid)
@@ -129,6 +131,9 @@ final readonly class CancelProductionAction
                 'cancel_approved_by_staff_id' => (int) $approver->id,
                 'cancelled_at' => $now,
             ]);
+            // LAUNCH-P5 — the approvals record of this PIN-verified action.
+            $this->approvals->recordOnline($device, 'production.cancel', 'production', (string) $production->uuid,
+                null, (int) $approver->id, $staffId);
 
             return $production->refresh();
         });

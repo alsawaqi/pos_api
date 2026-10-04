@@ -11,6 +11,7 @@ use App\Models\Expense;
 use App\Models\ExpenseCategory;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -24,6 +25,8 @@ use RuntimeException;
  */
 class ExpenseLogHandler implements SyncEventHandler
 {
+    public function __construct(private readonly AuthorizationGate $gate) {}
+
     public function handle(SyncEvent $event, Device $device): array
     {
         $payload = (array) $event->payload_json;
@@ -57,8 +60,14 @@ class ExpenseLogHandler implements SyncEventHandler
         $staffId = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
         TenantReferenceGuard::assertStaffInTenant($device, $staffId, 'expense.log references a staff member outside the device tenant');
 
+        // LAUNCH-P5 — a device pay-out (cash taken out of the drawer) carries
+        // paid_from_drawer: true and an authorization for `payout`; it lowers
+        // the expected cash of the logger's shift. The money already left
+        // the drawer, so the expense is never refused over the check.
+        $fromDrawer = ($payload['paid_from_drawer'] ?? false) === true;
+        $expenseUuid = (string) Str::uuid();
         $expense = Expense::create([
-            'uuid' => (string) Str::uuid(),
+            'uuid' => $expenseUuid,
             'company_id' => $device->company_id,
             'branch_id' => $device->branch_id,
             'category' => $payload['category'],
@@ -68,8 +77,21 @@ class ExpenseLogHandler implements SyncEventHandler
             'logged_by_pos_staff_id' => $staffId,
             'logged_at' => isset($payload['logged_at']) ? Carbon::parse((string) $payload['logged_at']) : now(),
             'status' => Expense::STATUS_RECORDED,
+            'paid_from_drawer' => $fromDrawer,
         ]);
 
-        return ['expense_id' => (int) $expense->id, 'status' => 'recorded'];
+        $result = ['expense_id' => (int) $expense->id, 'status' => 'recorded'];
+        if ($fromDrawer) {
+            // subject_uuid stays empty in the proof: the expense's uuid is
+            // made here, after the device approved. amount = amount_baisas.
+            $outcome = $this->gate->evaluate($device, [
+                'action' => 'payout', 'subject_type' => 'expense', 'subject_uuid' => null,
+                'amount_baisas' => (int) $payload['amount_baisas'], 'actor_staff_id' => $staffId,
+                'client_event_id' => (string) $event->client_event_id, 'at' => $event->client_timestamp ?? now(),
+            ], AuthorizationGate::block($payload['authorization'] ?? null), AuthorizationGate::isP5($payload));
+            $result['authorization'] = ['action' => 'payout', 'result' => $outcome->result];
+        }
+
+        return $result;
     }
 }

@@ -9,6 +9,8 @@ use App\Models\Device;
 use App\Models\PosStaff;
 use App\Models\Product;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Staff\AuthorizationGate;
+use App\Support\Staff\AuthorizationOutcome;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,13 +22,15 @@ use Illuminate\Support\Facades\DB;
  *        → {product_ids: [...], as_of} for the device's branch. Devices poll
  *          it every 60 s while online and on resume.
  *   POST /api/v1/device/products/{id}/sold-out
- *        {sold_out: bool, staff_id, approver_staff_id?}
+ *        {sold_out: bool, staff_id, auth_v: 1, authorization}   (P5 build)
+ *        {sold_out: bool, staff_id, approver_staff_id?}         (old build)
  *
- * Who may switch it: an active staff member of this company whose position
- * is manager or supervisor; anyone else needs the manager-approval PIN — the
- * device verifies it (verify-manager-pin) and sends that manager as
- * approver_staff_id, whose position must be in the company's
- * manager_approval_positions. The switch applies to this device's branch
+ * LAUNCH-P5: a P5 build's authorization block decides (sold_out.toggle: the
+ * actor's own tick, or a verified approver), else 403 approval_required /
+ * approval_invalid; every call writes a pos_approvals row. An old build keeps
+ * today's rule: an active staff member whose position is manager or
+ * supervisor; anyone else sends an approver_staff_id whose position holds
+ * approvals.give (recorded as `legacy`). The switch applies to this device's branch
  * only, on every channel, until switched back; it is never driven by stock.
  * Each change writes or deletes the pos_product_sold_out row, bumps the
  * product so config deltas re-emit it, and is audited.
@@ -50,7 +54,7 @@ final class DeviceSoldOutController
         return response()->json(['data' => ['product_ids' => $ids, 'as_of' => now()->toIso8601String()], 'errors' => []]);
     }
 
-    public function update(Request $request, int $productId, VerifyManagerPinAction $pins): JsonResponse
+    public function update(Request $request, int $productId, VerifyManagerPinAction $pins, AuthorizationGate $gate): JsonResponse
     {
         /** @var Device $device */
         $device = $request->user();
@@ -61,6 +65,8 @@ final class DeviceSoldOutController
             'sold_out' => ['required', 'boolean'],
             'staff_id' => ['required', 'integer', 'min:1'],
             'approver_staff_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'auth_v' => ['sometimes', 'integer'],
+            'authorization' => ['sometimes', 'nullable', 'array'],
         ]);
 
         $product = Product::query()->where('company_id', $device->company_id)->find($productId);
@@ -72,13 +78,37 @@ final class DeviceSoldOutController
             return $this->failure('unknown_staff', 'Unknown staff member.', 422);
         }
         $approverId = isset($data['approver_staff_id']) ? (int) $data['approver_staff_id'] : null;
-        if (! in_array((string) $staff->position, self::SELF_POSITIONS, true)) {
+        $authorization = null;
+        if (AuthorizationGate::isP5($request->all())) {
+            // LAUNCH-P5 — sold_out.toggle: the actor's own tick (position block)
+            // or a verified approver; anything else is refused (403). Proof
+            // subject: the product uuid; no amount; the block's ref.
+            $outcome = DB::transaction(fn () => $gate->evaluate($device, [
+                'action' => 'sold_out.toggle', 'subject_type' => 'product', 'subject_uuid' => (string) $product->uuid,
+                'actor_staff_id' => (int) $staff->id, 'client_event_id' => null, 'at' => now(),
+            ], AuthorizationGate::block($request->input('authorization')), true));
+            if (! $outcome->authorized()) {
+                return $this->failure($outcome->refusalCode(), $outcome->refusalCode() === 'approval_required'
+                    ? 'A manager must approve this change.' : 'The manager approval could not be verified. Approve again.', 403);
+            }
+            $approverId = $outcome->result === AuthorizationOutcome::VERIFIED ? $outcome->approverStaffId : null;
+            $authorization = ['action' => 'sold_out.toggle', 'result' => $outcome->result];
+        } elseif (! in_array((string) $staff->position, self::SELF_POSITIONS, true)) {
+            // An old build: today's rule (manager / supervisor alone, others
+            // with an approver of an approval position), recorded as legacy.
             $approver = $approverId === null ? null : $this->activeStaff($device, $approverId);
             if ($approver === null || ! in_array((string) $approver->position, $pins->approvalPositions((int) $device->company_id), true)) {
                 return $this->failure('approval_required', 'A manager must approve this change.', 403);
             }
         } else {
             $approverId = null;
+        }
+        if ($authorization === null) {
+            $gate->evaluate($device, [
+                'action' => 'sold_out.toggle', 'subject_type' => 'product', 'subject_uuid' => (string) $product->uuid,
+                'actor_staff_id' => (int) $staff->id, 'client_event_id' => null, 'at' => now(),
+                'legacy_approver_staff_id' => $approverId,
+            ], null, false);
         }
 
         $soldOut = (bool) $data['sold_out'];
@@ -118,7 +148,7 @@ final class DeviceSoldOutController
             'sold_out' => $soldOut,
             'changed' => $changed,
             'as_of' => now()->toIso8601String(),
-        ], 'errors' => []]);
+        ] + ($authorization === null ? [] : ['authorization' => $authorization]), 'errors' => []]);
     }
 
     private function activeStaff(Device $device, int $staffId): ?PosStaff

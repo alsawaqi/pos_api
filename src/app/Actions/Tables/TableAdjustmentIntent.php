@@ -15,7 +15,7 @@ final class TableAdjustmentIntent
         return [
             '*' => [static function (string $attribute, mixed $value, Closure $fail): void {
                 if (! in_array($attribute, ['table_id', 'seating_key', 'queued_offline', 'staff_id',
-                    'client_request_id', 'client_timestamp', 'adjustment'], true)) {
+                    'client_request_id', 'client_timestamp', 'adjustment', 'auth_v', 'authorization'], true)) {
                     $fail('Unexpected adjustment field.');
                 }
             }],

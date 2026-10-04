@@ -214,8 +214,12 @@ final class CombineLegacyTableBillTest extends TestCase
         $detail = app(ReadTableDetailAction::class)->handle($this->device, $this->source->table_id);
         $this->assertSame($this->target->uuid, $detail['bill']['uuid']);
         $this->assertCount(2, $detail['rounds']);
-        $allowed = ['pos_orders', 'pos_order_items', 'pos_order_item_addons', 'pos_order_discounts', 'pos_qr_order_rounds', 'pos_table_session_events'];
+        // LAUNCH-P5 — the PIN-verified combine also writes its approvals row.
+        $allowed = ['pos_orders', 'pos_order_items', 'pos_order_item_addons', 'pos_order_discounts', 'pos_qr_order_rounds', 'pos_table_session_events', 'pos_approvals'];
         $this->assertSame(Arr::except($before, $allowed), Arr::except($this->rows(), $allowed));
+        $approval = DB::table('pos_approvals')->sole();
+        $this->assertSame(['bill.combine', 'verified', 'online', 'approval', $this->target->uuid],
+            [$approval->action, $approval->result, $approval->method, $approval->mode, $approval->subject_uuid]);
         $this->assertStringNotContainsString('"pin":', json_encode($event->payload));
         $this->assertStringNotContainsString('pin_hash', json_encode($event->payload));
     }

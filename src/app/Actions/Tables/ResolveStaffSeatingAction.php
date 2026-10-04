@@ -34,6 +34,10 @@ final class ResolveStaffSeatingAction
             'table_id' => ['required', 'integer', 'min:1'],
             'queued_offline' => ['required', 'boolean'],
             'staff_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            // LAUNCH-P5 — a P5 build's marker and authorization block
+            // (cancel_line, cancel_bill, adjust; checked by TableAuthorization).
+            'auth_v' => ['sometimes', 'integer'],
+            'authorization' => ['sometimes', 'nullable', 'array'],
         ];
 
         return $common + match ($operation) {
@@ -87,7 +91,8 @@ final class ResolveStaffSeatingAction
             'cancel_bill' => [
                 'client_request_id' => ['required', 'string', 'max:64'],
                 'reason' => ['required', 'string', 'max:200'],
-                'authorized_by' => ['required', 'string', 'max:100'],
+                // An old build's free text; a P5 build sends `authorization`.
+                'authorized_by' => ['required_unless:auth_v,1', 'nullable', 'string', 'max:100'],
                 'cancelled_at' => ['required', 'date'],
                 'lines' => ['present', 'array', 'max:100'],
                 'lines.*' => ['array:client_request_id,product_id,addon_ids,notes,qty,prepared'],

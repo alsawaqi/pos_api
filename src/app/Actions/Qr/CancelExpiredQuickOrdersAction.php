@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\QrSession;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -23,6 +24,7 @@ final class CancelExpiredQuickOrdersAction
         private readonly VerifyManagerPinAction $manager,
         private readonly VoidOrderCoreAction $void,
         private readonly QuickOrderCancellationWasteAction $waste,
+        private readonly AuthorizationGate $approvals,
     ) {}
 
     private function orders(Device $device)
@@ -151,7 +153,9 @@ final class CancelExpiredQuickOrdersAction
                     ? $order->items->where('status', '!=', 'void')->pluck('id')->map(fn ($id): int => (int) $id)->all()
                     : $expected[$order->uuid]['prepared_ids'];
                 $waste = $this->waste->handle($device, $order, $preparedIds, (int) $approver->id, $input['client_request_id']);
-                $this->void->handle($order, $device, now(), $input['reason']);
+                // LAUNCH-P5 — the PIN-verified manager approved this void.
+                $this->void->handle($order, $device, now(), $input['reason'], null,
+                    isset($input['staff_id']) ? (int) $input['staff_id'] : null, (int) $approver->id);
                 $results[] = ['order_uuid' => $order->uuid, 'status' => 'void', 'waste' => $waste];
             }
             $result = ['company_id' => (int) $device->company_id, 'branch_id' => (int) $device->branch_id, 'orders' => $results, 'count' => count($results), 'replayed' => false,
@@ -160,6 +164,9 @@ final class CancelExpiredQuickOrdersAction
                 'event_type' => 'qr.quick.cancel_expired', 'payload_json' => $payload, 'client_timestamp' => now(),
                 'server_received_at' => now(), 'processed_at' => now(), 'ack_status' => SyncEvent::STATUS_PROCESSED,
                 'result_json' => $result]);
+            // LAUNCH-P5 — the approvals record of this PIN-verified action.
+            $this->approvals->recordOnline($device, 'qr.expired_cancel', 'orders', null, null, (int) $approver->id,
+                isset($input['staff_id']) ? (int) $input['staff_id'] : null, (string) $input['client_request_id']);
 
             return $result;
         }, 5);

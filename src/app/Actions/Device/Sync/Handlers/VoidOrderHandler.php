@@ -6,11 +6,13 @@ namespace App\Actions\Device\Sync\Handlers;
 
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Actions\Orders\VoidOrderCoreAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\SyncEvent;
 use App\Models\VoidReason;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Carbon;
 use RuntimeException;
 
@@ -45,7 +47,10 @@ use RuntimeException;
  */
 class VoidOrderHandler implements SyncEventHandler
 {
-    public function __construct(private readonly VoidOrderCoreAction $core) {}
+    public function __construct(
+        private readonly VoidOrderCoreAction $core,
+        private readonly AuthorizationGate $gate,
+    ) {}
 
     public function handle(SyncEvent $event, Device $device): array
     {
@@ -92,6 +97,33 @@ class VoidOrderHandler implements SyncEventHandler
             }
         }
 
-        return $this->core->handle($order, $device, $voidedAt, $reason, $voidReason);
+        // LAUNCH-P5 (B1, M7) — who voided it (staff_id) and who approved it.
+        // A P5 build sends the voider and an authorization block for
+        // order.void_unpaid or order.void_paid; a reason marked "needs manager"
+        // always needs an approver. The void is never refused over the check
+        // (it is an offline sync event; the device already voided): the
+        // verdict goes to pos_approvals and void_approved_by_staff_id holds
+        // the checked approver only.
+        $voidedBy = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
+        try {
+            TenantReferenceGuard::assertStaffInTenant($device, $voidedBy, 'unknown voider');
+        } catch (RuntimeException) {
+            // Today a void ignores staff_id; an unknown one never fails it.
+            $device->syncIntegrityFlags[] = 'void_staff_unknown:'.$voidedBy;
+            $voidedBy = null;
+        }
+        $wasPaid = in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true);
+        $block = AuthorizationGate::block($payload['authorization'] ?? null);
+        $action = in_array($block['action'] ?? null, ['order.void_unpaid', 'order.void_paid'], true)
+            ? (string) $block['action']
+            : ($wasPaid ? 'order.void_paid' : 'order.void_unpaid');
+        $outcome = $this->gate->evaluate($device, [
+            'action' => $action, 'subject_type' => 'order', 'subject_uuid' => $orderUuid,
+            'actor_staff_id' => $voidedBy, 'client_event_id' => (string) $event->client_event_id,
+            'at' => $event->client_timestamp ?? now(), 'needs_approval' => $voidReason !== null && (bool) $voidReason->requires_manager,
+        ], $block, AuthorizationGate::isP5($payload));
+
+        // The ACK stays the void core's result (the verdict is in pos_approvals).
+        return $this->core->handle($order, $device, $voidedAt, $reason, $voidReason, $voidedBy, $outcome->approvedBy());
     }
 }

@@ -29,6 +29,7 @@ final class CancelStaffLineAction
         private readonly EnsureLegacyTableBillBaselineAction $baseline,
         private readonly PresentQrPendingOrderAction $present,
         private readonly BookTableCancellationWasteAction $waste,
+        private readonly TableAuthorization $authorization,
     ) {}
 
     /** @param array<string, mixed> $payload
@@ -65,7 +66,12 @@ final class CancelStaffLineAction
                     'grand_total_baisas' => $order === null ? 0 : Money::toBaisas($order->grand_total), 'rounds' => []];
             }
             $this->assertCancellable($order, $primary);
-            $values = $this->cancelLocked($device, $primary, $order, $payload);
+            // LAUNCH-P5 — table.cancel_line: a P5 build's block is checked
+            // (refused 403 when not authorized); an old build keeps the
+            // optional authorized_by text.
+            $auth = $this->authorization->check($device, $payload, 'table.cancel_line');
+            $values = $this->cancelLocked($device, $primary, $order,
+                $auth?->approvedBy() !== null ? $payload + ['approved_by_staff_id' => $auth->approvedBy()] : $payload);
 
             return $result($values['outcome']) + $values;
         });
@@ -213,7 +219,8 @@ final class CancelStaffLineAction
             'prepared' => (bool) $payload['prepared'], 'reason' => $payload['reason'] ?? null,
             'authorized_by' => $payload['authorized_by'] ?? null, 'order_uuid' => $order->uuid,
             'staff_id' => $payload['staff_id'] ?? null, 'whole_bill' => $payload['whole_bill'] ?? false,
-        ], (int) $device->id, afterPersist: $afterPersist);
+        ] + (isset($payload['approved_by_staff_id']) ? ['approved_by_staff_id' => (int) $payload['approved_by_staff_id']] : []),
+            (int) $device->id, afterPersist: $afterPersist);
 
         return ['outcome' => 'cancelled'] + $values;
     }

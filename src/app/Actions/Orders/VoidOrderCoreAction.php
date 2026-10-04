@@ -36,12 +36,20 @@ final class VoidOrderCoreAction
         private readonly CloseTableSessionForOrderAction $closeTableSession,
     ) {}
 
-    public function handle(Order $order, Device $device, Carbon $voidedAt, ?string $reason = null, ?VoidReason $voidReason = null): array
+    /**
+     * LAUNCH-P5 (B1) — $voidedByStaffId / $voidApprovedByStaffId stamp who
+     * voided the order and who approved it (pos_orders.voided_by_staff_id /
+     * void_approved_by_staff_id): order.void passes the voider and the
+     * checked approver, a card reversal its requester and PIN-verified
+     * approver.
+     */
+    public function handle(Order $order, Device $device, Carbon $voidedAt, ?string $reason = null, ?VoidReason $voidReason = null,
+        ?int $voidedByStaffId = null, ?int $voidApprovedByStaffId = null): array
     {
         $orderUuid = (string) $order->uuid;
         $keepInventoryConsumed = $voidReason !== null && $voidReason->affects_inventory;
 
-        return DB::transaction(function () use ($order, $orderUuid, $device, $voidedAt, $reason, $voidReason, $keepInventoryConsumed): array {
+        return DB::transaction(function () use ($order, $orderUuid, $device, $voidedAt, $reason, $voidReason, $keepInventoryConsumed, $voidedByStaffId, $voidApprovedByStaffId): array {
             // Re-read + lock the order INSIDE the txn before reversing stock. The
             // "already void" guard above is unlocked and is the SOLE idempotency
             // mechanism, so two concurrent order.void events with DIFFERENT
@@ -106,6 +114,8 @@ final class VoidOrderCoreAction
                 'void_reason_id' => $voidReason?->id,
                 'void_reason_label' => $voidReason?->name,
                 'note' => $this->appendReason($order->note, $reason ?? $voidReason?->name),
+                'voided_by_staff_id' => $voidedByStaffId,
+                'void_approved_by_staff_id' => $voidApprovedByStaffId,
             ]);
             TableLoyaltyDiscount::clear($order);
             $this->closeDineInSession->handle($order, $voidedAt);

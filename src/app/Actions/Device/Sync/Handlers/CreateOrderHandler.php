@@ -28,6 +28,7 @@ use App\Support\CustomerIdentity;
 use App\Support\Money;
 use App\Support\Recipes\RecipeCopy;
 use App\Support\Recipes\RecipeInForce;
+use App\Support\Staff\SaleAuthorizations;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
@@ -300,8 +301,16 @@ class CreateOrderHandler implements SyncEventHandler
                 }
             }
 
+            // LAUNCH-P5 — check the sale's gated actions (manual discounts
+            // above the position's maximum, "needs manager" rules, comps,
+            // gifts and any other block) and record them in pos_approvals.
+            // Never refuses: a paid sale is never rejected over approvals.
+            $authorizations = $event->event_type === 'order.create'
+                ? app(SaleAuthorizations::class)->forCreate($event, $device, $order)
+                : ['comp_approvers' => [], 'summary' => []];
+
             $discountCount = $this->writeDiscounts($order, $model, $device, $itemIds);
-            $compCount = $this->writeComps($order, $model, $device, $itemIds);
+            $compCount = $this->writeComps($order, $model, $device, $itemIds, $authorizations['comp_approvers']);
             $joinedCount = $this->writeJoinedTables($order, $model);
 
             return [
@@ -312,7 +321,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'discounts' => $discountCount,
                 'comps' => $compCount,
                 'joined_tables' => $joinedCount,
-            ];
+            ] + ($authorizations['summary'] === [] ? [] : ['authorizations' => $authorizations['summary']]);
         });
     }
 
@@ -627,10 +636,16 @@ class CreateOrderHandler implements SyncEventHandler
      * other entry still requires a tenant-valid reason. Gift rows snapshot
      * the fixed 'gift'/'Gift' labels so history reads without a master row.
      *
+     * LAUNCH-P5 (B1) — approved_by_pos_staff_id is the comp's checked approver
+     * ($approvers: comp index → the verified approver, or the actor whose own
+     * position allowed it, or null), else the approver the device sent; the
+     * old fallback to the cashier is gone (it recorded the wrong person).
+     *
      * @param  array<string, mixed>  $order
      * @param  array<int, int>  $itemIds  line index → created order_item id
+     * @param  array<int, ?int>  $approvers  comp index → approver staff id
      */
-    private function writeComps(array $order, Order $model, Device $device, array $itemIds): int
+    private function writeComps(array $order, Order $model, Device $device, array $itemIds, array $approvers = []): int
     {
         $comps = $order['comps'] ?? [];
         if (! is_array($comps) || $comps === []) {
@@ -643,7 +658,7 @@ class CreateOrderHandler implements SyncEventHandler
 
         $sum = 0;
         $count = 0;
-        foreach ($comps as $c) {
+        foreach ($comps as $compIndex => $c) {
             $isGift = ($c['is_gift'] ?? false) === true;
             $reasonId = isset($c['comp_reason_id']) ? (int) $c['comp_reason_id'] : null;
             $amountBaisas = (int) $c['amount_baisas'];
@@ -705,7 +720,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'is_gift' => $isGift,
                 'amount' => Money::toOmr($amountBaisas),
                 'qty' => $qty,
-                'approved_by_pos_staff_id' => $approverId ?? $cashierId,
+                'approved_by_pos_staff_id' => array_key_exists($compIndex, $approvers) ? $approvers[$compIndex] : $approverId,
                 'note' => $c['note'] ?? null,
                 'applied_at' => $model->opened_at,
             ]);

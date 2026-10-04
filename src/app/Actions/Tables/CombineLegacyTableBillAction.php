@@ -16,6 +16,7 @@ use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use App\Support\Pricing\BillMoney;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -31,6 +32,7 @@ final class CombineLegacyTableBillAction
         private readonly VerifyManagerPinAction $managers,
         private readonly RefreshQrOrderTotalsAction $totals,
         private readonly AppendTableSessionEventAction $journal,
+        private readonly AuthorizationGate $approvals,
     ) {}
 
     public function preview(Device $device, int $tableId, string $sourceUuid): array
@@ -143,6 +145,10 @@ final class CombineLegacyTableBillAction
                 'approved_by_staff_id' => (int) $manager->id, 'reason' => $input['reason'],
                 'item_id_map' => $copy['item_id_map'], 'result' => $result,
             ], (int) $device->id);
+            // LAUNCH-P5 — the approvals record of this PIN-verified action.
+            $this->approvals->recordOnline($device, 'bill.combine', 'order', (string) $target->uuid, null, (int) $manager->id,
+                isset($input['staff_id']) ? (int) $input['staff_id'] : null, (string) $input['client_request_id']);
+
             return $result;
         });
     }

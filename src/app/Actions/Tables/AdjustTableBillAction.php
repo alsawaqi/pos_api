@@ -21,6 +21,8 @@ use App\Support\CustomerIdentity;
 use App\Support\Money;
 use App\Support\Pricing\Applicability;
 use App\Support\Pricing\DiscountRule;
+use App\Support\Staff\AuthorizationGate;
+use App\Support\Staff\PositionPermissions;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -34,6 +36,8 @@ final class AdjustTableBillAction
         private readonly AppendTableSessionEventAction $journal,
         private readonly PresentQrPendingOrderAction $present,
         private readonly EnsureLegacyTableBillBaselineAction $baseline,
+        private readonly TableAuthorization $authorization,
+        private readonly PositionPermissions $permissions,
     ) {}
 
     public function handle(Device $device, array $payload, CarbonInterface $clientAt, CarbonInterface $receivedAt, ?string $uuid = null): array
@@ -108,6 +112,15 @@ final class AdjustTableBillAction
                     TableLoyaltyDiscount::clear($order);
                     $proof['amount_baisas'] = 0;
                 } else {
+                    // LAUNCH-P5 — loyalty.redeem: a P5 build's block names the
+                    // approver; an old build keeps the authorized_by text and
+                    // approver id the redemption itself requires.
+                    $approver = $this->authorize($device, $payload, 'loyalty.redeem', [], legacyText: false);
+                    if ($approver !== null) {
+                        $staff = $approver;
+                        $adjustment['approved_by_staff_id'] = $approver;
+                        $adjustment['authorized_by'] = (string) DB::table('pos_staff')->where('id', $approver)->value('name');
+                    }
                     $proof += TableLoyaltyDiscount::redeem($order, $adjustment, $net - $a['manual'] - $a['comp']);
                 }
             } elseif ($kind === 'discount') {
@@ -116,13 +129,15 @@ final class AdjustTableBillAction
                 $label = $adjustment['label'] ?? null;
                 if ($mode === 'rule') {
                     $rule = $this->rule($device, (int) $adjustment['discount_id']);
-                    if ($rule->requires_manager_approval) {
-                        $this->approve($adjustment);
-                    }
                     $label = $rule->name;
                     $amount = $rule->amount_type === 'percent' ? (int) round($net * (float) $rule->amount / 100) : Money::toBaisas($rule->amount);
                     if ($rule->amount_type === 'percent') {
                         $proof['percent_bp'] = (int) round((float) $rule->amount * 100);
+                    }
+                    if ($rule->requires_manager_approval) {
+                        // M7 — a rule marked "needs manager" always needs an approver.
+                        $staff = $this->authorize($device, $payload, 'discount.manual',
+                            ['amount_baisas' => $amount, 'needs_approval' => true], legacyText: true) ?? $staff;
                     }
                 } elseif ($mode === 'percent') {
                     $proof['percent_bp'] = (int) $adjustment['percent_bp'];
@@ -132,6 +147,13 @@ final class AdjustTableBillAction
                 }
                 if ($mode !== 'clear' && ($amount < 1 || $amount + $a['comp'] + $a['loyalty'] >= $net)) {
                     throw self::refusal('adjustment_exceeds_bill', 'The discount must leave a positive amount to pay.');
+                }
+                if (in_array($mode, ['percent', 'fixed'], true)) {
+                    // LAUNCH-P5 — a manual discount above the position's maximum
+                    // (as a % of the bill, 1 baisa tolerance) needs an approver.
+                    $percent = $mode === 'percent' ? $proof['percent_bp'] / 100 : max(0, $amount - 1) * 100 / max(1, $net);
+                    $staff = $this->authorize($device, $payload, 'discount.manual', ['amount_baisas' => $amount,
+                        'percent' => $percent, 'required' => ! $this->withinMax($device, $payload, $percent)], legacyText: false) ?? $staff;
                 }
                 $this->totals->reverseDiscount($order, $a['manual']);
                 if ($amount > 0) {
@@ -144,7 +166,8 @@ final class AdjustTableBillAction
             } else {
                 $amount = 0;
                 if ($mode === 'apply') {
-                    $this->approve($adjustment);
+                    // LAUNCH-P5 — comp (P5: the block; old build: the text).
+                    $staff = $this->authorize($device, $payload, 'comp', [], legacyText: true) ?? $staff;
                     if ($adjustment['target'] === 'bill') {
                         throw self::refusal('full_comp_not_supported', 'A whole-bill complimentary payment is not supported. Leave an amount to pay.');
                     }
@@ -193,6 +216,44 @@ final class AdjustTableBillAction
         if (trim((string) ($adjustment['authorized_by'] ?? '')) === '') {
             throw self::refusal('approval_required', 'Manager approval is required for this adjustment.');
         }
+    }
+
+    /**
+     * LAUNCH-P5 — check a gated adjustment. A P5 build's block must be
+     * position_ok or verified (else 403 approval_required / approval_invalid)
+     * and its approver is returned; an old build gets a `legacy` row and,
+     * when $legacyText, today's authorized_by text rule.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    private function authorize(Device $device, array $payload, string $action, array $extra, bool $legacyText): ?int
+    {
+        $required = ($extra['required'] ?? true) === true;
+        if (! AuthorizationGate::isP5($payload) && ! $required) {
+            return null;
+        }
+        $outcome = $this->authorization->check($device, $payload, $action, $extra);
+        if ($outcome === null) {
+            if ($legacyText) {
+                $this->approve($payload['adjustment']);
+            }
+
+            return null;
+        }
+
+        return $outcome->approvedBy();
+    }
+
+    /** The actor's position allows a manual discount of this size without approval. */
+    private function withinMax(Device $device, array $payload, float $percent): bool
+    {
+        $position = isset($payload['staff_id'])
+            ? DB::table('pos_staff')->where('company_id', $device->company_id)->where('id', (int) $payload['staff_id'])->value('position')
+            : null;
+
+        return $position !== null
+            && $this->permissions->allows((int) $device->company_id, (string) $position, 'discount.manual')
+            && $percent <= $this->permissions->discountMaxPercent((int) $device->company_id, (string) $position);
     }
 
     private function rule(Device $device, int $id): Discount

@@ -14,6 +14,7 @@ use App\Models\PosStaff;
 use App\Models\VoidReason;
 use App\Support\Money;
 use App\Support\SoftPos\ReversalMoney;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -23,6 +24,7 @@ final class ReservePaymentReversalAction
     public function __construct(
         private readonly ResolveDeviceSoftPos $profiles,
         private readonly VerifyManagerPinAction $pins,
+        private readonly AuthorizationGate $approvals,
     ) {}
 
     public function handle(Device $device, string $paymentUuid, array $payload): array
@@ -116,6 +118,9 @@ final class ReservePaymentReversalAction
             foreach ($lines as $line) {
                 DB::table('pos_payment_reversal_lines')->insert(['reversal_id' => $reversal->id] + $line);
             }
+            // LAUNCH-P5 — the approvals record of this PIN-verified action.
+            $this->approvals->recordOnline($device, 'card.reverse', 'payment', (string) $payment->uuid, $amount,
+                (int) $manager->id, null, (string) $payload['client_request_id']);
 
             return ReversalContract::present($reversal);
         }, 5);

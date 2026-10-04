@@ -12,6 +12,7 @@ use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\PublicTableLoyalty;
@@ -28,6 +29,7 @@ use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
 use App\Models\TableSession;
 use App\Support\Money;
+use App\Support\Staff\SaleAuthorizations;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -57,6 +59,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
         private readonly CloseDineInQrSessionAction $closeDineInSession,
         private readonly AllocateOrderNumberAction $orderNumbers,
         private readonly CloseTableSessionForOrderAction $closeTableSession,
+        private readonly SaleAuthorizations $sales,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -406,6 +409,19 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 );
             }
 
+            // LAUNCH-P5 (A6) — who took the payment (order.pay staff_id, new):
+            // checked against the tenant and flagged when inactive or from
+            // another branch; never a reason to refuse a paid sale.
+            $payStaff = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
+            try {
+                TenantReferenceGuard::assertCashier($device, $payStaff, 'unknown payer');
+            } catch (RuntimeException) {
+                $device->syncIntegrityFlags[] = 'pay_staff_unknown:'.$payStaff;
+            }
+            // LAUNCH-P5 — a gift tender / loyalty redeem without a recorded
+            // authorization is written to pos_approvals (never refused).
+            $authorizations = $this->sales->forPay($event, $device, $orderUuid, $payments, is_array($payload['loyalty_redeem'] ?? null));
+
             $result = [
                 'order_id' => (int) $order->id,
                 'status' => 'paid',
@@ -425,6 +441,9 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
 
             if ($softposMismatch) {
                 $result['softpos_mismatch'] = true;
+            }
+            if ($authorizations !== []) {
+                $result['authorizations'] = $authorizations;
             }
             if ($roundupResult !== null) {
                 $result['roundup_donation_id'] = $roundupResult['roundup_donation_id'];

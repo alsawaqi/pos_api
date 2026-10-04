@@ -40,6 +40,8 @@ class Expense extends Model
             'amount' => 'decimal:3',
             'logged_at' => 'datetime',
             'reviewed_at' => 'datetime',
+            // LAUNCH-P5 — a device pay-out (cash out of the drawer).
+            'paid_from_drawer' => 'boolean',
         ];
     }
 }

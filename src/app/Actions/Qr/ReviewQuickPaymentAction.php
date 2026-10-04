@@ -12,6 +12,7 @@ use App\Models\Order;
 use App\Models\Payment;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -35,6 +36,7 @@ final class ReviewQuickPaymentAction
         private readonly QrChargeRecoveryGuard $recovery,
         private readonly VerifyManagerPinAction $manager,
         private readonly PayOrderHandler $pay,
+        private readonly AuthorizationGate $approvals,
     ) {}
 
     /** @return array<string, mixed> */
@@ -155,6 +157,10 @@ final class ReviewQuickPaymentAction
                 'event_type' => self::EVENT_TYPE, 'payload_json' => $payload, 'client_timestamp' => $at,
                 'server_received_at' => $at, 'processed_at' => $at, 'ack_status' => SyncEvent::STATUS_PROCESSED,
                 'result_json' => $result]);
+            // LAUNCH-P5 — the approvals record of this PIN-verified action.
+            $this->approvals->recordOnline($device, 'qr.payment_review', 'order', (string) $order->uuid,
+                isset($input['amount_baisas']) ? (int) $input['amount_baisas'] : null, (int) $approver->id,
+                isset($input['staff_id']) ? (int) $input['staff_id'] : null, (string) $input['client_request_id']);
 
             return [$result, $payEvent, $paid];
         }, 5);

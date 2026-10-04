@@ -81,6 +81,10 @@ class DeviceShiftController
                     'opened_at' => $shift->opened_at?->toIso8601String(),
                     'staff_id' => $shift->staff_id !== null ? (int) $shift->staff_id : null,
                     'device_id' => $shift->device_id !== null ? (int) $shift->device_id : null,
+                    // LAUNCH-P5 follow-up 1 — how many times the portal
+                    // re-opened it; the device closes it under UUID v5 of
+                    // "shift-close:{uuid}:{reopen_count}".
+                    'reopen_count' => (int) ($shift->reopen_count ?? 0),
                 ],
             ],
             'meta' => ['money_unit' => 'baisas'],

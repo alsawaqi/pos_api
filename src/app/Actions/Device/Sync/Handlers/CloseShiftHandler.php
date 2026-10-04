@@ -66,8 +66,10 @@ class CloseShiftHandler implements SyncEventHandler
      * LAUNCH-P5 (A5, owner decisions 3 and 4). A P5 build (auth_v: 1) sends
      * closed_by_staff_id, order_uuids (the paid orders of this shift on this
      * device), an authorization block when closing ANOTHER cashier's drawer,
-     * and a FIXED client_event_id per shift (UUID v5 of "shift-close:" + the
-     * shift uuid), so a repeated close returns the original Z from the ledger.
+     * and a FIXED client_event_id per shift and re-open (UUID v5, URL
+     * namespace, of "shift-close:{shift_uuid}:{reopen_count}"), so a repeated
+     * close returns the original Z from the ledger while a close after a
+     * portal re-open (reopen_count + 1) is a new event with a fresh Z.
      *
      *  - Another cashier's drawer: the closer needs shift.close_other or a
      *    verified approval, else the close fails with approval_required /
@@ -163,6 +165,10 @@ class CloseShiftHandler implements SyncEventHandler
                 'closed_by_staff_id' => $closedBy,
                 'close_device_id' => (int) $device->getKey(),
                 'payouts_baisas' => $payoutsBaisas,
+                // Follow-up 1 — this close's expected cash counts every cash
+                // payment of the window, so cash that arrived "late" after an
+                // earlier close (before a portal re-open) is no longer late.
+                'late_sales_baisas' => 0,
             ];
             if ($review !== []) {
                 $update['needs_review'] = true;
@@ -176,6 +182,8 @@ class CloseShiftHandler implements SyncEventHandler
             return [
                 'shift_id' => (int) $shift->id,
                 'status' => 'closed',
+                // Follow-up 1 — the re-open this Z belongs to.
+                'reopen_count' => (int) ($shift->reopen_count ?? 0),
                 'expected_cash_baisas' => $expectedBaisas,
                 'variance_baisas' => $varianceBaisas,
                 // Phase C6 — the printed shift-summary (Z-report) numbers,

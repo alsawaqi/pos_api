@@ -72,6 +72,8 @@ return new class extends Migration
             $table->boolean('needs_review')->default(false);
             $table->bigInteger('late_sales_baisas')->default(0);
             $table->bigInteger('payouts_baisas')->default(0);
+            // Follow-up 1 — pos_admin 2026_10_04_100009.
+            $table->integer('reopen_count')->default(0);
         });
 
         Schema::table('pos_expenses', function (Blueprint $table): void {

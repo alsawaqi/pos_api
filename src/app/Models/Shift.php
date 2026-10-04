@@ -42,6 +42,8 @@ class Shift extends Model
             'needs_review' => 'boolean',
             'late_sales_baisas' => 'integer',
             'payouts_baisas' => 'integer',
+            // LAUNCH-P5 follow-up 1 — portal re-opens; part of the close event id.
+            'reopen_count' => 'integer',
         ];
     }
 }

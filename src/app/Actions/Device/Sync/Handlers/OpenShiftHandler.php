@@ -97,7 +97,8 @@ class OpenShiftHandler implements SyncEventHandler
                 'is_shared' => $isShared,
             ]);
 
-            return ['shift_id' => (int) $shift->id, 'shift_uuid' => $shift->uuid, 'status' => 'open'];
+            // LAUNCH-P5 follow-up 1 — a new shift has never been re-opened.
+            return ['shift_id' => (int) $shift->id, 'shift_uuid' => $shift->uuid, 'status' => 'open', 'reopen_count' => 0];
         });
     }
 }

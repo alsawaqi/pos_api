@@ -54,7 +54,12 @@ final readonly class VerifyKitchenPinAction
 
         foreach ($candidates as $staff) {
             if (Hash::check($pin, (string) $staff->pin_hash)) {
-                $this->lockout->succeeded($device, PinLockout::MANAGER);
+                // Fix order 1 L1 — a kitchen worker's own PIN never clears the
+                // manager-PIN failure counter; only a person who could also
+                // pass the manager-PIN check (approvals.give) does.
+                if ($this->permissions->allows((int) $device->company_id, (string) $staff->position, 'approvals.give')) {
+                    $this->lockout->succeeded($device, PinLockout::MANAGER);
+                }
 
                 return $staff;
             }

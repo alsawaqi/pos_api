@@ -364,6 +364,12 @@ final class AuthorizationGate
     }
 
     /**
+     * One row per gated action, deduplicated ONLY on (device, client_event_id,
+     * action, ref): a repeat of the same event or request returns its first
+     * verdict; every other action is recorded, even on the same subject with
+     * the same verdict (fix order 1 F10 — two people's actions on one table
+     * are two rows).
+     *
      * @param  array<string, mixed>|null  $block
      */
     private function record(Device $device, array $ctx, ?string $ref, AuthorizationOutcome $outcome, ?array $block): AuthorizationOutcome
@@ -385,27 +391,6 @@ final class AuthorizationGate
         }
 
         $blockTime = self::parseTime($block['approved_at'] ?? null);
-        $subject = (string) ($ctx['subject_uuid'] ?? '');
-        if ($subject !== '') {
-            // A re-sent subject (an open order sent again) with the same
-            // verdict is recorded once.
-            $same = DB::table('pos_approvals')
-                ->where('company_id', $device->company_id)
-                ->where('subject_type', $ctx['subject_type'])
-                ->where('subject_uuid', $subject)
-                ->where('action', $ctx['action'])
-                ->where('result', $outcome->result)
-                ->where(fn ($q) => $ref === null ? $q->whereNull('ref') : $q->where('ref', $ref))
-                ->where(fn ($q) => $outcome->approverStaffId === null ? $q->whereNull('approver_staff_id')
-                    : $q->where('approver_staff_id', $outcome->approverStaffId));
-            if ($blockTime !== null) {
-                $same->where('approved_at', self::dbTime($blockTime));
-            }
-            if ($same->exists()) {
-                return $outcome;
-            }
-        }
-
         $approvedAt = $blockTime ?? Carbon::instance($ctx['at']);
         $amount = $ctx['amount_baisas'] ?? null;
         DB::table('pos_approvals')->insert([

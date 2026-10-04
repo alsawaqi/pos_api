@@ -195,6 +195,12 @@ final class AuthorizationGate
             'approval' => $this->approval($device, $ctx, $block, $actor),
             default => new AuthorizationOutcome(AuthorizationOutcome::FAILED, $this->knownActor($device, $actor), null, 'invalid_block', 'approval'),
         };
+        if (($ctx['fail_reason'] ?? null) !== null && ! $outcome->authorized()) {
+            // F5 — e.g. a void block naming the other action that does not
+            // hold for the stricter one: failed with the caller's reason.
+            $outcome = new AuthorizationOutcome(AuthorizationOutcome::FAILED, $outcome->actorStaffId, $outcome->approverStaffId,
+                (string) $ctx['fail_reason'], $outcome->mode, $outcome->method);
+        }
 
         return $this->record($device, $ctx, $ref, $outcome, $block);
     }

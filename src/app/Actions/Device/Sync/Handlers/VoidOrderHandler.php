@@ -112,13 +112,20 @@ class VoidOrderHandler implements SyncEventHandler
             $device->syncIntegrityFlags[] = 'void_staff_unknown:'.$voidedBy;
             $voidedBy = null;
         }
+        // Fix order 1 F5 (review M3) — the action comes from the order's paid
+        // state on the server at processing time, never from the block. A
+        // block naming the other void action is checked against the stricter
+        // one (order.void_paid) and, if that does not hold, recorded failed
+        // `action_mismatch`.
         $wasPaid = in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true);
         $block = AuthorizationGate::block($payload['authorization'] ?? null);
-        $action = in_array($block['action'] ?? null, ['order.void_unpaid', 'order.void_paid'], true)
-            ? (string) $block['action']
-            : ($wasPaid ? 'order.void_paid' : 'order.void_unpaid');
+        $action = $wasPaid ? 'order.void_paid' : 'order.void_unpaid';
+        $mismatch = $block !== null && in_array($block['action'], ['order.void_unpaid', 'order.void_paid'], true)
+            && $block['action'] !== $action;
         $outcome = $this->gate->evaluate($device, [
-            'action' => $action, 'subject_type' => 'order', 'subject_uuid' => $orderUuid,
+            'action' => $mismatch ? 'order.void_paid' : $action,
+            'fail_reason' => $mismatch ? 'action_mismatch' : null,
+            'subject_type' => 'order', 'subject_uuid' => $orderUuid,
             'actor_staff_id' => $voidedBy, 'staff_token' => $payload['staff_token'] ?? null,
             'client_event_id' => (string) $event->client_event_id,
             'at' => $event->client_timestamp ?? now(), 'needs_approval' => $voidReason !== null && (bool) $voidReason->requires_manager,

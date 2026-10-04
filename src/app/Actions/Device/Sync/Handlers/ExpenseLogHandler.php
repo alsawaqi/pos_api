@@ -26,7 +26,10 @@ use RuntimeException;
  */
 class ExpenseLogHandler implements SyncEventHandler
 {
-    public function __construct(private readonly AuthorizationGate $gate) {}
+    public function __construct(
+        private readonly AuthorizationGate $gate,
+        private readonly CloseShiftHandler $shifts,
+    ) {}
 
     public function handle(SyncEvent $event, Device $device): array
     {
@@ -106,6 +109,11 @@ class ExpenseLogHandler implements SyncEventHandler
                 'client_event_id' => (string) $event->client_event_id, 'at' => $event->client_timestamp ?? now(),
             ], AuthorizationGate::block($payload['authorization'] ?? null), AuthorizationGate::isP5($payload, $device));
             $result['authorization'] = ['action' => 'payout', 'result' => $outcome->result];
+            // F7 — a pay-out of an already closed shift is a late pay-out.
+            $late = $this->shifts->recordLatePayout($expense);
+            if ($late !== null) {
+                $result['late_for_shift'] = $late['shift_uuid'];
+            }
         }
 
         return $result;

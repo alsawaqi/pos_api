@@ -30,6 +30,10 @@ return new class extends Migration
             $table->unsignedBigInteger('shift_id')->nullable();
             $table->index('shift_id', 'pos_expenses_shift_id_index');
         });
+
+        Schema::table('pos_shifts', function (Blueprint $table): void {
+            $table->bigInteger('late_payouts_baisas')->default(0);
+        });
     }
 
     public function down(): void
@@ -37,6 +41,10 @@ return new class extends Migration
         if (! app()->environment('testing')) {
             return;
         }
+
+        Schema::table('pos_shifts', function (Blueprint $table): void {
+            $table->dropColumn('late_payouts_baisas');
+        });
 
         Schema::table('pos_expenses', function (Blueprint $table): void {
             $table->dropIndex('pos_expenses_shift_id_index');

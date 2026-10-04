@@ -9,6 +9,7 @@ use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Device\Sync\SyncRefusal;
 use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\Device;
+use App\Models\Expense;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Shift;
@@ -16,6 +17,7 @@ use App\Models\SyncEvent;
 use App\Support\Money;
 use App\Support\Staff\AuthorizationGate;
 use Illuminate\Contracts\Database\Query\Builder;
+use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -169,8 +171,10 @@ class CloseShiftHandler implements SyncEventHandler
                 'payouts_baisas' => $payoutsBaisas,
                 // Follow-up 1 — this close's expected cash counts every cash
                 // payment of the window, so cash that arrived "late" after an
-                // earlier close (before a portal re-open) is no longer late.
+                // earlier close (before a portal re-open) is no longer late;
+                // the same for pay-outs (fix order 1 F7).
                 'late_sales_baisas' => 0,
+                'late_payouts_baisas' => 0,
             ];
             if ($review !== []) {
                 $update['needs_review'] = true;
@@ -329,9 +333,59 @@ class CloseShiftHandler implements SyncEventHandler
         return $late;
     }
 
+    /**
+     * Fix order 1 F7 (review M5) — a DRAWER pay-out (paid_from_drawer) whose
+     * shift is already closed (it reached the server after the close) adds to
+     * that shift's late_payouts_baisas, sets needs_review and writes a note
+     * line; the printed Z is not changed. The shift is the one the pay-out
+     * names (shift_id), else today's rule: the logger's shift whose window
+     * holds logged_at. The corrected expected cash = expected + late sales -
+     * late pay-outs (the portal shows it).
+     *
+     * @return array{shift_uuid: string, late_payouts_baisas: int}|null
+     */
+    public function recordLatePayout(Expense $expense): ?array
+    {
+        if (! $expense->paid_from_drawer) {
+            return null;
+        }
+        $query = Shift::query()->where('company_id', $expense->company_id)->where('branch_id', $expense->branch_id);
+        if ($expense->shift_id !== null) {
+            $query->whereKey((int) $expense->shift_id);
+        } elseif ($expense->logged_by_pos_staff_id !== null && $expense->logged_at !== null) {
+            // Every status: an in-flight close holds this row; wait for it.
+            $query->where('staff_id', $expense->logged_by_pos_staff_id)->where('opened_at', '<=', $expense->logged_at)
+                ->where(fn ($q) => $q->whereNull('closed_at')->orWhere('closed_at', '>=', $expense->logged_at));
+        } else {
+            return null;
+        }
+        $shift = $query->orderBy('id')->lockForUpdate()->first();
+        if ($shift === null || $shift->status !== Shift::STATUS_CLOSED) {
+            return null;
+        }
+        $baisas = Money::toBaisas($expense->amount);
+        DB::table('pos_shifts')->where('id', $shift->id)->update([
+            'late_payouts_baisas' => DB::raw('late_payouts_baisas + '.$baisas),
+            'needs_review' => true,
+            'note' => self::appendNoteSql('Late pay-out '.$expense->uuid.' ('.Money::toOmr($baisas).')'),
+            'updated_at' => now(),
+        ]);
+
+        return ['shift_uuid' => (string) $shift->uuid,
+            'late_payouts_baisas' => (int) DB::table('pos_shifts')->where('id', $shift->id)->value('late_payouts_baisas')];
+    }
+
     private static function appendNote(?string $note, string $line): string
     {
         return $note === null || trim($note) === '' ? $line : $note.' | '.$line;
+    }
+
+    /** Append a note line in SQL, so concurrent appends never lose one. */
+    private static function appendNoteSql(string $line): Expression
+    {
+        $quoted = DB::getPdo()->quote($line);
+
+        return DB::raw("CASE WHEN note IS NULL OR TRIM(note) = '' THEN {$quoted} ELSE note || ' | ' || {$quoted} END");
     }
 
     /**

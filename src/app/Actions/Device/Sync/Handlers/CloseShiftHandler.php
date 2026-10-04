@@ -80,9 +80,10 @@ class CloseShiftHandler implements SyncEventHandler
      *    PERMANENT failure (needs_review, or failed for any reason other than
      *    a database fault) does not block: it sets needs_review and is named
      *    in the shift's note.
-     *  - Device pay-outs (pos_expenses.paid_from_drawer) by the shift's staff
-     *    inside the window lower expected cash (payouts_baisas, a "Pay-outs"
-     *    line in the summary).
+     *  - Device pay-outs (pos_expenses.paid_from_drawer) of this drawer lower
+     *    expected cash (payouts_baisas, a "Pay-outs" line in the summary):
+     *    those naming this shift (shift_id), else by the shift's staff inside
+     *    the window.
      *  - closed_by_staff_id and close_device_id are stamped.
      *
      * An old build's close keeps today's behaviour.
@@ -261,19 +262,24 @@ class CloseShiftHandler implements SyncEventHandler
     }
 
     /**
-     * Device pay-outs (paid_from_drawer) logged by the shift's staff member
-     * inside the shift window, in baisas.
+     * Device pay-outs (paid_from_drawer) of this drawer, in baisas: those
+     * that name this shift (pos_expenses.shift_id, fix order 1 F6), plus —
+     * for pay-outs that name no shift (old builds) — today's rule: logged by
+     * the shift's staff member inside the shift window.
      */
     private function payoutsBaisas(Shift $shift, Carbon $closedAt): int
     {
-        if ($shift->staff_id === null) {
-            return 0;
-        }
-
-        return Money::toBaisas(DB::table('pos_expenses')
+        $payouts = fn () => DB::table('pos_expenses')
             ->where('company_id', $shift->company_id)
             ->where('branch_id', $shift->branch_id)
-            ->where('paid_from_drawer', true)
+            ->where('paid_from_drawer', true);
+        $named = Money::toBaisas($payouts()->where('shift_id', $shift->id)->sum('amount'));
+        if ($shift->staff_id === null) {
+            return $named;
+        }
+
+        return $named + Money::toBaisas($payouts()
+            ->whereNull('shift_id')
             ->where('logged_by_pos_staff_id', $shift->staff_id)
             ->whereBetween('logged_at', [$shift->opened_at, $closedAt])
             ->sum('amount'));

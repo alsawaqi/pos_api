@@ -9,6 +9,7 @@ use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\Device;
 use App\Models\Expense;
 use App\Models\ExpenseCategory;
+use App\Models\Shift;
 use App\Models\SyncEvent;
 use App\Support\Money;
 use App\Support\Staff\AuthorizationGate;
@@ -62,9 +63,22 @@ class ExpenseLogHandler implements SyncEventHandler
 
         // LAUNCH-P5 — a device pay-out (cash taken out of the drawer) carries
         // paid_from_drawer: true and an authorization for `payout`; it lowers
-        // the expected cash of the logger's shift. The money already left
+        // the expected cash of its drawer's shift. The money already left
         // the drawer, so the expense is never refused over the check.
+        // Fix order 1 F6 (review M4) — the pay-out names that drawer: its
+        // `shift_uuid` (the device's open drawer shift) is stored as shift_id
+        // and the close takes it off THAT shift. Without one (an old build)
+        // today's rule applies: the logger's own shift. An unknown shift_uuid
+        // is flagged (payout_shift_unknown) and falls back to that rule.
         $fromDrawer = ($payload['paid_from_drawer'] ?? false) === true;
+        $shiftId = null;
+        if ($fromDrawer && is_string($payload['shift_uuid'] ?? null)) {
+            $shiftId = Shift::query()->where('uuid', $payload['shift_uuid'])->where('company_id', $device->company_id)
+                ->where('branch_id', $device->branch_id)->value('id');
+            if ($shiftId === null) {
+                $device->syncIntegrityFlags[] = 'payout_shift_unknown';
+            }
+        }
         $expenseUuid = (string) Str::uuid();
         $expense = Expense::create([
             'uuid' => $expenseUuid,
@@ -78,6 +92,7 @@ class ExpenseLogHandler implements SyncEventHandler
             'logged_at' => isset($payload['logged_at']) ? Carbon::parse((string) $payload['logged_at']) : now(),
             'status' => Expense::STATUS_RECORDED,
             'paid_from_drawer' => $fromDrawer,
+            'shift_id' => $shiftId === null ? null : (int) $shiftId,
         ]);
 
         $result = ['expense_id' => (int) $expense->id, 'status' => 'recorded'];

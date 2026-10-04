@@ -25,6 +25,11 @@ return new class extends Migration
         Schema::table('pos_devices', function (Blueprint $table): void {
             $table->timestamp('auth_v_seen_at')->nullable();
         });
+
+        Schema::table('pos_expenses', function (Blueprint $table): void {
+            $table->unsignedBigInteger('shift_id')->nullable();
+            $table->index('shift_id', 'pos_expenses_shift_id_index');
+        });
     }
 
     public function down(): void
@@ -32,6 +37,11 @@ return new class extends Migration
         if (! app()->environment('testing')) {
             return;
         }
+
+        Schema::table('pos_expenses', function (Blueprint $table): void {
+            $table->dropIndex('pos_expenses_shift_id_index');
+            $table->dropColumn('shift_id');
+        });
 
         Schema::table('pos_devices', function (Blueprint $table): void {
             $table->dropColumn('auth_v_seen_at');

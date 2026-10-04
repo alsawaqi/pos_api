@@ -193,16 +193,16 @@ class StaffTokenTest extends TestCase
         $cancel = $prefix + ['auth_v' => 1, 'client_request_id' => (string) Str::uuid(), 'product_id' => (int) $product->id,
             'qty' => 1, 'prepared' => false, 'reason' => 'x', 'cancelled_at' => now()->toIso8601String()];
         $this->p5Online($device, 'POST', '/api/v1/device/tables/'.$seat->uuid.'/cancel-line',
-            array_replace($cancel, ['staff_id' => 7, 'authorization' => $this->p5Position('table.cancel_line', 9)]))
+            array_replace($cancel, ['staff_id' => 7, 'authorization' => $this->p5Position('table.cancel_line', 9, $cancel['client_request_id'])]))
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
 
         // Sold-out and the shift read.
         $soldOut = '/api/v1/device/products/'.$product->id.'/sold-out';
-        $this->p5Online($device, 'POST', $soldOut, ['sold_out' => true, 'staff_id' => 9, 'auth_v' => 1,
-            'authorization' => $this->p5Position('sold_out.toggle', 9)], '')
+        $toggle = fn (string $id): array => ['sold_out' => true, 'staff_id' => 9, 'auth_v' => 1, 'client_request_id' => $id,
+            'authorization' => $this->p5Position('sold_out.toggle', 9, $id)];
+        $this->p5Online($device, 'POST', $soldOut, $toggle((string) Str::uuid()), '')
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'staff_unverified')->assertJsonPath('data.reason', 'token_missing');
-        $this->p5Online($device, 'POST', $soldOut, ['sold_out' => true, 'staff_id' => 9, 'auth_v' => 1,
-            'authorization' => $this->p5Position('sold_out.toggle', 9)])->assertOk()->assertJsonPath('data.authorization.result', 'position_ok');
+        $this->p5Online($device, 'POST', $soldOut, $toggle((string) Str::uuid()))->assertOk()->assertJsonPath('data.authorization.result', 'position_ok');
         $this->p5Online($device, 'GET', '/api/v1/device/shift/current?staff_id=9&auth_v=1', [], '')
             ->assertStatus(403)->assertJsonPath('data.reason', 'token_missing');
         $this->p5Online($device, 'GET', '/api/v1/device/shift/current?staff_id=9&auth_v=1', [], $this->p5StaffToken($device, 9))

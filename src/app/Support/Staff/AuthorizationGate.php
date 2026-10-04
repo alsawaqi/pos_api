@@ -51,6 +51,9 @@ final class AuthorizationGate
 {
     public const PROOF_REUSED = 'proof_reused';
 
+    /** F3 — an online approval's approved_at is at most 10 minutes from the server time. */
+    public const ONLINE_MAX_AGE_SECONDS = 600;
+
     public function __construct(private readonly PositionPermissions $permissions) {}
 
     /**
@@ -148,9 +151,15 @@ final class AuthorizationGate
      * voider, the closer, logged_by, the request's staff_id) and
      * `staff_token` the event's signed staff token.
      *
+     * F3 — `expected_ref` (the table operations and sold-out: the request's
+     * client_request_id) must equal the block's ref, else failed
+     * `ref_mismatch`; `max_age_seconds` (online only: 600) bounds an approval's
+     * approved_at around the server time, else failed `approval_stale`.
+     *
      * @param  array{action: string, subject_type: string, subject_uuid?: ?string, amount_baisas?: ?int, ref?: ?string,
      *     actor_staff_id?: ?int, staff_token?: mixed, client_event_id?: ?string, at: CarbonInterface, required?: bool,
-     *     needs_approval?: bool, percent?: ?float, candidate_amounts?: list<int>, legacy_approver_staff_id?: ?int}  $ctx
+     *     needs_approval?: bool, percent?: ?float, candidate_amounts?: list<int>, legacy_approver_staff_id?: ?int,
+     *     expected_ref?: ?string, max_age_seconds?: ?int}  $ctx
      * @param  array<string, mixed>|null  $block  a normalised block ({@see block()})
      */
     public function evaluate(Device $device, array $ctx, ?array $block, bool $p5): AuthorizationOutcome
@@ -173,6 +182,14 @@ final class AuthorizationGate
 
             return $this->record($device, $ctx, $ref, new AuthorizationOutcome(AuthorizationOutcome::MISSING,
                 $this->knownActor($device, $actor), null, 'no_authorization', 'approval'), null);
+        }
+
+        if (array_key_exists('expected_ref', $ctx) && $block['ref'] !== $ctx['expected_ref']) {
+            // F3 — one block per request: a block made for another request
+            // (or none) never authorizes this one.
+            return $this->record($device, $ctx, $ref, new AuthorizationOutcome(AuthorizationOutcome::FAILED,
+                $this->knownActor($device, $actor), null, 'ref_mismatch', $block['mode'] === 'position' ? 'position' : 'approval',
+                $block['method']), $block);
         }
 
         $outcome = match ($block['mode']) {
@@ -250,6 +267,10 @@ final class AuthorizationGate
         $approvedAt = self::parseTime($block['approved_at']);
         if ($approvedAt === null) {
             return $fail('approved_at_invalid', $approverId);
+        }
+        $maxAge = $ctx['max_age_seconds'] ?? null;
+        if ($maxAge !== null && abs(now()->getTimestamp() - $approvedAt->getTimestamp()) > $maxAge) {
+            return $fail('approval_stale', $approverId);
         }
         if (! $this->activeAt($approver, $approvedAt)) {
             return $fail('approver_inactive', $approverId);

@@ -23,7 +23,8 @@ use Illuminate\Support\Facades\DB;
  *        → {product_ids: [...], as_of} for the device's branch. Devices poll
  *          it every 60 s while online and on resume.
  *   POST /api/v1/device/products/{id}/sold-out
- *        {sold_out: bool, staff_id, auth_v: 1, authorization}   (P5 build)
+ *        {sold_out: bool, staff_id, auth_v: 1, client_request_id, authorization}
+ *        + header X-Staff-Token                                 (P5 build)
  *        {sold_out: bool, staff_id, approver_staff_id?}         (old build)
  *
  * LAUNCH-P5: a P5 build's authorization block decides (sold_out.toggle: the
@@ -68,6 +69,8 @@ final class DeviceSoldOutController
             'approver_staff_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
             'auth_v' => ['sometimes', 'integer'],
             'authorization' => ['sometimes', 'nullable', 'array'],
+            // Fix order 1 (F3) — the request's own id; a P5 block's ref must equal it.
+            'client_request_id' => ['sometimes', 'nullable', 'string', 'max:64'],
         ]);
 
         $product = Product::query()->where('company_id', $device->company_id)->find($productId);
@@ -83,11 +86,16 @@ final class DeviceSoldOutController
         if (AuthorizationGate::isP5($request->all(), $device)) {
             // LAUNCH-P5 — sold_out.toggle: the actor's own tick (position block)
             // or a verified approver; anything else is refused (403). Proof
-            // subject: the product uuid; no amount; the block's ref.
+            // subject: the product uuid; no amount; ref = the request's
+            // client_request_id (fix order 1 F3: another ref is failed
+            // ref_mismatch, an approval more than 10 minutes from the server
+            // time approval_stale). The verdict row is keyed on that id.
+            $requestId = isset($data['client_request_id']) ? (string) $data['client_request_id'] : null;
             $outcome = DB::transaction(fn () => $gate->evaluate($device, [
                 'action' => 'sold_out.toggle', 'subject_type' => 'product', 'subject_uuid' => (string) $product->uuid,
                 'actor_staff_id' => (int) $staff->id, 'staff_token' => $request->header(StaffToken::HEADER),
-                'client_event_id' => null, 'at' => now(),
+                'client_event_id' => $requestId, 'at' => now(),
+                'expected_ref' => $requestId ?? '', 'max_age_seconds' => AuthorizationGate::ONLINE_MAX_AGE_SECONDS,
             ], AuthorizationGate::block($request->input('authorization')), true));
             if (! $outcome->authorized()) {
                 return $this->failure($outcome->refusalCode(), $outcome->refusalCode() === 'approval_required'

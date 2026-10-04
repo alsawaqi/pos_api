@@ -73,16 +73,18 @@ class OnlineAuthorizationTest extends TestCase
         $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-line', $cancel)
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
         // A cashier's own tick does not cover it (table.cancel_line: supervisor, manager).
-        $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-line', $cancel + ['authorization' => $this->p5Position('table.cancel_line', 7)])
+        // (Fix order 1 F3: every block's ref is the request's client_request_id.)
+        $ref = $cancel['client_request_id'];
+        $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-line', $cancel + ['authorization' => $this->p5Position('table.cancel_line', 7, $ref)])
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
         // A bad proof → 403 approval_invalid.
-        $bad = $this->p5Approval($device, 'table.cancel_line', 8, 7, $seat->client_request_id);
+        $bad = $this->p5Approval($device, 'table.cancel_line', 8, 7, $seat->client_request_id, null, $ref);
         $bad['proof'] = str_repeat('0', 64);
         $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-line', $cancel + ['authorization' => $bad])
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_invalid');
         $this->assertSame(0, DB::table('pos_approvals')->count(), 'a refused online action writes nothing');
 
-        $block = $this->p5Approval($device, 'table.cancel_line', 8, 7, $seat->client_request_id);
+        $block = $this->p5Approval($device, 'table.cancel_line', 8, 7, $seat->client_request_id, null, $ref);
         $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-line', $cancel + ['authorization' => $block])
             ->assertOk()->assertJsonPath('data.cancelled_qty', 1);
         $event = TableSessionEvent::query()->where('payload->client_request_id', $cancel['client_request_id'])->sole();
@@ -92,8 +94,9 @@ class OnlineAuthorizationTest extends TestCase
             [$row->action, $row->result, $row->subject_type, $row->subject_uuid, $row->client_event_id]);
 
         // A supervisor's own tick covers a sent-line cancel.
-        $own = array_replace($cancel, ['client_request_id' => (string) Str::uuid(), 'staff_id' => 9,
-            'authorization' => $this->p5Position('table.cancel_line', 9)]);
+        $ownId = (string) Str::uuid();
+        $own = array_replace($cancel, ['client_request_id' => $ownId, 'staff_id' => 9,
+            'authorization' => $this->p5Position('table.cancel_line', 9, $ownId)]);
         $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-line', $own)->assertOk()->assertJsonPath('data.cancelled_qty', 1);
     }
 
@@ -110,10 +113,10 @@ class OnlineAuthorizationTest extends TestCase
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
         // The supervisor tick does not include cancelling a whole bill.
         $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-bill', array_replace($bill, ['staff_id' => 9])
-            + ['auth_v' => 1, 'authorization' => $this->p5Position('table.cancel_bill', 9)])
+            + ['auth_v' => 1, 'authorization' => $this->p5Position('table.cancel_bill', 9, $bill['client_request_id'])])
             ->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
 
-        $block = $this->p5Approval($device, 'table.cancel_bill', 8, 7, $seat->client_request_id);
+        $block = $this->p5Approval($device, 'table.cancel_bill', 8, 7, $seat->client_request_id, null, $bill['client_request_id']);
         $this->postAs($device, 'tables/'.$seat->uuid.'/cancel-bill', $bill + ['auth_v' => 1, 'authorization' => $block])
             ->assertOk()->assertJsonPath('data.status', 'void');
         $event = TableSessionEvent::query()->where('event_type', 'bill_cancelled')->sole();
@@ -144,7 +147,7 @@ class OnlineAuthorizationTest extends TestCase
         // 50 % is above it.
         $over = $adjust(5000);
         $this->postAs($device, 'tables/'.$seat->uuid.'/adjust', $over)->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
-        $over['authorization'] = $this->p5Approval($device, 'discount.manual', 8, 7, $seat->client_request_id, 1500);
+        $over['authorization'] = $this->p5Approval($device, 'discount.manual', 8, 7, $seat->client_request_id, 1500, $over['client_request_id']);
         $this->postAs($device, 'tables/'.$seat->uuid.'/adjust', $over)->assertOk()->assertJsonPath('data.outcome', 'adjusted');
         $this->assertSame('verified', DB::table('pos_approvals')->value('result'));
     }
@@ -157,16 +160,19 @@ class OnlineAuthorizationTest extends TestCase
             'status' => 'active', 'created_at' => now(), 'updated_at' => now()]);
         $url = '/api/v1/device/products/5/sold-out';
 
-        // P5: a cashier needs an approval; the bare tick is refused.
-        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1,
-            'authorization' => $this->p5Position('sold_out.toggle', 7)])->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
-        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1,
-            'authorization' => $this->p5Approval($device, 'sold_out.toggle', 8, 7, $uuid)])
+        // P5: a cashier needs an approval; the bare tick is refused. Each
+        // request has its own client_request_id, the block's ref (fix order 1 F3).
+        $ids = [(string) Str::uuid(), (string) Str::uuid(), (string) Str::uuid()];
+        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1, 'client_request_id' => $ids[0],
+            'authorization' => $this->p5Position('sold_out.toggle', 7, $ids[0])])->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
+        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1, 'client_request_id' => $ids[1],
+            'authorization' => $this->p5Approval($device, 'sold_out.toggle', 8, 7, $uuid, null, $ids[1])])
             ->assertOk()->assertJsonPath('data.changed', true)->assertJsonPath('data.authorization.result', 'verified');
         $this->assertSame(8, (int) DB::table('pos_product_sold_out')->value('set_by_pos_staff_id'));
         // A supervisor switches it back on their own tick.
-        $this->p5Online($device, 'POST', $url, ['sold_out' => false, 'staff_id' => 9, 'auth_v' => 1,
-            'authorization' => $this->p5Position('sold_out.toggle', 9)])->assertOk()->assertJsonPath('data.authorization.result', 'position_ok');
+        $this->p5Online($device, 'POST', $url, ['sold_out' => false, 'staff_id' => 9, 'auth_v' => 1, 'client_request_id' => $ids[2],
+            'authorization' => $this->p5Position('sold_out.toggle', 9, $ids[2])])->assertOk()->assertJsonPath('data.authorization.result', 'position_ok');
+        $this->assertSame($ids, DB::table('pos_approvals')->orderBy('id')->pluck('client_event_id')->all());
 
         // An old build (a device that never sent auth_v; fix order 1 F2 makes
         // the marker sticky): approver_staff_id as today, recorded as legacy.

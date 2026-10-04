@@ -26,13 +26,16 @@ use Illuminate\Support\Facades\DB;
  *   comps[i] with is_gift                         gift, ref "gift:i" (a block
  *                                                 with ref "comp:i" matches too)
  *   any other block it carries (e.g. loyalty.redeem) is checked as sent
- * order.pay gated items: a gift tender (gift, ref "tender:i"), a loyalty
- *   redeem (loyalty.redeem, ref "loyalty:0") — satisfied by a row of the same
- *   order and action already written at order.create, else checked from
- *   order.pay's own blocks, else `missing`.
+ * order.pay gated items: a gift tender (gift, ref "tender:i", i = its index
+ *   in payments; amount = the tender's amount_baisas), a loyalty redeem
+ *   (loyalty.redeem, ref "loyalty:0") — satisfied by a row of the same order
+ *   and action (a gift tender: the same ref) already written at order.create,
+ *   else checked from order.pay's own blocks, else `missing`. A gift tender's
+ *   block may ride order.create with ref "tender:i" and an EMPTY amount.
  *
  * Blocks are matched to items by action and ref first; a gated item left
- * without one then takes any unused block of its action.
+ * without one then takes an unused block of its action whose ref is empty or
+ * of the item's kind ("tender:…" never goes to a gift line).
  */
 final class SaleAuthorizations
 {
@@ -175,7 +178,8 @@ final class SaleAuthorizations
         foreach ($items as $k => $item) {
             $block = $assigned[$k] ?? null;
             $ref = $block['ref'] ?? $item['refs'][0];
-            if ($block === null && $p5 && $this->recordedForOrder($device, $orderUuid, $item['action'])) {
+            if ($block === null && $p5 && $this->recordedForOrder($device, $orderUuid, $item['action'],
+                $item['action'] === 'gift' ? $item['refs'][0] : null)) {
                 $summary[] = ['action' => $item['action'], 'ref' => $ref, 'result' => 'at_create'];
 
                 continue;
@@ -189,10 +193,12 @@ final class SaleAuthorizations
         return $summary;
     }
 
-    private function recordedForOrder(Device $device, string $orderUuid, string $action): bool
+    /** A row already written for this order and action (a gift tender: for that tender's ref). */
+    private function recordedForOrder(Device $device, string $orderUuid, string $action, ?string $ref): bool
     {
         return DB::table('pos_approvals')->where('company_id', $device->company_id)
-            ->where('subject_type', 'order')->where('subject_uuid', $orderUuid)->where('action', $action)->exists();
+            ->where('subject_type', 'order')->where('subject_uuid', $orderUuid)->where('action', $action)
+            ->when($ref !== null, fn ($q) => $q->where('ref', $ref))->exists();
     }
 
     /**
@@ -220,8 +226,12 @@ final class SaleAuthorizations
             if (isset($assigned[$k]) || ! ($item['required'] ?? true)) {
                 continue;
             }
+            // A block's ref kind ("tender", "gift", "comp", "discount", ...)
+            // must suit the item: a gift line never takes a gift TENDER's block.
+            $kinds = array_map(static fn (string $ref): string => strtok($ref, ':'), $item['refs']);
             foreach ($blocks as $b => $block) {
-                if (! isset($used[$b]) && $block['action'] === $item['action']) {
+                if (! isset($used[$b]) && $block['action'] === $item['action']
+                    && ($block['ref'] === null || in_array(strtok($block['ref'], ':'), $kinds, true))) {
                     $assigned[$k] = $block;
                     $used[$b] = true;
                     break;

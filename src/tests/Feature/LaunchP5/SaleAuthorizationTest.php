@@ -267,6 +267,45 @@ class SaleAuthorizationTest extends TestCase
             ->assertJsonPath('data.results.1.result.integrity_flags', ['pay_staff_unknown:70']);
     }
 
+    public function test_a_gift_tender_block_on_order_create_has_ref_tender_i_and_an_empty_amount(): void
+    {
+        // Follow-up 1 (binding for Parts C/D): a gift TENDER approved on
+        // order.create carries ref "tender:i" (i = the tender's index in
+        // order.pay's payments) and an EMPTY amount in the proof.
+        $whole = (string) Str::uuid();
+        $this->p5Push('mdev_sale', [
+            $this->p5Create($whole, [], ['auth_v' => 1, 'authorizations' => [$this->p5Approval($this->device, 'gift', 8, 7, $whole, null, 'tender:0')]]),
+            $this->p5Pay($whole, [['method' => 'gift', 'amount_baisas' => 10000]], ['auth_v' => 1, 'staff_id' => 7]),
+        ])->assertOk()->assertJsonPath('data.results.1.result.authorizations.0', ['action' => 'gift', 'ref' => 'tender:0', 'result' => 'at_create']);
+        $row = DB::table('pos_approvals')->where('subject_uuid', $whole)->sole();
+        $this->assertSame(['gift', 'tender:0', 'verified', null], [$row->action, $row->ref, $row->result, $row->amount]);
+
+        // A gift LINE without its own block never takes the tender's block:
+        // the line is missing, the tender stays verified and covers the pay.
+        $both = (string) Str::uuid();
+        $this->p5Push('mdev_sale', [
+            $this->p5Create($both, ['comp_total_baisas' => 500, 'grand_total_baisas' => 9500,
+                'comps' => [['is_gift' => true, 'amount_baisas' => 500, 'line_index' => 0, 'staff_id' => 7]]],
+                ['auth_v' => 1, 'authorizations' => [$this->p5Approval($this->device, 'gift', 8, 7, $both, null, 'tender:1')]]),
+            $this->p5Pay($both, [['method' => 'cash', 'amount_baisas' => 4500], ['method' => 'gift', 'amount_baisas' => 5000]], ['auth_v' => 1, 'staff_id' => 7]),
+        ])->assertOk()->assertJsonPath('data.results.1.status', 'processed')
+            ->assertJsonPath('data.results.1.result.authorizations.0.result', 'at_create');
+        $verdicts = DB::table('pos_approvals')->where('subject_uuid', $both)->orderBy('id')->get(['ref', 'result'])
+            ->map(fn ($r): array => [$r->ref, $r->result])->all();
+        $this->assertSame([['gift:0', 'missing'], ['tender:1', 'verified']], $verdicts);
+        $this->assertNull(DB::table('pos_order_comps')->where('is_gift', true)->orderByDesc('id')->value('approved_by_pos_staff_id'));
+
+        // A gift tender with no block anywhere is missing even when the same
+        // order has an approved gift LINE (rows are matched by ref).
+        $line = (string) Str::uuid();
+        $this->p5Push('mdev_sale', [
+            $this->p5Create($line, ['comp_total_baisas' => 500, 'grand_total_baisas' => 9500,
+                'comps' => [['is_gift' => true, 'amount_baisas' => 500, 'line_index' => 0, 'staff_id' => 7]]],
+                ['auth_v' => 1, 'authorizations' => [$this->p5Approval($this->device, 'gift', 8, 7, $line, 500, 'gift:0')]]),
+            $this->p5Pay($line, [['method' => 'gift', 'amount_baisas' => 9500]], ['auth_v' => 1, 'staff_id' => 7]),
+        ])->assertOk()->assertJsonPath('data.results.1.result.authorizations.0.result', 'missing');
+    }
+
     public function test_a_device_pay_out_is_marked_from_the_drawer_and_its_payout_approval_is_checked(): void
     {
         $block = $this->p5Approval($this->device, 'payout', 8, 7, null, 2500);

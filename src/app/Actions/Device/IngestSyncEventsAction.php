@@ -7,6 +7,7 @@ namespace App\Actions\Device;
 use App\Actions\Device\Sync\SyncEventDispatcher;
 use App\Actions\Device\Sync\SyncEventDispatchLock;
 use App\Models\Device;
+use App\Models\Shift;
 use App\Models\SyncEvent;
 use App\Support\Staff\AuthorizationGate;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -72,6 +73,21 @@ class IngestSyncEventsAction
             // An acknowledged settlement is terminal. Never replay it or turn
             // a historical processed ACK into a permanent refusal.
             if ($existing?->ack_status === SyncEvent::STATUS_PROCESSED) {
+                // Fix order 1 L8 — a close under an OLD id for a shift the
+                // portal has since re-opened (now open, higher reopen_count)
+                // must not get the old Z back: the device rebuilds the id
+                // with the current count and retries.
+                $reopenCount = $this->reopenedSince($existing, $event, $device);
+                if ($reopenCount !== null) {
+                    $results[] = ['client_event_id' => $existing->client_event_id, 'duplicate' => true,
+                        'status' => SyncEvent::STATUS_FAILED, 'event_id' => (int) $existing->getKey(),
+                        'server_received_at' => $existing->server_received_at?->toIso8601String(), 'processed_at' => null,
+                        'result' => ['error' => 'This shift was re-opened. Close it again under its current re-open count.',
+                            'code' => 'shift_reopened', 'reopen_count' => $reopenCount]];
+                    $duplicates++;
+
+                    continue;
+                }
                 $ack = $this->ack($existing, duplicate: true);
                 // Same device + same payload proves the original result, even
                 // when its historical attribution is unknown (NULL). A receipt
@@ -257,6 +273,26 @@ class IngestSyncEventsAction
         return $row->event_type === 'shift.close' && $event['event_type'] === 'shift.close'
             && is_string($row->payload_json['shift_uuid'] ?? null)
             && ($row->payload_json['shift_uuid'] ?? null) === ($event['payload']['shift_uuid'] ?? null);
+    }
+
+    /**
+     * Fix order 1 L8 — the shift's current reopen_count when this processed
+     * close's shift is OPEN again with a higher count than the one that close
+     * was made for (its result's reopen_count, 0 before it existed); null
+     * otherwise (a closed shift keeps returning its Z).
+     */
+    private function reopenedSince(SyncEvent $row, array $event, Device $device): ?int
+    {
+        if (! $this->sameShiftClose($row, $event) || (int) $row->company_id !== (int) $device->company_id
+            || (int) $row->branch_id !== (int) $device->branch_id) {
+            return null;
+        }
+        $shift = Shift::query()->where('uuid', $row->payload_json['shift_uuid'])->where('company_id', $device->company_id)
+            ->where('branch_id', $device->branch_id)->first(['status', 'reopen_count']);
+        $closedAt = (int) (((array) ($row->result_json ?? []))['reopen_count'] ?? 0);
+
+        return $shift !== null && $shift->status === Shift::STATUS_OPEN && (int) $shift->reopen_count > $closedAt
+            ? (int) $shift->reopen_count : null;
     }
 
     /**

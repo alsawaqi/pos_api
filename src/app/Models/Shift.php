@@ -18,7 +18,15 @@ class Shift extends Model
 {
     protected $table = 'pos_shifts';
 
-    protected $guarded = [];
+    /**
+     * LAUNCH-P5 follow-up 1 — reopen_count belongs to the portal (Part B
+     * increments it on a re-open; devices close under
+     * "shift-close:{uuid}:{reopen_count}"). pos_api only reads it, so no
+     * create or update here can ever reset or overwrite it.
+     *
+     * @var list<string>
+     */
+    protected $guarded = ['reopen_count'];
 
     public const STATUS_OPEN = 'open';
 

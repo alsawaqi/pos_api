@@ -4,16 +4,21 @@ declare(strict_types=1);
 
 namespace App\Actions\Device\Sync\Handlers;
 
+use App\Actions\Device\Sync\SyncEventDispatcher;
 use App\Actions\Device\Sync\SyncEventHandler;
+use App\Actions\Device\Sync\SyncRefusal;
+use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Shift;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Contracts\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -52,6 +57,34 @@ use RuntimeException;
  */
 class CloseShiftHandler implements SyncEventHandler
 {
+    /** How many order uuids one close may list (a long shift on a busy till). */
+    public const MAX_ORDER_UUIDS = 5000;
+
+    public function __construct(private readonly AuthorizationGate $gate) {}
+
+    /**
+     * LAUNCH-P5 (A5, owner decisions 3 and 4). A P5 build (auth_v: 1) sends
+     * closed_by_staff_id, order_uuids (the paid orders of this shift on this
+     * device), an authorization block when closing ANOTHER cashier's drawer,
+     * and a FIXED client_event_id per shift (UUID v5 of "shift-close:" + the
+     * shift uuid), so a repeated close returns the original Z from the ledger.
+     *
+     *  - Another cashier's drawer: the closer needs shift.close_other or a
+     *    verified approval, else the close fails with approval_required /
+     *    approval_invalid.
+     *  - A listed order that has not reached the server as processed and paid
+     *    refuses the close with the retryable `unsynced_sales`
+     *    { missing: [uuids] }. An order whose event from this device is in
+     *    PERMANENT failure (needs_review, or failed for any reason other than
+     *    a database fault) does not block: it sets needs_review and is named
+     *    in the shift's note.
+     *  - Device pay-outs (pos_expenses.paid_from_drawer) by the shift's staff
+     *    inside the window lower expected cash (payouts_baisas, a "Pay-outs"
+     *    line in the summary).
+     *  - closed_by_staff_id and close_device_id are stamped.
+     *
+     * An old build's close keeps today's behaviour.
+     */
     public function handle(SyncEvent $event, Device $device): array
     {
         $payload = (array) $event->payload_json;
@@ -74,8 +107,34 @@ class CloseShiftHandler implements SyncEventHandler
 
         $closedAt = isset($payload['closed_at']) ? Carbon::parse((string) $payload['closed_at']) : now();
         $closingBaisas = (int) ($payload['closing_cash_baisas'] ?? 0);
+        $p5 = AuthorizationGate::isP5($payload);
 
-        return DB::transaction(function () use ($shift, $closedAt, $closingBaisas): array {
+        $closedBy = isset($payload['closed_by_staff_id']) ? (int) $payload['closed_by_staff_id'] : null;
+        TenantReferenceGuard::assertStaffInTenant($device, $closedBy, 'shift.close references a staff member outside the device tenant');
+        $authorization = null;
+        if ($p5 && $closedBy !== null && $shift->staff_id !== null && $closedBy !== (int) $shift->staff_id) {
+            $outcome = $this->gate->evaluate($device, [
+                'action' => 'shift.close_other', 'subject_type' => 'shift', 'subject_uuid' => $shiftUuid,
+                'actor_staff_id' => $closedBy, 'client_event_id' => (string) $event->client_event_id,
+                'at' => $event->client_timestamp ?? now(),
+            ], AuthorizationGate::block($payload['authorization'] ?? null), true);
+            if (! $outcome->authorized()) {
+                throw new SyncRefusal($outcome->refusalCode(), 'Closing another cashier\'s drawer needs a manager approval.',
+                    ['reason' => $outcome->reason]);
+            }
+            $authorization = ['action' => 'shift.close_other', 'result' => $outcome->result];
+        }
+
+        $review = [];
+        if ($p5 && array_key_exists('order_uuids', $payload)) {
+            [$missing, $review] = $this->unsyncedSales($device, $payload['order_uuids']);
+            if ($missing !== []) {
+                throw new SyncRefusal('unsynced_sales', count($missing).' paid sale(s) of this shift have not reached the server yet.',
+                    ['missing' => $missing]);
+            }
+        }
+
+        return DB::transaction(function () use ($shift, $closedAt, $closingBaisas, $closedBy, $device, $review, $authorization): array {
             $cash = Payment::query()
                 ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
                 ->where('pos_payments.method', Payment::METHOD_CASH)
@@ -91,16 +150,28 @@ class CloseShiftHandler implements SyncEventHandler
 
             // amount is already net of change (see the class docblock).
             $netCashBaisas = Money::toBaisas($cash->amt ?? 0);
-            $expectedBaisas = Money::toBaisas($shift->opening_cash) + $netCashBaisas;
+            $payoutsBaisas = $this->payoutsBaisas($shift, $closedAt);
+            $expectedBaisas = Money::toBaisas($shift->opening_cash) + $netCashBaisas - $payoutsBaisas;
             $varianceBaisas = $closingBaisas - $expectedBaisas;
 
-            $shift->update([
+            $update = [
                 'status' => Shift::STATUS_CLOSED,
                 'closed_at' => $closedAt,
                 'closing_cash' => Money::toOmr($closingBaisas),
                 'expected_cash' => Money::toOmr($expectedBaisas),
                 'variance' => Money::toOmr($varianceBaisas),
-            ]);
+                'closed_by_staff_id' => $closedBy,
+                'close_device_id' => (int) $device->getKey(),
+                'payouts_baisas' => $payoutsBaisas,
+            ];
+            if ($review !== []) {
+                $update['needs_review'] = true;
+                $update['note'] = self::appendNote($shift->note, 'Sales in permanent sync failure: '.implode(', ', $review));
+            }
+            $shift->update($update);
+
+            $summary = $this->salesSummary($shift, $closedAt);
+            $summary['payouts_baisas'] = $payoutsBaisas;
 
             return [
                 'shift_id' => (int) $shift->id,
@@ -110,9 +181,142 @@ class CloseShiftHandler implements SyncEventHandler
                 // Phase C6 — the printed shift-summary (Z-report) numbers,
                 // server-authoritative, piggybacked on the close the device
                 // already awaits. Optional fields: old clients ignore them.
-                'summary' => $this->salesSummary($shift, $closedAt),
-            ];
+                'summary' => $summary,
+            ] + ($review === [] ? [] : ['needs_review' => true, 'review_order_uuids' => $review])
+              + ($authorization === null ? [] : ['authorization' => $authorization]);
         });
+    }
+
+    /**
+     * Split the listed paid orders into those that have not reached the
+     * server (block the close) and those whose event from this device is in
+     * permanent failure (do not block; reviewed).
+     *
+     * @return array{0: list<string>, 1: list<string>}
+     */
+    private function unsyncedSales(Device $device, mixed $listed): array
+    {
+        if (! is_array($listed)) {
+            throw new RuntimeException('invalid shift.close payload: order_uuids must be a list');
+        }
+        $uuids = array_values(array_unique(array_filter($listed, static fn ($u): bool => is_string($u) && Str::isUuid($u))));
+        if (count($uuids) > self::MAX_ORDER_UUIDS) {
+            throw new RuntimeException('invalid shift.close payload: too many order_uuids');
+        }
+
+        $reached = [];
+        foreach (array_chunk($uuids, 500) as $chunk) {
+            foreach (Order::query()->where('company_id', $device->company_id)->where('branch_id', $device->branch_id)
+                ->whereIn('uuid', $chunk)
+                ->whereIn('status', [Order::STATUS_PAID, Order::STATUS_VOID, Order::STATUS_REFUNDED,
+                    Order::STATUS_PENDING_VERIFICATION, Order::STATUS_COMBINED])
+                ->pluck('uuid') as $uuid) {
+                $reached[(string) $uuid] = true;
+            }
+        }
+        $notReached = array_values(array_filter($uuids, static fn (string $u): bool => ! isset($reached[$u])));
+        if ($notReached === []) {
+            return [[], []];
+        }
+
+        // This device's order events for the missing sales, by order uuid.
+        $permanent = [];
+        $events = SyncEvent::query()->where('device_id', $device->getKey())
+            ->whereIn('event_type', ['order.create', 'order.pay', 'order.deliver'])
+            ->whereIn('ack_status', [SyncEvent::STATUS_FAILED, SyncEvent::STATUS_NEEDS_REVIEW])
+            ->where(function ($q) use ($notReached): void {
+                $q->whereIn('payload_json->order->uuid', $notReached)->orWhereIn('payload_json->order_uuid', $notReached);
+            })
+            ->get(['event_type', 'payload_json', 'ack_status', 'result_json']);
+        foreach ($events as $row) {
+            $payload = (array) $row->payload_json;
+            $uuid = (string) ($payload['order']['uuid'] ?? ($payload['order_uuid'] ?? ''));
+            $result = (array) ($row->result_json ?? []);
+            if ($row->ack_status === SyncEvent::STATUS_NEEDS_REVIEW || ($result['permanent'] ?? false) === true
+                || ($result['error'] ?? null) !== SyncEventDispatcher::TRANSIENT_ERROR) {
+                $permanent[$uuid] = true;
+            }
+        }
+
+        $missing = [];
+        $review = [];
+        foreach ($notReached as $uuid) {
+            if (isset($permanent[$uuid])) {
+                $review[] = $uuid;
+            } else {
+                $missing[] = $uuid;
+            }
+        }
+
+        return [$missing, $review];
+    }
+
+    /**
+     * Device pay-outs (paid_from_drawer) logged by the shift's staff member
+     * inside the shift window, in baisas.
+     */
+    private function payoutsBaisas(Shift $shift, Carbon $closedAt): int
+    {
+        if ($shift->staff_id === null) {
+            return 0;
+        }
+
+        return Money::toBaisas(DB::table('pos_expenses')
+            ->where('company_id', $shift->company_id)
+            ->where('branch_id', $shift->branch_id)
+            ->where('paid_from_drawer', true)
+            ->where('logged_by_pos_staff_id', $shift->staff_id)
+            ->whereBetween('logged_at', [$shift->opened_at, $closedAt])
+            ->sum('amount'));
+    }
+
+    /**
+     * LAUNCH-P5 (A5) — a successful CASH payment that lands inside a CLOSED
+     * shift's window (the sale reached the server after the close) adds to
+     * that shift's late_sales_baisas and sets needs_review. The printed Z is
+     * not changed. The same attribution as the close decides the shift; at
+     * most one shift takes it.
+     *
+     * @param  list<int>  $paymentIds
+     * @return array{shift_uuid: string, late_sales_baisas: int}|null
+     */
+    public function recordLateCash(Order $order, array $paymentIds): ?array
+    {
+        $payments = Payment::query()->whereIn('id', $paymentIds ?: [0])
+            ->where('method', Payment::METHOD_CASH)->where('status', Payment::STATUS_SUCCESS)
+            ->whereNotNull('captured_at')->get();
+        $late = null;
+        foreach ($payments as $payment) {
+            $shifts = Shift::query()->where('company_id', $order->company_id)->where('branch_id', $order->branch_id)
+                ->where('status', Shift::STATUS_CLOSED)
+                ->where('opened_at', '<=', $payment->captured_at)->where('closed_at', '>=', $payment->captured_at)
+                ->orderBy('id')->get();
+            foreach ($shifts as $shift) {
+                $claims = Payment::query()
+                    ->join('pos_orders', 'pos_payments.order_id', '=', 'pos_orders.id')
+                    ->where('pos_payments.id', $payment->id)
+                    ->where($this->orderBelongsToShift($shift, 'pos_payments.captured_at', 'pos_payments.device_id'))
+                    ->exists();
+                if (! $claims) {
+                    continue;
+                }
+                $baisas = Money::toBaisas($payment->amount);
+                $shift->update([
+                    'late_sales_baisas' => (int) $shift->late_sales_baisas + $baisas,
+                    'needs_review' => true,
+                    'note' => self::appendNote($shift->note, 'Late cash sale '.$order->uuid.' ('.Money::toOmr($baisas).')'),
+                ]);
+                $late = ['shift_uuid' => (string) $shift->uuid, 'late_sales_baisas' => (int) $shift->late_sales_baisas];
+                break;
+            }
+        }
+
+        return $late;
+    }
+
+    private static function appendNote(?string $note, string $line): string
+    {
+        return $note === null || trim($note) === '' ? $line : $note.' | '.$line;
     }
 
     /**

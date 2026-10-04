@@ -65,7 +65,7 @@ class IngestSyncEventsAction
                 $stampedElsewhere = $existing->company_id !== null && (
                     (int) $existing->company_id !== (int) $device->company_id
                     || (int) $existing->branch_id !== (int) $device->branch_id);
-                if ($stampedElsewhere || ! $this->samePayload($existing, $event)) {
+                if ($stampedElsewhere || (! $this->samePayload($existing, $event) && ! $this->sameShiftClose($existing, $event))) {
                     $ack['result'] = null;
                 }
                 $results[] = $ack;
@@ -145,6 +145,7 @@ class IngestSyncEventsAction
                         // acquired the lock, so re-read before deciding to dispatch.
                         $existing->refresh();
                         if ($existing->ack_status === SyncEvent::STATUS_FAILED) {
+                            $this->refreshFailedShiftClose($existing, $event);
                             $this->dispatcher->dispatch($existing, $device);
                             $existing->refresh();
                             $existing->ack_status === SyncEvent::STATUS_PROCESSED ? $accepted++ : $duplicates++;
@@ -218,6 +219,37 @@ class IngestSyncEventsAction
                 'device_id' => (int) $device->getKey(),
             ],
         ];
+    }
+
+    /**
+     * LAUNCH-P5 (A5) — a P5 build closes a shift with a FIXED client_event_id
+     * (UUID v5 of "shift-close:" + the shift uuid). A repeated close of the
+     * same shift returns the original Z even when the device rebuilt the
+     * payload (a new tap, a new closed_at).
+     */
+    private function sameShiftClose(SyncEvent $row, array $event): bool
+    {
+        return $row->event_type === 'shift.close' && $event['event_type'] === 'shift.close'
+            && is_string($row->payload_json['shift_uuid'] ?? null)
+            && ($row->payload_json['shift_uuid'] ?? null) === ($event['payload']['shift_uuid'] ?? null);
+    }
+
+    /**
+     * LAUNCH-P5 (A5) — a shift.close that FAILED (e.g. unsynced_sales, or a
+     * missing approval) had no effect, so its retry under the same fixed id
+     * carries the device's current close (count, order list, authorization):
+     * the stored payload is replaced before the re-dispatch. Other event
+     * types keep their first payload.
+     */
+    private function refreshFailedShiftClose(SyncEvent $row, array $event): void
+    {
+        if (! $this->sameShiftClose($row, $event) || $this->samePayload($row, $event)) {
+            return;
+        }
+        $row->update([
+            'payload_json' => $event['payload'],
+            'client_timestamp' => self::clientTimestamp($event['client_timestamp']),
+        ]);
     }
 
     /**

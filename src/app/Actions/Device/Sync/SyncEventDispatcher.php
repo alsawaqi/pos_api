@@ -55,6 +55,9 @@ class SyncEventDispatcher
 
     public const CLIENT_TIME_BEHIND_FLAG = 'client_time_behind_24h';
 
+    /** The result_json error of a database failure: the only transient handler failure. */
+    public const TRANSIENT_ERROR = 'Could not save this update. Retry the same request.';
+
     public function __construct(
         private readonly CreateOrderHandler $createOrder,
         private readonly HoldOrderHandler $holdOrder,
@@ -212,8 +215,10 @@ class SyncEventDispatcher
                     $lockedEvent->update([
                         'ack_status' => SyncEvent::STATUS_FAILED,
                         'processed_at' => now(),
-                        'result_json' => ['error' => $e instanceof PDOException
-                            ? 'Could not save this update. Retry the same request.'
+                        // LAUNCH-P5 — a SyncRefusal carries a machine-readable
+                        // code and details (e.g. unsynced_sales + missing).
+                        'result_json' => $e instanceof SyncRefusal ? $e->resultJson() : ['error' => $e instanceof PDOException
+                            ? self::TRANSIENT_ERROR
                             : $e->getMessage()] + $refusal,
                     ]);
                 }

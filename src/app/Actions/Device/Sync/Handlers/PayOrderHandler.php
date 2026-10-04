@@ -60,6 +60,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
         private readonly AllocateOrderNumberAction $orderNumbers,
         private readonly CloseTableSessionForOrderAction $closeTableSession,
         private readonly SaleAuthorizations $sales,
+        private readonly CloseShiftHandler $shifts,
     ) {}
 
     public function handle(SyncEvent $event, Device $device): array
@@ -421,6 +422,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             // LAUNCH-P5 — a gift tender / loyalty redeem without a recorded
             // authorization is written to pos_approvals (never refused).
             $authorizations = $this->sales->forPay($event, $device, $orderUuid, $payments, is_array($payload['loyalty_redeem'] ?? null));
+            // LAUNCH-P5 (A5) — cash landing in an already-closed shift's window.
+            $lateShift = $this->shifts->recordLateCash($order, $paymentIds);
 
             $result = [
                 'order_id' => (int) $order->id,
@@ -444,6 +447,9 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             }
             if ($authorizations !== []) {
                 $result['authorizations'] = $authorizations;
+            }
+            if ($lateShift !== null) {
+                $result['late_for_shift'] = $lateShift['shift_uuid'];
             }
             if ($roundupResult !== null) {
                 $result['roundup_donation_id'] = $roundupResult['roundup_donation_id'];

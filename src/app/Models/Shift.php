@@ -38,6 +38,10 @@ class Shift extends Model
             'closed_at' => 'datetime',
             // HH-2 — staff-shared shift (open once a day, any terminal).
             'is_shared' => 'boolean',
+            // LAUNCH-P5 — close review, late cash and pay-outs (baisas).
+            'needs_review' => 'boolean',
+            'late_sales_baisas' => 'integer',
+            'payouts_baisas' => 'integer',
         ];
     }
 }

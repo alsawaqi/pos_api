@@ -8,6 +8,7 @@ use App\Models\PosStaff;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -134,35 +135,44 @@ final class ApproverVerifier
     }
 
     /**
-     * Lazily make the verifier while the server holds the plaintext PIN (a
-     * successful login or manager-PIN check), only when the row has none.
-     * Best effort: a failure here never fails the login or the check.
+     * Make or repair the verifier while the server holds the plaintext PIN
+     * (a successful login or manager-PIN check):
+     *  - none yet → a new salt, the configured iterations, K;
+     *  - fix order 1 L7: a stored K that does not match the typed PIN (the
+     *    PIN was reset by something that left K behind) → K recomputed with
+     *    the row's own salt and iterations — one PBKDF2 per login, which is
+     *    also what checks it. The write replaces only the K it read.
+     * Best effort: a failure never fails the login or the check, and what is
+     * reported never carries K (a query error would print its bindings).
      */
     public static function ensureFor(PosStaff $staff, string $pin): void
     {
-        if (self::storedKey($staff->pin_offline_key) !== null && $staff->pin_offline_salt !== null) {
-            return;
-        }
         try {
-            $salt = bin2hex(random_bytes(16));
-            $iterations = self::iterations();
-            $key = bin2hex(self::deriveKey($pin, $salt, $iterations));
-            $updated = DB::table('pos_staff')->where('id', $staff->id)->whereNull('pin_offline_key')->update([
-                'pin_offline_key' => $key,
-                'pin_offline_salt' => $salt,
-                'pin_offline_iterations' => $iterations,
-            ]);
-            if ($updated === 1) {
-                $staff->setRawAttributes(array_merge($staff->getAttributes(), [
-                    'pin_offline_key' => $key,
-                    'pin_offline_salt' => $salt,
-                    'pin_offline_iterations' => $iterations,
-                ]), true);
+            $stored = self::storedKey($staff->pin_offline_key);
+            $salt = $staff->pin_offline_salt;
+            $iterations = (int) ($staff->pin_offline_iterations ?? 0);
+            $reuse = $stored !== null && is_string($salt) && preg_match('/^[0-9a-fA-F]{32}$/', $salt) === 1 && $iterations >= 1;
+            if (! $reuse) {
+                $salt = bin2hex(random_bytes(16));
+                $iterations = self::iterations();
+            }
+            $key = self::deriveKey($pin, (string) $salt, $iterations);
+            if ($reuse && hash_equals($stored, $key)) {
+                return;
+            }
+            $query = DB::table('pos_staff')->where('id', $staff->id);
+            $stored === null ? $query->where(fn ($q) => $q->whereNull('pin_offline_key')->orWhere('pin_offline_key', ''))
+                : $query->where('pin_offline_key', $staff->pin_offline_key);
+            $values = ['pin_offline_key' => bin2hex($key), 'pin_offline_salt' => strtolower((string) $salt), 'pin_offline_iterations' => $iterations];
+            if ($query->update($values) === 1) {
+                $staff->setRawAttributes(array_merge($staff->getAttributes(), $values), true);
             } else {
                 $staff->refresh();
             }
         } catch (Throwable) {
-            // Never block a login or an approval on the verifier.
+            // Never block a login or an approval on the verifier, and never
+            // let K reach a log through the original exception.
+            report(new RuntimeException('Could not store the offline approval verifier of staff member '.(int) $staff->id.'.'));
         }
     }
 }

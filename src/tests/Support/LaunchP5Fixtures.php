@@ -156,16 +156,24 @@ trait LaunchP5Fixtures
         ];
     }
 
+    /** The `iat` of every fixture staff token of the current test (taken once). */
+    protected ?int $p5TokenIssuedAt = null;
+
     /**
      * The contract's staff token (fix order 1 F1), built straight from the
      * formula: base64url(json{v,d,s,iat}) "." base64url(HMAC-SHA256(key,
      * first part)), key = HMAC-SHA256("pos-staff-token-v1", app.key).
+     *
+     * Without $issuedAt every token of one test shares one `iat`, so the same
+     * (device, staff) always gets the same token — as a device keeps the token
+     * with its outbox row, a re-sent event is byte-for-byte the same even
+     * when the re-push crosses a second boundary.
      */
     protected function p5StaffToken(Device|int $device, int $staffId, ?int $issuedAt = null): string
     {
         $b64 = static fn (string $bytes): string => rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=');
         $body = $b64((string) json_encode(['v' => 1, 'd' => $device instanceof Device ? (int) $device->id : $device,
-            's' => $staffId, 'iat' => $issuedAt ?? time()]));
+            's' => $staffId, 'iat' => $issuedAt ?? ($this->p5TokenIssuedAt ??= time())]));
         $key = hash_hmac('sha256', 'pos-staff-token-v1', (string) config('app.key'), true);
 
         return $body.'.'.$b64(hash_hmac('sha256', $body, $key, true));

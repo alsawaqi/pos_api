@@ -98,6 +98,34 @@ class DrawerPayoutTest extends TestCase
         $this->assertSame([2500, 0, 2500], $this->close('mdev_b', $b, 10, 2500, []));
     }
 
+    public function test_a_re_sent_pay_out_never_makes_a_second_expense(): void
+    {
+        // The handheld journals a drawer pay-out and re-sends it (same
+        // client_event_id) until it is answered, e.g. before a shift close.
+        $shift = $this->open('mdev_a', 7);
+        $event = $this->p5Event('expense.log', ['category' => 'supplies', 'amount_baisas' => 2500, 'staff_id' => 7,
+            'paid_from_drawer' => true, 'shift_uuid' => $shift, 'auth_v' => 1, 'authorization' => $this->p5Position('payout', 7),
+            'logged_at' => now()->subMinutes(10)->toIso8601String()]);
+        $first = $this->p5Push('mdev_a', [$event])->assertOk()->assertJsonPath('data.results.0.duplicate', false)
+            ->json('data.results.0.result');
+        foreach ([1, 2] as $i) {
+            $this->p5Push('mdev_a', [$event])->assertOk()->assertJsonPath('data.results.0.duplicate', true)
+                ->assertJsonPath('data.results.0.status', 'processed')->assertJsonPath('data.results.0.result', $first);
+        }
+        $this->assertSame(1, DB::table('pos_expenses')->count());
+        $this->assertSame(1, DB::table('pos_approvals')->where('action', 'payout')->count());
+        $this->assertSame([2500, 0, 2500], $this->close('mdev_a', $shift, 7, 2500, []));
+
+        // A late one re-sent after the close is counted once too.
+        $late = $this->p5Event('expense.log', ['category' => 'supplies', 'amount_baisas' => 1000, 'staff_id' => 7,
+            'paid_from_drawer' => true, 'shift_uuid' => $shift, 'auth_v' => 1, 'authorization' => $this->p5Position('payout', 7),
+            'logged_at' => now()->subMinutes(5)->toIso8601String()]);
+        $this->p5Push('mdev_a', [$late])->assertOk();
+        $this->p5Push('mdev_a', [$late])->assertOk()->assertJsonPath('data.results.0.duplicate', true);
+        $this->assertSame([2, 1000], [DB::table('pos_expenses')->count(),
+            (int) DB::table('pos_shifts')->where('uuid', $shift)->value('late_payouts_baisas')]);
+    }
+
     public function test_without_a_known_shift_today_s_rule_applies(): void
     {
         $shift = $this->open('mdev_a', 7);

@@ -44,7 +44,7 @@ final class RequireStaffToken
         $request->attributes->set(self::TOKEN, $token);
 
         $device = $request->user();
-        if (! $device instanceof Device || ! $device->isAttended() || ! AuthorizationGate::isP5($request->all())) {
+        if (! $device instanceof Device || ! $device->isAttended() || ! AuthorizationGate::isP5($request->all(), $device)) {
             return $next($request);
         }
 

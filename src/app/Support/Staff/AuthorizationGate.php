@@ -36,8 +36,9 @@ use Throwable;
  *    with the reason. The same approval (approver + action + approved_at) can
  *    verify for one event only (failed: proof_reused).
  *  - a gated action of a P5 build (payload auth_v: 1) with no block → missing.
- *  - an event of an old build (no auth_v) → a `legacy` row where a check
- *    would apply; the caller keeps today's behaviour.
+ *  - an event of an old build (no auth_v, from a device that never sent it,
+ *    while pos.require_auth_v is off) → a `legacy` row where a check would
+ *    apply; the caller keeps today's behaviour.
  *
  * The proof's canonical uses the subject and amount the CALLER derives from
  * the event ({@see ApproverVerifier::canonical()}); see the caller for each
@@ -52,12 +53,43 @@ final class AuthorizationGate
 
     public function __construct(private readonly PositionPermissions $permissions) {}
 
-    /** Every event and call of a P5 build carries auth_v: 1 at the payload top level. */
-    public static function isP5(array $payload): bool
+    /**
+     * Every event and call of a P5 build carries auth_v: 1 at the payload top
+     * level. F2 — the marker is sticky: a device that once sent it
+     * (pos_devices.auth_v_seen_at) is a P5 build from then on, and config
+     * pos.require_auth_v makes every device one.
+     */
+    public static function isP5(array $payload, ?Device $device = null): bool
+    {
+        return self::marked($payload) || ($device !== null && $device->auth_v_seen_at !== null)
+            || (bool) config('pos.require_auth_v', false);
+    }
+
+    /** The payload itself carries auth_v: 1. */
+    public static function marked(array $payload): bool
     {
         $v = $payload['auth_v'] ?? null;
 
         return $v === 1 || $v === '1' || $v === 1.0;
+    }
+
+    /**
+     * F2 — stamp pos_devices.auth_v_seen_at the first time a device sends
+     * auth_v: 1 (a sync event, at the top or inside `order`, or an online
+     * call). Runs outside any refusal's transaction so it always sticks.
+     */
+    public static function observe(Device $device, mixed $payload): void
+    {
+        if ($device->auth_v_seen_at !== null || ! is_array($payload)) {
+            return;
+        }
+        if (! self::marked($payload) && ! (is_array($payload['order'] ?? null) && self::marked($payload['order']))) {
+            return;
+        }
+        $now = now();
+        DB::table('pos_devices')->where('id', $device->getKey())->whereNull('auth_v_seen_at')->update(['auth_v_seen_at' => $now]);
+        $device->setAttribute('auth_v_seen_at', $now);
+        $device->syncOriginalAttribute('auth_v_seen_at');
     }
 
     /**

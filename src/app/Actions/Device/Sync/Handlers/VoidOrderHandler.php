@@ -122,7 +122,7 @@ class VoidOrderHandler implements SyncEventHandler
             'actor_staff_id' => $voidedBy, 'staff_token' => $payload['staff_token'] ?? null,
             'client_event_id' => (string) $event->client_event_id,
             'at' => $event->client_timestamp ?? now(), 'needs_approval' => $voidReason !== null && (bool) $voidReason->requires_manager,
-        ], $block, AuthorizationGate::isP5($payload));
+        ], $block, AuthorizationGate::isP5($payload, $device));
 
         // The ACK stays the void core's result (the verdict is in pos_approvals).
         return $this->core->handle($order, $device, $voidedAt, $reason, $voidReason, $voidedBy, $outcome->approvedBy());

@@ -51,7 +51,7 @@ final class SaleAuthorizations
     public function forCreate(SyncEvent $event, Device $device, array $order): array
     {
         $payload = (array) $event->payload_json;
-        $p5 = AuthorizationGate::isP5($payload) || AuthorizationGate::isP5($order);
+        $p5 = AuthorizationGate::isP5($payload, $device) || AuthorizationGate::marked($order);
         $actor = isset($order['staff_id']) ? (int) $order['staff_id'] : null;
         $position = $actor === null ? null
             : DB::table('pos_staff')->where('company_id', $device->company_id)->where('id', $actor)->value('position');
@@ -158,7 +158,7 @@ final class SaleAuthorizations
     public function forPay(SyncEvent $event, Device $device, string $orderUuid, array $payments, bool $loyaltyRedeem): array
     {
         $payload = (array) $event->payload_json;
-        $p5 = AuthorizationGate::isP5($payload);
+        $p5 = AuthorizationGate::isP5($payload, $device);
         $actor = isset($payload['staff_id']) ? (int) $payload['staff_id'] : null;
 
         $items = [];

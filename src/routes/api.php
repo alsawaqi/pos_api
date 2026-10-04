@@ -73,6 +73,7 @@ use App\Http\Controllers\Api\V1\PublicQr\QrTableFinishController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableRoundController;
 use App\Http\Middleware\EnsureAttendedDevice;
+use App\Http\Middleware\MarkP5Device;
 use App\Http\Middleware\RefuseTrainingMode;
 use App\Http\Middleware\RequireStaffToken;
 use Illuminate\Http\Request;
@@ -146,7 +147,7 @@ Route::prefix('v1')->group(function (): void {
 
     // Everything below requires a valid device token, throttled per-device.
     // LAUNCH-P5 (A8) — any device call carrying training: true is refused.
-    Route::middleware(['auth:pos_device', 'throttle:device-api', RefuseTrainingMode::class])->group(function (): void {
+    Route::middleware(['auth:pos_device', 'throttle:device-api', RefuseTrainingMode::class, MarkP5Device::class])->group(function (): void {
         Route::post('device/payments/{paymentUuid}/reversals', [PaymentReversalsController::class, 'reserve'])->middleware('throttle:manager-pin');
         Route::post('device/payments/reversals/{uuid}/result', [PaymentReversalsController::class, 'result']);
         Route::get('device/payments/reversals', [PaymentReversalsController::class, 'index']);

@@ -80,7 +80,7 @@ final class DeviceSoldOutController
         }
         $approverId = isset($data['approver_staff_id']) ? (int) $data['approver_staff_id'] : null;
         $authorization = null;
-        if (AuthorizationGate::isP5($request->all())) {
+        if (AuthorizationGate::isP5($request->all(), $device)) {
             // LAUNCH-P5 — sold_out.toggle: the actor's own tick (position block)
             // or a verified approver; anything else is refused (403). Proof
             // subject: the product uuid; no amount; the block's ref.

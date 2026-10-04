@@ -109,7 +109,7 @@ class CloseShiftHandler implements SyncEventHandler
 
         $closedAt = isset($payload['closed_at']) ? Carbon::parse((string) $payload['closed_at']) : now();
         $closingBaisas = (int) ($payload['closing_cash_baisas'] ?? 0);
-        $p5 = AuthorizationGate::isP5($payload);
+        $p5 = AuthorizationGate::isP5($payload, $device);
 
         $closedBy = isset($payload['closed_by_staff_id']) ? (int) $payload['closed_by_staff_id'] : null;
         TenantReferenceGuard::assertStaffInTenant($device, $closedBy, 'shift.close references a staff member outside the device tenant');

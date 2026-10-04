@@ -168,6 +168,10 @@ class StaffTokenTest extends TestCase
             'submitted_at' => now()->toIso8601String(), 'lines' => [['product_id' => $product->id, 'qty' => 2]]];
         $url = '/api/v1/device/tables/'.$seat->uuid.'/round';
 
+        // An old build (no auth_v, a device that never sent it) needs no token.
+        $this->p5Online($device, 'POST', $url, $round())->assertOk()->assertJsonPath('data.outcome', 'appended');
+        $rounds = DB::table('pos_qr_order_rounds')->count();
+
         $cases = [
             'token_missing' => '',
             'token_invalid' => 'not.a-token',
@@ -180,11 +184,10 @@ class StaffTokenTest extends TestCase
         }
         $this->p5Online($device, 'POST', $url, array_replace($round(['auth_v' => 1]), ['staff_id' => 12]))
             ->assertStatus(403)->assertJsonPath('data.reason', 'staff_inactive');
-        $this->assertSame(0, DB::table('pos_qr_order_rounds')->count());
+        $this->assertSame($rounds, DB::table('pos_qr_order_rounds')->count());
 
-        // The person's own token passes; an old build (no auth_v) needs none.
+        // The person's own token passes.
         $this->p5Online($device, 'POST', $url, $round(['auth_v' => 1]))->assertOk()->assertJsonPath('data.outcome', 'appended');
-        $this->p5Online($device, 'POST', $url, $round())->assertOk()->assertJsonPath('data.outcome', 'appended');
 
         // A position block on an online table action is the token's person.
         $cancel = $prefix + ['auth_v' => 1, 'client_request_id' => (string) Str::uuid(), 'product_id' => (int) $product->id,

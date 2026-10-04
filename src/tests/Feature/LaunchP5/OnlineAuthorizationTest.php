@@ -168,8 +168,10 @@ class OnlineAuthorizationTest extends TestCase
         $this->p5Online($device, 'POST', $url, ['sold_out' => false, 'staff_id' => 9, 'auth_v' => 1,
             'authorization' => $this->p5Position('sold_out.toggle', 9)])->assertOk()->assertJsonPath('data.authorization.result', 'position_ok');
 
-        // An old build: approver_staff_id as today, recorded as legacy.
-        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'approver_staff_id' => 8])
+        // An old build (a device that never sent auth_v; fix order 1 F2 makes
+        // the marker sticky): approver_staff_id as today, recorded as legacy.
+        $old = $this->p5Device('mdev_so_old');
+        $this->p5Online($old, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'approver_staff_id' => 8])
             ->assertOk()->assertJsonPath('data.changed', true);
         $this->assertSame(['missing', 'verified', 'position_ok', 'legacy'], DB::table('pos_approvals')->orderBy('id')->pluck('result')->all());
     }

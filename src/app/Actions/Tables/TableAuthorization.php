@@ -38,7 +38,7 @@ final class TableAuthorization
      */
     public function check(Device $device, array $payload, string $action, array $extra = []): ?AuthorizationOutcome
     {
-        $p5 = AuthorizationGate::isP5($payload);
+        $p5 = AuthorizationGate::isP5($payload, $device);
         $outcome = $this->gate->evaluate($device, array_merge([
             'action' => $action,
             'subject_type' => 'table_session',

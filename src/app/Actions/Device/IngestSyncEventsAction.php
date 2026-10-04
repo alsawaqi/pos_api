@@ -8,6 +8,7 @@ use App\Actions\Device\Sync\SyncEventDispatcher;
 use App\Actions\Device\Sync\SyncEventDispatchLock;
 use App\Models\Device;
 use App\Models\SyncEvent;
+use App\Support\Staff\AuthorizationGate;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
 
@@ -53,6 +54,9 @@ class IngestSyncEventsAction
         $duplicates = 0;
 
         foreach ($events as $event) {
+            // LAUNCH-P5 fix order 1 (F2) — the first event carrying auth_v: 1
+            // makes this device a P5 build for good (pos_devices.auth_v_seen_at).
+            AuthorizationGate::observe($device, $event['payload'] ?? null);
             // LAUNCH-P5 (A8) — training mode never reaches the books: an event
             // carrying training: true is refused (permanently) and not stored.
             if (self::isTraining($event['payload'] ?? [])) {

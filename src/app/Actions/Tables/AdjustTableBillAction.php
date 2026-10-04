@@ -229,7 +229,7 @@ final class AdjustTableBillAction
     private function authorize(Device $device, array $payload, string $action, array $extra, bool $legacyText): ?int
     {
         $required = ($extra['required'] ?? true) === true;
-        if (! AuthorizationGate::isP5($payload) && ! $required) {
+        if (! AuthorizationGate::isP5($payload, $device) && ! $required) {
             return null;
         }
         $outcome = $this->authorization->check($device, $payload, $action, $extra);

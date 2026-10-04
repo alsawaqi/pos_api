@@ -91,6 +91,7 @@ class Device extends Model implements Authenticatable
     {
         return [
             'last_seen_at' => 'datetime',
+            'auth_v_seen_at' => 'datetime',
             'assigned_at' => 'datetime',
             'token_issued_at' => 'datetime',
             'assignment_activated_at' => 'datetime',

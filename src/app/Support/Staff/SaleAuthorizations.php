@@ -21,6 +21,9 @@ use Illuminate\Support\Facades\DB;
  *       amount = that row's amount_baisas; gated when the cashier's position
  *       lacks the tick or the discount is above its maximum (as a % of the
  *       order subtotal, 1 baisa tolerance)
+ *   discounts[i] with source "loyalty" in a P5 sale that carries a
+ *       loyalty.redeem block                      not a manual discount (the
+ *       redemption is checked as loyalty.redeem; fix order 2 A2)
  *   discounts[i] of a rule marked "needs manager" discount.manual, ref
  *       "discount:i"; always needs an approver (M7)
  *   comps[i] (not a gift)                         comp, ref "comp:i"; the comp
@@ -65,9 +68,18 @@ final class SaleAuthorizations
         $subtotal = (int) ($order['subtotal_baisas'] ?? 0);
 
         // ---- the gated (and optional) items of the sale ----
+        $blocks = AuthorizationGate::blocks($payload);
+        // Fix order 2 A2 (device review M2) — a P5 sale that redeems loyalty
+        // (it carries a loyalty.redeem block) sends the redemption's discount
+        // row with source "loyalty": that row is checked as loyalty.redeem,
+        // never as a manual discount. Old builds are unchanged.
+        $redeemsLoyalty = $p5 && array_filter($blocks, static fn (array $b): bool => $b['action'] === 'loyalty.redeem') !== [];
         $items = [];
         foreach ((array) ($order['discounts'] ?? []) as $i => $d) {
             if (! is_array($d) || isset($d['offer_id'])) {
+                continue;
+            }
+            if ($redeemsLoyalty && ($d['source'] ?? null) === 'loyalty') {
                 continue;
             }
             $amount = (int) ($d['amount_baisas'] ?? 0);
@@ -105,7 +117,7 @@ final class SaleAuthorizations
                 'legacy_approver' => isset($c['approved_by_staff_id']) ? (int) $c['approved_by_staff_id'] : null];
         }
 
-        [$assigned, $unused] = $this->assign(AuthorizationGate::blocks($payload), $items);
+        [$assigned, $unused] = $this->assign($blocks, $items);
 
         // F1 — the event's actor is the order's staff member, bound by the
         // event's signed staff token (on the payload, or inside `order`).

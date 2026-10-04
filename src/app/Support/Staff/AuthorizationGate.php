@@ -40,12 +40,10 @@ use Throwable;
  *    while pos.require_auth_v is off) → a `legacy` row where a check would
  *    apply; the caller keeps today's behaviour.
  *
- * The proof's canonical uses the subject and amount the CALLER derives from
- * the event ({@see ApproverVerifier::canonical()}); see the caller for each
- * action. As a tolerance between the parallel device builds, the proof is
- * also accepted with an empty subject and/or an empty or any same-kind
- * amount of the event — the replay guard above keeps such a proof to one
- * event.
+ * The proof's canonical uses exactly the subject, amount and ref of the item
+ * the CALLER derives from the event ({@see ApproverVerifier::canonical()});
+ * see the caller for each action. There is no tolerance (fix order 1 F4): a
+ * proof made for another subject, amount or ref is `bad_proof`.
  */
 final class AuthorizationGate
 {
@@ -158,7 +156,7 @@ final class AuthorizationGate
      *
      * @param  array{action: string, subject_type: string, subject_uuid?: ?string, amount_baisas?: ?int, ref?: ?string,
      *     actor_staff_id?: ?int, staff_token?: mixed, client_event_id?: ?string, at: CarbonInterface, required?: bool,
-     *     needs_approval?: bool, percent?: ?float, candidate_amounts?: list<int>, legacy_approver_staff_id?: ?int,
+     *     needs_approval?: bool, percent?: ?float, legacy_approver_staff_id?: ?int,
      *     expected_ref?: ?string, max_age_seconds?: ?int}  $ctx
      * @param  array<string, mixed>|null  $block  a normalised block ({@see block()})
      */
@@ -199,6 +197,20 @@ final class AuthorizationGate
         };
 
         return $this->record($device, $ctx, $ref, $outcome, $block);
+    }
+
+    /**
+     * Record a block that cannot be checked against any gated item of its
+     * event (F4: its ref names no item) as failed with the reason.
+     *
+     * @param  array<string, mixed>  $ctx
+     * @param  array<string, mixed>  $block
+     */
+    public function refuse(Device $device, array $ctx, array $block, string $reason): AuthorizationOutcome
+    {
+        return $this->record($device, $ctx, $ctx['ref'] ?? $block['ref'], new AuthorizationOutcome(AuthorizationOutcome::FAILED,
+            $this->knownActor($device, $ctx['actor_staff_id'] ?? null), null, $reason,
+            $block['mode'] === 'position' ? 'position' : 'approval', $block['method']), $block);
     }
 
     /**
@@ -292,25 +304,24 @@ final class AuthorizationGate
         return new AuthorizationOutcome(AuthorizationOutcome::VERIFIED, $actor, $approverId, null, 'approval', $method);
     }
 
-    /** @return list<string> */
+    /**
+     * F4 (review M2) — the proof is checked against the item's OWN subject,
+     * amount and ref only, exactly as the caller derives them (an empty value
+     * only where the contract table says so). approved_at is taken as sent or
+     * in its UTC millisecond form (the same instant).
+     *
+     * @return list<string>
+     */
     private function canonicals(Device $device, array $ctx, array $block, Carbon $approvedAt): array
     {
-        $times = array_values(array_unique([(string) $block['approved_at'], ApproverVerifier::isoMillis($approvedAt)]));
-        $subjects = [$ctx['subject_uuid'] ?? null, null];
-        $amounts = [$ctx['amount_baisas'] ?? null, null, ...($ctx['candidate_amounts'] ?? [])];
-        $ref = $block['ref'] ?? ($ctx['ref'] ?? null);
-
+        $amount = $ctx['amount_baisas'] ?? null;
         $out = [];
-        foreach ($times as $time) {
-            foreach ($subjects as $subject) {
-                foreach ($amounts as $amount) {
-                    $out[] = ApproverVerifier::canonical((string) $ctx['action'], (string) $device->uuid,
-                        (int) $block['approver_staff_id'], $time, $subject, $amount === null ? null : (int) $amount, $ref);
-                }
-            }
+        foreach (array_unique([(string) $block['approved_at'], ApproverVerifier::isoMillis($approvedAt)]) as $time) {
+            $out[] = ApproverVerifier::canonical((string) $ctx['action'], (string) $device->uuid, (int) $block['approver_staff_id'],
+                $time, $ctx['subject_uuid'] ?? null, $amount === null ? null : (int) $amount, $block['ref']);
         }
 
-        return array_values(array_unique($out));
+        return $out;
     }
 
     /**

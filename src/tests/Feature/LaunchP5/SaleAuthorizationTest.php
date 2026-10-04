@@ -144,8 +144,8 @@ class SaleAuthorizationTest extends TestCase
         ];
         $blocks = [
             $this->p5Approval($this->device, 'comp', 8, 7, $uuid, 1000, 'comp:0'),
-            // The gift block arrives without the ref the server derives: matched by action.
-            $this->p5Approval($this->device, 'gift', 9, 7, $uuid, 500, 'gift:7'),
+            // The gift line is comps[1]: ref "gift:1" (fix order 1 F4: exact refs).
+            $this->p5Approval($this->device, 'gift', 9, 7, $uuid, 500, 'gift:1'),
         ];
         $this->p5Push('mdev_sale', [$this->p5Create($uuid, ['comp_total_baisas' => 1500, 'grand_total_baisas' => 8500, 'comps' => $comps],
             ['auth_v' => 1, 'authorizations' => $blocks])])->assertOk()->assertJsonPath('data.results.0.status', 'processed');
@@ -214,8 +214,10 @@ class SaleAuthorizationTest extends TestCase
 
     public function test_one_approval_verifies_for_one_order_only(): void
     {
+        // The proof names its order (fix order 1 F4: exact subject), so on
+        // another order it does not verify at all.
         $first = (string) Str::uuid();
-        $block = $this->p5Approval($this->device, 'order.void_paid', 8, 7, null);
+        $block = $this->p5Approval($this->device, 'order.void_paid', 8, 7, $first);
         foreach ([$first, $second = (string) Str::uuid()] as $uuid) {
             $this->p5Push('mdev_sale', [$this->p5Create($uuid), $this->p5Pay($uuid, [['method' => 'cash', 'amount_baisas' => 10000]])])->assertOk();
             $this->p5Push('mdev_sale', [$this->p5Event('order.void', ['order_uuid' => $uuid, 'staff_id' => 7, 'auth_v' => 1, 'authorization' => $block])])
@@ -224,8 +226,18 @@ class SaleAuthorizationTest extends TestCase
 
         $this->assertSame('verified', DB::table('pos_approvals')->where('subject_uuid', $first)->value('result'));
         $replayed = DB::table('pos_approvals')->where('subject_uuid', $second)->sole();
-        $this->assertSame(['failed', 'proof_reused'], [$replayed->result, $replayed->reason]);
+        $this->assertSame(['failed', 'bad_proof'], [$replayed->result, $replayed->reason]);
         $this->assertNull(DB::table('pos_orders')->where('uuid', $second)->value('void_approved_by_staff_id'));
+
+        // A pay-out has no subject in its proof: the same approval on a second
+        // pay-out event is a reuse.
+        $payout = $this->p5Approval($this->device, 'payout', 8, 7, null, 2500);
+        foreach ([1, 2] as $i) {
+            $this->p5Push('mdev_sale', [$this->p5Event('expense.log', ['category' => 'supplies', 'amount_baisas' => 2500, 'staff_id' => 7,
+                'paid_from_drawer' => true, 'auth_v' => 1, 'authorization' => $payout])])->assertOk();
+        }
+        $this->assertSame([['verified', null], ['failed', 'proof_reused']], DB::table('pos_approvals')->where('action', 'payout')
+            ->orderBy('id')->get(['result', 'reason'])->map(fn ($r): array => [$r->result, $r->reason])->all());
     }
 
     public function test_pay_records_the_payer_and_a_gift_tender_without_an_approval_is_missing(): void
@@ -241,9 +253,10 @@ class SaleAuthorizationTest extends TestCase
         $row = DB::table('pos_approvals')->sole();
         $this->assertSame(['gift', 'tender:1', 'missing', 7], [$row->action, $row->ref, $row->result, (int) $row->actor_staff_id]);
 
-        // A whole-bill gift approved on order.create covers the tender.
+        // A whole-bill gift approved on order.create (ref tender:0, EMPTY
+        // amount) covers the tender.
         $uuid2 = (string) Str::uuid();
-        $gift = $this->p5Approval($this->device, 'gift', 8, 7, $uuid2, 10000, 'tender:0');
+        $gift = $this->p5Approval($this->device, 'gift', 8, 7, $uuid2, null, 'tender:0');
         $this->p5Push('mdev_sale', [
             $this->p5Create($uuid2, [], ['auth_v' => 1, 'authorizations' => [$gift]]),
             $this->p5Pay($uuid2, [['method' => 'gift', 'amount_baisas' => 10000]], ['auth_v' => 1, 'staff_id' => 7]),

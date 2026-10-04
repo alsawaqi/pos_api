@@ -23,19 +23,21 @@ use Illuminate\Support\Facades\DB;
  *   discounts[i] of a rule marked "needs manager" discount.manual, ref
  *       "discount:i"; always needs an approver (M7)
  *   comps[i] (not a gift)                         comp, ref "comp:i"
- *   comps[i] with is_gift                         gift, ref "gift:i" (a block
- *                                                 with ref "comp:i" matches too)
- *   any other block it carries (e.g. loyalty.redeem) is checked as sent
+ *   comps[i] with is_gift                         gift, ref "gift:i" (or "comp:i")
+ *   a block for what settles at order.pay rides order.create too: a gift
+ *       TENDER (gift, ref "tender:i", EMPTY amount — the one documented
+ *       empty amount) or a loyalty redeem (loyalty.redeem, ref "loyalty:0",
+ *       empty amount)
  * order.pay gated items: a gift tender (gift, ref "tender:i", i = its index
  *   in payments; amount = the tender's amount_baisas), a loyalty redeem
- *   (loyalty.redeem, ref "loyalty:0") — satisfied by a row of the same order
- *   and action (a gift tender: the same ref) already written at order.create,
- *   else checked from order.pay's own blocks, else `missing`. A gift tender's
- *   block may ride order.create with ref "tender:i" and an EMPTY amount.
+ *   (loyalty.redeem, ref "loyalty:0") — satisfied by a row of the same order,
+ *   action and ref already written at order.create, else checked from
+ *   order.pay's own blocks, else `missing`.
  *
- * Blocks are matched to items by action and ref first; a gated item left
- * without one then takes an unused block of its action whose ref is empty or
- * of the item's kind ("tender:…" never goes to a gift line).
+ * Fix order 1 F4 (review M2): a block belongs to the item whose action and
+ * ref it names, and its proof is checked against that item's own subject,
+ * amount and ref only. A block naming no item of its event is recorded
+ * failed `ref_mismatch`; the item it may have been meant for is `missing`.
  */
 final class SaleAuthorizations
 {
@@ -60,10 +62,6 @@ final class SaleAuthorizations
 
         // ---- the gated (and optional) items of the sale ----
         $items = [];
-        $amounts = ['discount.manual' => [], 'comp' => [], 'gift' => []];
-        foreach ((array) ($order['discounts'] ?? []) as $d) {
-            $amounts['discount.manual'][] = (int) ($d['amount_baisas'] ?? 0);
-        }
         foreach ((array) ($order['discounts'] ?? []) as $i => $d) {
             if (! is_array($d) || isset($d['offer_id'])) {
                 continue;
@@ -90,7 +88,6 @@ final class SaleAuthorizations
                 continue;
             }
             $isGift = ($c['is_gift'] ?? false) === true;
-            $amounts[$isGift ? 'gift' : 'comp'][] = (int) ($c['amount_baisas'] ?? 0);
             $items[] = ['action' => $isGift ? 'gift' : 'comp', 'refs' => $isGift ? ['gift:'.$i, 'comp:'.$i] : ['comp:'.$i],
                 'amount' => (int) ($c['amount_baisas'] ?? 0), 'required' => true, 'comp_index' => $i,
                 'actor' => isset($c['staff_id']) ? (int) $c['staff_id'] : $actor,
@@ -115,7 +112,7 @@ final class SaleAuthorizations
             $outcome = $this->gate->evaluate($device, array_merge($base, [
                 'action' => $item['action'], 'ref' => $ref, 'amount_baisas' => $item['amount'],
                 'required' => $item['required'], 'needs_approval' => $item['needs_approval'] ?? false,
-                'percent' => $item['percent'] ?? null, 'candidate_amounts' => $amounts[$item['action']],
+                'percent' => $item['percent'] ?? null,
                 // An old build's row keeps the comp's own staff member.
                 'actor_staff_id' => $p5 ? $actor : ($item['actor'] ?? $actor),
                 'legacy_approver_staff_id' => $item['legacy_approver'] ?? null,
@@ -131,19 +128,17 @@ final class SaleAuthorizations
             $summary[] = ['action' => $item['action'], 'ref' => $ref, 'result' => $outcome->result];
         }
         if ($p5) {
-            // Blocks for things the event cannot show (a gift TENDER or a
-            // loyalty redeem settle at order.pay): the proof is accepted with
-            // no amount, the whole bill, the subtotal or any amount of the sale.
-            $known = array_values(array_unique([(int) ($order['grand_total_baisas'] ?? 0), $subtotal,
-                ...$amounts['discount.manual'], ...$amounts['comp'], ...$amounts['gift']]));
             foreach ($unused as $block) {
                 if ($block['action'] === null) {
                     continue;
                 }
-                $outcome = $this->gate->evaluate($device, $base + [
-                    'action' => $block['action'], 'ref' => $block['ref'], 'amount_baisas' => null,
-                    'candidate_amounts' => $known,
-                ], $block, true);
+                $ctx = $base + ['action' => $block['action'], 'ref' => $block['ref'], 'amount_baisas' => null];
+                // What settles at order.pay may be approved here, with an
+                // EMPTY amount: a gift tender ("tender:i") or a loyalty redeem.
+                $settlesAtPay = ($block['action'] === 'gift' && preg_match('/^tender:\d+$/', (string) $block['ref']) === 1)
+                    || ($block['action'] === 'loyalty.redeem' && $block['ref'] === 'loyalty:0');
+                $outcome = $settlesAtPay ? $this->gate->evaluate($device, $ctx, $block, true)
+                    : $this->gate->refuse($device, $ctx, $block, 'ref_mismatch');
                 $summary[] = ['action' => $block['action'], 'ref' => $block['ref'], 'result' => $outcome->result];
             }
         }
@@ -171,11 +166,12 @@ final class SaleAuthorizations
         if ($loyaltyRedeem) {
             $items[] = ['action' => 'loyalty.redeem', 'refs' => ['loyalty:0'], 'amount' => null];
         }
-        if ($items === []) {
+        $blocks = AuthorizationGate::blocks($payload);
+        if ($items === [] && $blocks === []) {
             return [];
         }
 
-        [$assigned] = $this->assign(AuthorizationGate::blocks($payload), $items);
+        [$assigned, $unused] = $this->assign($blocks, $items);
         $base = ['subject_type' => 'order', 'subject_uuid' => $orderUuid, 'actor_staff_id' => $actor,
             'staff_token' => $payload['staff_token'] ?? null,
             'client_event_id' => (string) $event->client_event_id, 'at' => $event->client_timestamp ?? now()];
@@ -183,8 +179,7 @@ final class SaleAuthorizations
         foreach ($items as $k => $item) {
             $block = $assigned[$k] ?? null;
             $ref = $block['ref'] ?? $item['refs'][0];
-            if ($block === null && $p5 && $this->recordedForOrder($device, $orderUuid, $item['action'],
-                $item['action'] === 'gift' ? $item['refs'][0] : null)) {
+            if ($block === null && $p5 && $this->recordedForOrder($device, $orderUuid, $item['action'], $item['refs'][0])) {
                 $summary[] = ['action' => $item['action'], 'ref' => $ref, 'result' => 'at_create'];
 
                 continue;
@@ -194,21 +189,30 @@ final class SaleAuthorizations
             ], $block, $p5);
             $summary[] = ['action' => $item['action'], 'ref' => $ref, 'result' => $outcome->result];
         }
+        if ($p5) {
+            foreach ($unused as $block) {
+                if ($block['action'] !== null) {
+                    $outcome = $this->gate->refuse($device, $base + ['action' => $block['action'], 'ref' => $block['ref']],
+                        $block, 'ref_mismatch');
+                    $summary[] = ['action' => $block['action'], 'ref' => $block['ref'], 'result' => $outcome->result];
+                }
+            }
+        }
 
         return $summary;
     }
 
-    /** A row already written for this order and action (a gift tender: for that tender's ref). */
-    private function recordedForOrder(Device $device, string $orderUuid, string $action, ?string $ref): bool
+    /** A row already written for this order, action and ref (at order.create). */
+    private function recordedForOrder(Device $device, string $orderUuid, string $action, string $ref): bool
     {
         return DB::table('pos_approvals')->where('company_id', $device->company_id)
             ->where('subject_type', 'order')->where('subject_uuid', $orderUuid)->where('action', $action)
-            ->when($ref !== null, fn ($q) => $q->where('ref', $ref))->exists();
+            ->where('ref', $ref)->exists();
     }
 
     /**
-     * Match blocks to items: by action and ref first, then a REQUIRED item
-     * still without a block takes the first unused block of its action.
+     * Match blocks to items by action and ref, exactly (F4): no block of
+     * another ref, or without one, ever stands in for an item.
      *
      * @param  list<array<string, mixed>>  $blocks
      * @param  list<array<string, mixed>>  $items
@@ -221,22 +225,6 @@ final class SaleAuthorizations
         foreach ($items as $k => $item) {
             foreach ($blocks as $b => $block) {
                 if (! isset($used[$b]) && $block['action'] === $item['action'] && in_array($block['ref'], $item['refs'], true)) {
-                    $assigned[$k] = $block;
-                    $used[$b] = true;
-                    break;
-                }
-            }
-        }
-        foreach ($items as $k => $item) {
-            if (isset($assigned[$k]) || ! ($item['required'] ?? true)) {
-                continue;
-            }
-            // A block's ref kind ("tender", "gift", "comp", "discount", ...)
-            // must suit the item: a gift line never takes a gift TENDER's block.
-            $kinds = array_map(static fn (string $ref): string => strtok($ref, ':'), $item['refs']);
-            foreach ($blocks as $b => $block) {
-                if (! isset($used[$b]) && $block['action'] === $item['action']
-                    && ($block['ref'] === null || in_array(strtok($block['ref'], ':'), $kinds, true))) {
                     $assigned[$k] = $block;
                     $used[$b] = true;
                     break;

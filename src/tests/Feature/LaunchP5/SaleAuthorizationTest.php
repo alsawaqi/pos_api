@@ -109,8 +109,15 @@ class SaleAuthorizationTest extends TestCase
         $this->p5Push('mdev_sale', [$this->p5Create($uuid, ['discount_total_baisas' => 1000, 'grand_total_baisas' => 9000,
             'discounts' => [['name' => 'Manual', 'amount_baisas' => 1000]]], ['auth_v' => 1])])
             ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
-
         $this->assertSame([], $this->p5Approvals());
+
+        // One baisa above the cashier's 10 % (with the 1-baisa rounding
+        // tolerance) is gated: the missing block is recorded.
+        $over = (string) Str::uuid();
+        $this->p5Push('mdev_sale', [$this->p5Create($over, ['discount_total_baisas' => 1002, 'grand_total_baisas' => 8998,
+            'discounts' => [['name' => 'Manual', 'amount_baisas' => 1002]]], ['auth_v' => 1])])
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+        $this->assertSame(['missing'], DB::table('pos_approvals')->where('subject_uuid', $over)->pluck('result')->all());
     }
 
     public function test_a_needs_manager_rule_always_needs_an_approver(): void

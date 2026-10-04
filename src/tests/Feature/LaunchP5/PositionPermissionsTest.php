@@ -136,7 +136,9 @@ class PositionPermissionsTest extends TestCase
     public function test_an_unset_or_malformed_reminder_is_off(): void
     {
         $this->p5Device('mdev_p5rem');
-        $this->assertNull($this->withToken('mdev_p5rem')->getJson('/api/v1/device/config')->json('data.settings.shift_end_reminder_at'));
+        $settings = $this->withToken('mdev_p5rem')->getJson('/api/v1/device/config')->json('data.settings');
+        $this->assertArrayHasKey('shift_end_reminder_at', $settings);
+        $this->assertNull($settings['shift_end_reminder_at']);
 
         DB::table('pos_branches')->insert(['id' => 10, 'uuid' => (string) Str::uuid(), 'company_id' => 100,
             'name' => 'Main', 'created_at' => now(), 'updated_at' => now()]);

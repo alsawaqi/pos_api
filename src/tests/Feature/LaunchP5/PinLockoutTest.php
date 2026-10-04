@@ -86,7 +86,11 @@ class PinLockoutTest extends TestCase
         for ($i = 0; $i < 5; $i++) {
             $this->attempt(self::LOGIN, '000000');
         }
-        $this->travel(61)->seconds();
+        // Still locked half-way through (this attempt doubles it to 120 s)…
+        $this->travel(30)->seconds();
+        $this->assertLocked($this->attempt(self::LOGIN, '222222'), 120);
+        // …and open again once the window has passed, with no unlock.
+        $this->travel(121)->seconds();
         $this->attempt(self::LOGIN, '222222')->assertOk()->assertJsonPath('data.staff.id', 7);
     }
 

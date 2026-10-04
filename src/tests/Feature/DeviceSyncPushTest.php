@@ -225,6 +225,8 @@ class DeviceSyncPushTest extends TestCase
             'shift.open', 'shift.close', 'slider.display',
             'table.session.open', 'table.session.round', 'table.session.move', 'table.session.join', 'table.session.close',
             'table.session.cancel_line', 'table.session.cancel_bill', 'table.session.adjust',
+            // LAUNCH-P5 — clock in / clock out through the outbox.
+            'staff.clock_in', 'staff.clock_out',
             'sync.noop',
         ], SyncEvent::EVENT_TYPES);
         $dispatcher = app(SyncEventDispatcher::class);

@@ -16,6 +16,7 @@ use App\Actions\Device\Sync\Handlers\PayOrderHandler;
 use App\Actions\Device\Sync\Handlers\ProductWasteHandler;
 use App\Actions\Device\Sync\Handlers\RestockRequestHandler;
 use App\Actions\Device\Sync\Handlers\SliderDisplayHandler;
+use App\Actions\Device\Sync\Handlers\StaffClockHandler;
 use App\Actions\Device\Sync\Handlers\StockCountHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionAdjustHandler;
 use App\Actions\Device\Sync\Handlers\TableSessionCancelBillHandler;
@@ -81,6 +82,7 @@ class SyncEventDispatcher
         private readonly TableSessionCancelLineHandler $tableCancelLine,
         private readonly TableSessionCancelBillHandler $tableCancelBill,
         private readonly TableSessionAdjustHandler $tableAdjust,
+        private readonly StaffClockHandler $staffClock,
     ) {}
 
     /**
@@ -113,6 +115,8 @@ class SyncEventDispatcher
             'table.session.cancel_line' => $this->tableCancelLine,
             'table.session.cancel_bill' => $this->tableCancelBill,
             'table.session.adjust' => $this->tableAdjust,
+            'staff.clock_in' => $this->staffClock,
+            'staff.clock_out' => $this->staffClock,
         ];
     }
 

@@ -103,6 +103,10 @@ class SyncEvent extends Model
         'table.session.cancel_line',
         'table.session.cancel_bill',
         'table.session.adjust',
+        // LAUNCH-P5 — clock in / clock out through the outbox (idempotent by
+        // attendance_uuid).
+        'staff.clock_in',
+        'staff.clock_out',
         // Reserved no-op: ingested + ACKed but has NO domain handler, so it
         // settles as 'received'. Lets the ingestion pipe be exercised in
         // isolation and stays a stable placeholder as handlers are added

@@ -175,7 +175,7 @@ final class AuthorizationGate
      * @param  array{action: string, subject_type: string, subject_uuid?: ?string, amount_baisas?: ?int, ref?: ?string,
      *     actor_staff_id?: ?int, staff_token?: mixed, client_event_id?: ?string, at: CarbonInterface, required?: bool,
      *     needs_approval?: bool, percent?: ?float, cap_baisas?: ?int, legacy_approver_staff_id?: ?int, fail_reason?: ?string,
-     *     expected_ref?: ?string, max_age_seconds?: ?int}  $ctx
+     *     expected_ref?: ?string, max_age_seconds?: ?int, record_subject_uuid?: ?string, reuse_window_seconds?: ?int}  $ctx
      * @param  array<string, mixed>|null  $block  a normalised block ({@see block()})
      */
     public function evaluate(Device $device, array $ctx, ?array $block, bool $p5): AuthorizationOutcome
@@ -364,28 +364,44 @@ final class AuthorizationGate
      * subject only — a re-sent order carrying its own approval again is not a
      * reuse; the same approval on another order (or, with no subject, on
      * another event) is.
+     *
+     * Fix order 2 A1 — the subject compared is the RECORDED one
+     * (`record_subject_uuid`, else `subject_uuid`): for the table operations
+     * that is the table session the server resolved, not the request's
+     * seating_key. With `reuse_window_seconds` (the table operations: 600) the
+     * same approval may also verify for ANOTHER request of that same subject
+     * (one manager approval for a clear of several lines, each request with
+     * its own proof and ref), but only while approved_at is within that many
+     * seconds of the server time.
      */
     private function reused(Device $device, array $ctx, int $approverId, Carbon $approvedAt): bool
     {
-        $subject = (string) ($ctx['subject_uuid'] ?? '');
-
-        return DB::table('pos_approvals')
+        $subject = (string) ($ctx['record_subject_uuid'] ?? ($ctx['subject_uuid'] ?? ''));
+        $same = fn () => DB::table('pos_approvals')
             ->where('company_id', $device->company_id)
             ->where('approver_staff_id', $approverId)
             ->where('action', $ctx['action'])
             ->where('approved_at', self::dbTime($approvedAt))
-            ->where('result', AuthorizationOutcome::VERIFIED)
-            ->where(function ($q) use ($device, $ctx, $subject): void {
-                if ($subject !== '') {
-                    $q->whereNull('subject_uuid')->orWhere('subject_uuid', '!=', $subject);
+            ->where('result', AuthorizationOutcome::VERIFIED);
+        $otherEvent = function ($q) use ($device, $ctx): void {
+            $q->where('device_id', '!=', (int) $device->getKey())
+                ->orWhereNull('client_event_id')
+                ->orWhere('client_event_id', '!=', (string) ($ctx['client_event_id'] ?? ''));
+        };
 
-                    return;
-                }
-                $q->where('device_id', '!=', (int) $device->getKey())
-                    ->orWhereNull('client_event_id')
-                    ->orWhere('client_event_id', '!=', (string) ($ctx['client_event_id'] ?? ''));
-            })
-            ->exists();
+        if ($subject === '') {
+            return $same()->where($otherEvent)->exists();
+        }
+        if ($same()->where(fn ($q) => $q->whereNull('subject_uuid')->orWhere('subject_uuid', '!=', $subject))->exists()) {
+            return true;
+        }
+        $window = $ctx['reuse_window_seconds'] ?? null;
+        if ($window === null) {
+            return false;
+        }
+
+        return abs(now()->getTimestamp() - $approvedAt->getTimestamp()) > (int) $window
+            && $same()->where('subject_uuid', $subject)->where($otherEvent)->exists();
     }
 
     private function activeAt(PosStaff $staff, Carbon $at): bool
@@ -447,7 +463,7 @@ final class AuthorizationGate
             'client_event_id' => $eventId,
             'action' => $ctx['action'],
             'subject_type' => $ctx['subject_type'],
-            'subject_uuid' => $ctx['subject_uuid'] ?? null,
+            'subject_uuid' => $ctx['record_subject_uuid'] ?? ($ctx['subject_uuid'] ?? null),
             'amount' => $amount === null ? null : number_format($amount / 1000, 3, '.', ''),
             'ref' => $ref,
             'actor_staff_id' => $outcome->actorStaffId,

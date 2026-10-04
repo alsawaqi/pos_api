@@ -69,7 +69,7 @@ final class CancelStaffLineAction
             // LAUNCH-P5 — table.cancel_line: a P5 build's block is checked
             // (refused 403 when not authorized); an old build keeps the
             // optional authorized_by text.
-            $auth = $this->authorization->check($device, $payload, 'table.cancel_line');
+            $auth = $this->authorization->check($device, $payload, 'table.cancel_line', TableAuthorization::session($primary));
             $values = $this->cancelLocked($device, $primary, $order,
                 $auth?->approvedBy() !== null ? $payload + ['approved_by_staff_id' => $auth->approvedBy()] : $payload);
 

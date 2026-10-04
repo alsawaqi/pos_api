@@ -57,7 +57,7 @@ final class CancelTableBillAction
             // LAUNCH-P5 — table.cancel_bill: a P5 build's block is checked
             // (refused 403 when not authorized); an old build keeps the
             // required authorized_by text.
-            $auth = $this->authorization->check($device, $payload, 'table.cancel_bill');
+            $auth = $this->authorization->check($device, $payload, 'table.cancel_bill', TableAuthorization::session($seat));
             $groups = $this->groups($order);
             if ($groups === []) {
                 throw AdjustTableBillAction::refusal('nothing_to_cancel', 'This bill has no accepted items. Use Clear Table for an empty table.');

@@ -115,7 +115,7 @@ final class AdjustTableBillAction
                     // LAUNCH-P5 — loyalty.redeem: a P5 build's block names the
                     // approver; an old build keeps the authorized_by text and
                     // approver id the redemption itself requires.
-                    $approver = $this->authorize($device, $payload, 'loyalty.redeem', [], legacyText: false);
+                    $approver = $this->authorize($device, $seat, $payload, 'loyalty.redeem', [], legacyText: false);
                     if ($approver !== null) {
                         $staff = $approver;
                         $adjustment['approved_by_staff_id'] = $approver;
@@ -136,7 +136,7 @@ final class AdjustTableBillAction
                     }
                     if ($rule->requires_manager_approval) {
                         // M7 — a rule marked "needs manager" always needs an approver.
-                        $staff = $this->authorize($device, $payload, 'discount.manual',
+                        $staff = $this->authorize($device, $seat, $payload, 'discount.manual',
                             ['amount_baisas' => $amount, 'needs_approval' => true], legacyText: true) ?? $staff;
                     }
                 } elseif ($mode === 'percent') {
@@ -152,7 +152,7 @@ final class AdjustTableBillAction
                     // LAUNCH-P5 — a manual discount above the position's maximum
                     // (as a % of the bill, 1 baisa tolerance) needs an approver.
                     $percent = $mode === 'percent' ? $proof['percent_bp'] / 100 : max(0, $amount - 1) * 100 / max(1, $net);
-                    $staff = $this->authorize($device, $payload, 'discount.manual', ['amount_baisas' => $amount,
+                    $staff = $this->authorize($device, $seat, $payload, 'discount.manual', ['amount_baisas' => $amount,
                         'percent' => $percent, 'required' => ! $this->withinMax($device, $payload, $percent)], legacyText: false) ?? $staff;
                 }
                 $this->totals->reverseDiscount($order, $a['manual']);
@@ -167,7 +167,7 @@ final class AdjustTableBillAction
                 $amount = 0;
                 if ($mode === 'apply') {
                     // LAUNCH-P5 — comp (P5: the block; old build: the text).
-                    $staff = $this->authorize($device, $payload, 'comp', [], legacyText: true) ?? $staff;
+                    $staff = $this->authorize($device, $seat, $payload, 'comp', [], legacyText: true) ?? $staff;
                     if ($adjustment['target'] === 'bill') {
                         throw self::refusal('full_comp_not_supported', 'A whole-bill complimentary payment is not supported. Leave an amount to pay.');
                     }
@@ -226,13 +226,13 @@ final class AdjustTableBillAction
      *
      * @param  array<string, mixed>  $extra
      */
-    private function authorize(Device $device, array $payload, string $action, array $extra, bool $legacyText): ?int
+    private function authorize(Device $device, TableSession $seat, array $payload, string $action, array $extra, bool $legacyText): ?int
     {
         $required = ($extra['required'] ?? true) === true;
         if (! AuthorizationGate::isP5($payload, $device) && ! $required) {
             return null;
         }
-        $outcome = $this->authorization->check($device, $payload, $action, $extra);
+        $outcome = $this->authorization->check($device, $payload, $action, $extra + TableAuthorization::session($seat));
         if ($outcome === null) {
             if ($legacyText) {
                 $this->approve($payload['adjustment']);

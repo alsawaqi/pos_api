@@ -7,6 +7,7 @@ namespace App\Actions\Tables;
 use App\Actions\Qr\QrDineInException;
 use App\Http\Middleware\RequireStaffToken;
 use App\Models\Device;
+use App\Models\TableSession;
 use App\Support\Staff\AuthorizationGate;
 use App\Support\Staff\AuthorizationOutcome;
 use Illuminate\Support\Carbon;
@@ -20,6 +21,10 @@ use Illuminate\Support\Carbon;
  * with 403 approval_required (no block, or the position lacks the tick) or
  * approval_invalid (failed / unverifiable). An old build keeps today's
  * authorized_by text rules; its request writes a `legacy` row.
+ *
+ * The recorded subject is the table session the server resolved (its own
+ * seating key); one approval may cover several requests of that session
+ * within 10 minutes (fix order 2 A1), never another session's.
  *
  * Proof subject: subject_uuid = the request's seating_key; amount = the
  * adjustment's amount in baisas where it has one (else empty); ref = the
@@ -55,6 +60,12 @@ final class TableAuthorization
             // old (a queued sync event may carry an older offline approval).
             'expected_ref' => (string) ($payload['client_request_id'] ?? ''),
             'max_age_seconds' => self::online() ? AuthorizationGate::ONLINE_MAX_AGE_SECONDS : null,
+            // Fix order 2 A1 — one approval may cover several requests of the
+            // SAME table session (a clear of several lines) while it is at
+            // most 10 minutes old; the caller names the session the server
+            // resolved ({@see self::session()}), which is also what the row
+            // records as its subject.
+            'reuse_window_seconds' => AuthorizationGate::ONLINE_MAX_AGE_SECONDS,
             'client_event_id' => isset($payload['client_request_id']) ? (string) $payload['client_request_id'] : null,
             'at' => isset($payload['client_timestamp']) ? Carbon::parse((string) $payload['client_timestamp']) : now(),
             'legacy_approver_staff_id' => isset($payload['adjustment']['approved_by_staff_id'])
@@ -71,6 +82,18 @@ final class TableAuthorization
         }
 
         return $outcome;
+    }
+
+    /**
+     * Fix order 2 A1 — the gate context naming the table session the server
+     * resolved (the bill's primary seating): its own seating key, never the
+     * request's seating_key (a device may send a fresh one per request).
+     *
+     * @return array{record_subject_uuid: string}
+     */
+    public static function session(TableSession $seating): array
+    {
+        return ['record_subject_uuid' => (string) ($seating->client_request_id ?? $seating->uuid)];
     }
 
     /** The request is the online table endpoint itself (not the sync outbox). */

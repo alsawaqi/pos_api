@@ -9,6 +9,7 @@ use App\Models\Product;
 use App\Models\TableSession;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\Support\LaunchP5Fixtures;
@@ -55,7 +56,7 @@ class OnlineReplayTest extends TestCase
 
     private static function at(\DateTimeInterface $at): string
     {
-        return \Illuminate\Support\Carbon::instance($at)->utc()->format('Y-m-d\TH:i:s.v\Z');
+        return Carbon::instance($at)->utc()->format('Y-m-d\TH:i:s.v\Z');
     }
 
     public function test_one_table_approval_authorizes_its_own_request_only(): void

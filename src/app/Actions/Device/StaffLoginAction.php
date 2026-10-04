@@ -10,6 +10,7 @@ use App\Support\Staff\ApproverVerifier;
 use App\Support\Staff\PinLockedException;
 use App\Support\Staff\PinLockout;
 use App\Support\Staff\StaffBranches;
+use App\Support\Staff\StaffToken;
 use Illuminate\Support\Facades\Hash;
 use RuntimeException;
 
@@ -31,12 +32,13 @@ use RuntimeException;
  *    is checked; the 5th consecutive wrong PIN answers 423, a correct PIN
  *    clears the counter ({@see PinLockout});
  *  - a successful login makes the staff member's offline approval verifier
- *    when the row has none yet ({@see ApproverVerifier}).
+ *    when the row has none yet, and repairs one that does not match the PIN
+ *    (fix order 1 L7; {@see ApproverVerifier}).
  *
  * The device_token authenticates the API; this identifies the operator whose
  * id is stamped onto the orders/shifts the device pushes. The controller
  * returns a signed staff token for that operator on that device
- * ({@see \App\Support\Staff\StaffToken}, LAUNCH-P5 fix order 1 F1).
+ * ({@see StaffToken}, LAUNCH-P5 fix order 1 F1).
  */
 final readonly class StaffLoginAction
 {

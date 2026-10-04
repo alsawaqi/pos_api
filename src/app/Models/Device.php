@@ -54,8 +54,10 @@ class Device extends Model implements Authenticatable
 
     /** Returned once at activation; never persisted or included in serialization. */
     public ?string $plainTextToken = null;
+
     /** Reviewed historical settlement must never consult or mutate live device state. */
     public ?array $reviewedSoftposSnapshot = null;
+
     public array $syncIntegrityFlags = [];
 
     protected $hidden = ['device_token'];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Support\Staff;
 
+use App\Models\CompReason;
 use App\Models\Device;
 use App\Models\Discount;
 use App\Models\Payment;
@@ -22,7 +23,10 @@ use Illuminate\Support\Facades\DB;
  *       order subtotal, 1 baisa tolerance)
  *   discounts[i] of a rule marked "needs manager" discount.manual, ref
  *       "discount:i"; always needs an approver (M7)
- *   comps[i] (not a gift)                         comp, ref "comp:i"
+ *   comps[i] (not a gift)                         comp, ref "comp:i"; the comp
+ *                                                 tick covers it only within its
+ *                                                 reason's cap (above: missing
+ *                                                 `above_cap`, F9)
  *   comps[i] with is_gift                         gift, ref "gift:i" (or "comp:i")
  *   a block for what settles at order.pay rides order.create too: a gift
  *       TENDER (gift, ref "tender:i", EMPTY amount — the one documented
@@ -88,8 +92,15 @@ final class SaleAuthorizations
                 continue;
             }
             $isGift = ($c['is_gift'] ?? false) === true;
+            // F9 (review M7) — the comp tick covers a comp within its
+            // reason's cap only; above it the comp needs an approval.
+            $cap = null;
+            if (! $isGift && isset($c['comp_reason_id'])) {
+                $max = CompReason::withTrashed()->where('company_id', $companyId)->whereKey((int) $c['comp_reason_id'])->value('max_amount');
+                $cap = $max === null ? null : (int) round(((float) $max) * 1000);
+            }
             $items[] = ['action' => $isGift ? 'gift' : 'comp', 'refs' => $isGift ? ['gift:'.$i, 'comp:'.$i] : ['comp:'.$i],
-                'amount' => (int) ($c['amount_baisas'] ?? 0), 'required' => true, 'comp_index' => $i,
+                'amount' => (int) ($c['amount_baisas'] ?? 0), 'required' => true, 'comp_index' => $i, 'cap' => $cap,
                 'actor' => isset($c['staff_id']) ? (int) $c['staff_id'] : $actor,
                 'legacy_approver' => isset($c['approved_by_staff_id']) ? (int) $c['approved_by_staff_id'] : null];
         }
@@ -112,7 +123,7 @@ final class SaleAuthorizations
             $outcome = $this->gate->evaluate($device, array_merge($base, [
                 'action' => $item['action'], 'ref' => $ref, 'amount_baisas' => $item['amount'],
                 'required' => $item['required'], 'needs_approval' => $item['needs_approval'] ?? false,
-                'percent' => $item['percent'] ?? null,
+                'percent' => $item['percent'] ?? null, 'cap_baisas' => $item['cap'] ?? null,
                 // An old build's row keeps the comp's own staff member.
                 'actor_staff_id' => $p5 ? $actor : ($item['actor'] ?? $actor),
                 'legacy_approver_staff_id' => $item['legacy_approver'] ?? null,

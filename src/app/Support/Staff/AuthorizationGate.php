@@ -156,7 +156,7 @@ final class AuthorizationGate
      *
      * @param  array{action: string, subject_type: string, subject_uuid?: ?string, amount_baisas?: ?int, ref?: ?string,
      *     actor_staff_id?: ?int, staff_token?: mixed, client_event_id?: ?string, at: CarbonInterface, required?: bool,
-     *     needs_approval?: bool, percent?: ?float, legacy_approver_staff_id?: ?int,
+     *     needs_approval?: bool, percent?: ?float, cap_baisas?: ?int, legacy_approver_staff_id?: ?int, fail_reason?: ?string,
      *     expected_ref?: ?string, max_age_seconds?: ?int}  $ctx
      * @param  array<string, mixed>|null  $block  a normalised block ({@see block()})
      */
@@ -259,6 +259,11 @@ final class AuthorizationGate
         $percent = $ctx['percent'] ?? null;
         if ($percent !== null && $percent > $this->permissions->discountMaxPercent($companyId, (string) $staff->position)) {
             return new AuthorizationOutcome(AuthorizationOutcome::MISSING, $actor, null, 'above_max', 'position');
+        }
+        // F9 — a comp above its reason's cap is never covered by the tick.
+        $cap = $ctx['cap_baisas'] ?? null;
+        if ($cap !== null && (int) ($ctx['amount_baisas'] ?? 0) > (int) $cap) {
+            return new AuthorizationOutcome(AuthorizationOutcome::MISSING, $actor, null, 'above_cap', 'position');
         }
 
         return new AuthorizationOutcome(AuthorizationOutcome::POSITION_OK, $actor, null, null, 'position');

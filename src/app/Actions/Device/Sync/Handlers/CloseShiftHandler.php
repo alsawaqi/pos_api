@@ -117,7 +117,8 @@ class CloseShiftHandler implements SyncEventHandler
         if ($p5 && $closedBy !== null && $shift->staff_id !== null && $closedBy !== (int) $shift->staff_id) {
             $outcome = $this->gate->evaluate($device, [
                 'action' => 'shift.close_other', 'subject_type' => 'shift', 'subject_uuid' => $shiftUuid,
-                'actor_staff_id' => $closedBy, 'client_event_id' => (string) $event->client_event_id,
+                'actor_staff_id' => $closedBy, 'staff_token' => $payload['staff_token'] ?? null,
+                'client_event_id' => (string) $event->client_event_id,
                 'at' => $event->client_timestamp ?? now(),
             ], AuthorizationGate::block($payload['authorization'] ?? null), true);
             if (! $outcome->authorized()) {

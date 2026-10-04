@@ -119,7 +119,8 @@ class VoidOrderHandler implements SyncEventHandler
             : ($wasPaid ? 'order.void_paid' : 'order.void_unpaid');
         $outcome = $this->gate->evaluate($device, [
             'action' => $action, 'subject_type' => 'order', 'subject_uuid' => $orderUuid,
-            'actor_staff_id' => $voidedBy, 'client_event_id' => (string) $event->client_event_id,
+            'actor_staff_id' => $voidedBy, 'staff_token' => $payload['staff_token'] ?? null,
+            'client_event_id' => (string) $event->client_event_id,
             'at' => $event->client_timestamp ?? now(), 'needs_approval' => $voidReason !== null && (bool) $voidReason->requires_manager,
         ], $block, AuthorizationGate::isP5($payload));
 

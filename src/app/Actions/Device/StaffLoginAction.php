@@ -33,9 +33,10 @@ use RuntimeException;
  *  - a successful login makes the staff member's offline approval verifier
  *    when the row has none yet ({@see ApproverVerifier}).
  *
- * No separate staff token is issued — the device_token already
- * authenticates the API; this just identifies the operator whose id is
- * stamped onto the orders/shifts the device pushes.
+ * The device_token authenticates the API; this identifies the operator whose
+ * id is stamped onto the orders/shifts the device pushes. The controller
+ * returns a signed staff token for that operator on that device
+ * ({@see \App\Support\Staff\StaffToken}, LAUNCH-P5 fix order 1 F1).
  */
 final readonly class StaffLoginAction
 {

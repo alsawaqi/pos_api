@@ -99,7 +99,10 @@ final class SaleAuthorizations
 
         [$assigned, $unused] = $this->assign(AuthorizationGate::blocks($payload), $items);
 
+        // F1 — the event's actor is the order's staff member, bound by the
+        // event's signed staff token (on the payload, or inside `order`).
         $base = ['subject_type' => 'order', 'subject_uuid' => (string) ($order['uuid'] ?? ''), 'actor_staff_id' => $actor,
+            'staff_token' => $payload['staff_token'] ?? ($order['staff_token'] ?? null),
             'client_event_id' => (string) $event->client_event_id, 'at' => $event->client_timestamp ?? now()];
         $approvers = [];
         $summary = [];
@@ -113,7 +116,8 @@ final class SaleAuthorizations
                 'action' => $item['action'], 'ref' => $ref, 'amount_baisas' => $item['amount'],
                 'required' => $item['required'], 'needs_approval' => $item['needs_approval'] ?? false,
                 'percent' => $item['percent'] ?? null, 'candidate_amounts' => $amounts[$item['action']],
-                'actor_staff_id' => $item['actor'] ?? $actor,
+                // An old build's row keeps the comp's own staff member.
+                'actor_staff_id' => $p5 ? $actor : ($item['actor'] ?? $actor),
                 'legacy_approver_staff_id' => $item['legacy_approver'] ?? null,
             ]), $block, $p5);
             if (isset($item['comp_index'])) {
@@ -173,6 +177,7 @@ final class SaleAuthorizations
 
         [$assigned] = $this->assign(AuthorizationGate::blocks($payload), $items);
         $base = ['subject_type' => 'order', 'subject_uuid' => $orderUuid, 'actor_staff_id' => $actor,
+            'staff_token' => $payload['staff_token'] ?? null,
             'client_event_id' => (string) $event->client_event_id, 'at' => $event->client_timestamp ?? now()];
         $summary = [];
         foreach ($items as $k => $item) {

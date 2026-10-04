@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Support\Catalogue\BranchCatalogue;
 use App\Support\Staff\AuthorizationGate;
 use App\Support\Staff\AuthorizationOutcome;
+use App\Support\Staff\StaffToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -85,7 +86,8 @@ final class DeviceSoldOutController
             // subject: the product uuid; no amount; the block's ref.
             $outcome = DB::transaction(fn () => $gate->evaluate($device, [
                 'action' => 'sold_out.toggle', 'subject_type' => 'product', 'subject_uuid' => (string) $product->uuid,
-                'actor_staff_id' => (int) $staff->id, 'client_event_id' => null, 'at' => now(),
+                'actor_staff_id' => (int) $staff->id, 'staff_token' => $request->header(StaffToken::HEADER),
+                'client_event_id' => null, 'at' => now(),
             ], AuthorizationGate::block($request->input('authorization')), true));
             if (! $outcome->authorized()) {
                 return $this->failure($outcome->refusalCode(), $outcome->refusalCode() === 'approval_required'

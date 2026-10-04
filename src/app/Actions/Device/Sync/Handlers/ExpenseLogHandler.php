@@ -87,6 +87,7 @@ class ExpenseLogHandler implements SyncEventHandler
             $outcome = $this->gate->evaluate($device, [
                 'action' => 'payout', 'subject_type' => 'expense', 'subject_uuid' => null,
                 'amount_baisas' => (int) $payload['amount_baisas'], 'actor_staff_id' => $staffId,
+                'staff_token' => $payload['staff_token'] ?? null,
                 'client_event_id' => (string) $event->client_event_id, 'at' => $event->client_timestamp ?? now(),
             ], AuthorizationGate::block($payload['authorization'] ?? null), AuthorizationGate::isP5($payload));
             $result['authorization'] = ['action' => 'payout', 'result' => $outcome->result];

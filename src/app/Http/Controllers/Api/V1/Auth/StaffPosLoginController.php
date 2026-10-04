@@ -11,6 +11,7 @@ use App\Models\Branch;
 use App\Models\Device;
 use App\Support\Staff\AttendanceBook;
 use App\Support\Staff\StaffBranches;
+use App\Support\Staff\StaffToken;
 use Illuminate\Http\JsonResponse;
 use RuntimeException;
 
@@ -88,6 +89,10 @@ class StaffPosLoginController
         // only the first five staff keys).
         $branchIds = StaffBranches::branchIds($staff);
         $attendance = $this->attendance->state((int) $device->company_id, (int) $staff->id);
+        // LAUNCH-P5 fix order 1 (F1) — the signed staff token: the device
+        // sends it with this person's P5 events (`staff_token`) and online
+        // calls (`X-Staff-Token`). No expiry; bound to this device.
+        $staffToken = StaffToken::issue((int) $device->getKey(), (int) $staff->id);
 
         return response()->json([
             'data' => [
@@ -99,9 +104,11 @@ class StaffPosLoginController
                     'branch_id' => (int) $staff->branch_id,
                     'branch_ids' => $branchIds,
                     'attendance' => $attendance,
+                    'staff_token' => $staffToken,
                 ],
                 'branch_ids' => $branchIds,
                 'attendance' => $attendance,
+                'staff_token' => $staffToken,
             ],
             'errors' => [],
         ]);

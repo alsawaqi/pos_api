@@ -42,11 +42,10 @@ class OnlineAuthorizationTest extends TestCase
         $this->p5Staff(9, 'supervisor', '900009');
     }
 
+    /** A P5 body carries the logged-in person's X-Staff-Token (fix order 1 F1). */
     private function postAs(Device $device, string $path, array $payload): TestResponse
     {
-        $this->app['auth']->forgetGuards();
-
-        return $this->withToken($device->plainTextToken)->postJson('/api/v1/device/'.$path, $payload);
+        return $this->p5Online($device, 'POST', '/api/v1/device/'.$path, $payload);
     }
 
     /** A live table with a sent round of 3 × product. @return array{0: Device, 1: TableSession, 2: Product, 3: array<string, mixed>} */
@@ -159,18 +158,18 @@ class OnlineAuthorizationTest extends TestCase
         $url = '/api/v1/device/products/5/sold-out';
 
         // P5: a cashier needs an approval; the bare tick is refused.
-        $this->withToken('mdev_so')->postJson($url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1,
+        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1,
             'authorization' => $this->p5Position('sold_out.toggle', 7)])->assertStatus(403)->assertJsonPath('errors.0.code', 'approval_required');
-        $this->withToken('mdev_so')->postJson($url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1,
+        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'auth_v' => 1,
             'authorization' => $this->p5Approval($device, 'sold_out.toggle', 8, 7, $uuid)])
             ->assertOk()->assertJsonPath('data.changed', true)->assertJsonPath('data.authorization.result', 'verified');
         $this->assertSame(8, (int) DB::table('pos_product_sold_out')->value('set_by_pos_staff_id'));
         // A supervisor switches it back on their own tick.
-        $this->withToken('mdev_so')->postJson($url, ['sold_out' => false, 'staff_id' => 9, 'auth_v' => 1,
+        $this->p5Online($device, 'POST', $url, ['sold_out' => false, 'staff_id' => 9, 'auth_v' => 1,
             'authorization' => $this->p5Position('sold_out.toggle', 9)])->assertOk()->assertJsonPath('data.authorization.result', 'position_ok');
 
         // An old build: approver_staff_id as today, recorded as legacy.
-        $this->withToken('mdev_so')->postJson($url, ['sold_out' => true, 'staff_id' => 7, 'approver_staff_id' => 8])
+        $this->p5Online($device, 'POST', $url, ['sold_out' => true, 'staff_id' => 7, 'approver_staff_id' => 8])
             ->assertOk()->assertJsonPath('data.changed', true);
         $this->assertSame(['missing', 'verified', 'position_ok', 'legacy'], DB::table('pos_approvals')->orderBy('id')->pluck('result')->all());
     }

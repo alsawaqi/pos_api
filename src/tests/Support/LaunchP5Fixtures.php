@@ -157,13 +157,68 @@ trait LaunchP5Fixtures
     }
 
     /**
+     * The contract's staff token (fix order 1 F1), built straight from the
+     * formula: base64url(json{v,d,s,iat}) "." base64url(HMAC-SHA256(key,
+     * first part)), key = HMAC-SHA256("pos-staff-token-v1", app.key).
+     */
+    protected function p5StaffToken(Device|int $device, int $staffId, ?int $issuedAt = null): string
+    {
+        $b64 = static fn (string $bytes): string => rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=');
+        $body = $b64((string) json_encode(['v' => 1, 'd' => $device instanceof Device ? (int) $device->id : $device,
+            's' => $staffId, 'iat' => $issuedAt ?? time()]));
+        $key = hash_hmac('sha256', 'pos-staff-token-v1', (string) config('app.key'), true);
+
+        return $body.'.'.$b64(hash_hmac('sha256', $body, $key, true));
+    }
+
+    /**
+     * Push events as a P5 device does: every P5 event (auth_v 1) that does
+     * not set `staff_token` itself gets the token of the person who made it
+     * (order.create: order.staff_id; shift.close: closed_by_staff_id; else
+     * staff_id). Pass `staff_token => null` to send none.
+     *
      * @param  list<array<string, mixed>>  $events
      */
     protected function p5Push(string $token, array $events): TestResponse
     {
+        $deviceId = (int) Device::query()->where('device_token', hash('sha256', $token))->value('id');
+        foreach ($events as &$event) {
+            $payload = (array) ($event['payload'] ?? []);
+            $order = (array) ($payload['order'] ?? []);
+            if ((($payload['auth_v'] ?? null) !== 1 && ($order['auth_v'] ?? null) !== 1)
+                || array_key_exists('staff_token', $payload) || array_key_exists('staff_token', $order)) {
+                continue;
+            }
+            $staff = match ($event['event_type'] ?? null) {
+                'order.create' => $order['staff_id'] ?? null,
+                'shift.close' => $payload['closed_by_staff_id'] ?? null,
+                default => $payload['staff_id'] ?? null,
+            };
+            if ($staff !== null && $deviceId > 0) {
+                $event['payload']['staff_token'] = $this->p5StaffToken($deviceId, (int) $staff);
+            }
+        }
+        unset($event);
         $this->app['auth']->forgetGuards();
 
         return $this->withToken($token)->postJson('/api/v1/device/sync/push', ['events' => $events]);
+    }
+
+    /**
+     * An online call as a P5 device makes it: a P5 body (auth_v 1) naming a
+     * staff_id carries that person's X-Staff-Token unless $staffToken says
+     * otherwise ('' = no header).
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    protected function p5Online(Device $device, string $method, string $path, array $payload = [], ?string $staffToken = null): TestResponse
+    {
+        $this->app['auth']->forgetGuards();
+        $staffToken ??= ($payload['auth_v'] ?? null) === 1 && isset($payload['staff_id'])
+            ? $this->p5StaffToken($device, (int) $payload['staff_id']) : '';
+        $headers = $staffToken === '' ? [] : ['X-Staff-Token' => $staffToken];
+
+        return $this->withToken((string) $device->plainTextToken)->json($method, $path, $payload, $headers);
     }
 
     /** @return list<array<string, mixed>> */

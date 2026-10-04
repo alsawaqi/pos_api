@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Tables;
 
 use App\Actions\Qr\QrDineInException;
+use App\Http\Middleware\RequireStaffToken;
 use App\Models\Device;
 use App\Support\Staff\AuthorizationGate;
 use App\Support\Staff\AuthorizationOutcome;
@@ -43,6 +44,9 @@ final class TableAuthorization
             'subject_type' => 'table_session',
             'subject_uuid' => (string) ($payload['seating_key'] ?? ''),
             'actor_staff_id' => isset($payload['staff_id']) ? (int) $payload['staff_id'] : null,
+            // F1 — online: the X-Staff-Token header (checked by
+            // RequireStaffToken); a queued sync event: its own staff_token.
+            'staff_token' => self::online() ? request()->attributes->get(RequireStaffToken::TOKEN) : ($payload['staff_token'] ?? null),
             'client_event_id' => isset($payload['client_request_id']) ? (string) $payload['client_request_id'] : null,
             'at' => isset($payload['client_timestamp']) ? Carbon::parse((string) $payload['client_timestamp']) : now(),
             'legacy_approver_staff_id' => isset($payload['adjustment']['approved_by_staff_id'])
@@ -59,5 +63,11 @@ final class TableAuthorization
         }
 
         return $outcome;
+    }
+
+    /** The request is the online table endpoint itself (not the sync outbox). */
+    public static function online(): bool
+    {
+        return app()->bound('request') && request()->attributes->get(RequireStaffToken::ONLINE) === true;
     }
 }

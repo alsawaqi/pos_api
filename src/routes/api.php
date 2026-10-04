@@ -74,6 +74,7 @@ use App\Http\Controllers\Api\V1\PublicQr\QrTableMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableRoundController;
 use App\Http\Middleware\EnsureAttendedDevice;
 use App\Http\Middleware\RefuseTrainingMode;
+use App\Http\Middleware\RequireStaffToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -292,13 +293,17 @@ Route::prefix('v1')->group(function (): void {
         Route::post('device/qr/fallback-to-counter', DeviceQrFallbackToCounterController::class)
             ->name('device.qr.fallback-to-counter');
 
+        // LAUNCH-P5 fix order 1 (F1) — a P5 till / handheld sends the
+        // logged-in person's X-Staff-Token on the table operations, the
+        // sold-out switch and the shift read (403 staff_unverified without).
         Route::post('device/tables/open', DeviceTableSessionController::class)
             ->defaults('table_operation', 'open')
-            ->middleware('throttle:qr-table-device-write')->name('device.tables.open');
+            ->middleware(['throttle:qr-table-device-write', RequireStaffToken::class])->name('device.tables.open');
         foreach (['round', 'move', 'join', 'close', 'cancel_line', 'cancel_bill', 'adjust'] as $tableOperation) {
             Route::post('device/tables/{uuid}/'.str_replace('_', '-', $tableOperation), DeviceTableSessionController::class)
                 ->defaults('table_operation', $tableOperation)
-                ->middleware($tableOperation === 'adjust' ? ['throttle:qr-table-device-write', 'throttle:loyalty-redeem'] : ['throttle:qr-table-device-write'])->name('device.tables.'.$tableOperation);
+                ->middleware([...($tableOperation === 'adjust' ? ['throttle:qr-table-device-write', 'throttle:loyalty-redeem'] : ['throttle:qr-table-device-write']),
+                    RequireStaffToken::class])->name('device.tables.'.$tableOperation);
         }
         Route::post('device/tables/{uuid}/claim-owner', DeviceTableClaimOwnerController::class)
             ->middleware('throttle:qr-table-device-write')->name('device.tables.claim-owner');
@@ -325,7 +330,7 @@ Route::prefix('v1')->group(function (): void {
         // manager / supervisor (or manager-approval PIN) rule.
         Route::get('device/sold-out', [DeviceSoldOutController::class, 'index'])->name('device.sold-out.index');
         Route::post('device/products/{productId}/sold-out', [DeviceSoldOutController::class, 'update'])
-            ->whereNumber('productId')->name('device.sold-out.update');
+            ->whereNumber('productId')->middleware(RequireStaffToken::class)->name('device.sold-out.update');
 
         Route::get('device/config', [DeviceConfigController::class, 'show'])->name('device.config');
         Route::get('device/config/delta', [DeviceConfigController::class, 'delta'])->name('device.config.delta');
@@ -348,7 +353,8 @@ Route::prefix('v1')->group(function (): void {
         // number (prefix + zero-padded counter) at payment time. 409
         // numbering_disabled when the merchant hasn't enabled the policy.
         Route::post('device/orders/next-number', DeviceOrderNumberController::class)->name('device.orders.next-number');
-        Route::get('device/shift/current', [DeviceShiftController::class, 'current'])->name('device.shift.current');
+        Route::get('device/shift/current', [DeviceShiftController::class, 'current'])
+            ->middleware(RequireStaffToken::class)->name('device.shift.current');
         Route::get('device/customers/search', [DeviceCustomersController::class, 'search'])->name('device.customers.search');
         // P-F2 â€” customer details fetch ({id} numeric so it can never
         // shadow the literal /search segment above).

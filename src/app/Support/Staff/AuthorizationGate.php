@@ -21,9 +21,14 @@ use Throwable;
  *   { action, ref, mode: position|approval, actor_staff_id,
  *     approver_staff_id?, approved_at?, method?: offline|online, proof? }
  *
- *  - mode position → the actor's position has the tick (and a manual discount
- *    is within the position's maximum; a "needs manager" rule is never enough)
- *    → position_ok, otherwise missing.
+ *  - mode position → the actor is the staff member of the event's signed staff
+ *    token ({@see StaffToken}: the device's own login of the event's staff
+ *    member; the block's actor_staff_id is ignored). No valid token → failed
+ *    `actor_unverified` (and an integrity flag on a sync event); an actor not
+ *    active at the event time → failed `actor_inactive`. Then the actor's
+ *    position has the tick (and a manual discount is within the position's
+ *    maximum; a "needs manager" rule is never enough) → position_ok,
+ *    otherwise missing.
  *  - mode approval → the approver belongs to the company, works at the
  *    device's branch (home or pos_staff_branches), was active at approved_at,
  *    holds approvals.give, and the proof verifies → verified; no K on the
@@ -107,8 +112,12 @@ final class AuthorizationGate
     /**
      * Check one gated action and record it.
      *
+     * `actor_staff_id` is the event's own staff member (order.staff_id, the
+     * voider, the closer, logged_by, the request's staff_id) and
+     * `staff_token` the event's signed staff token.
+     *
      * @param  array{action: string, subject_type: string, subject_uuid?: ?string, amount_baisas?: ?int, ref?: ?string,
-     *     actor_staff_id?: ?int, client_event_id?: ?string, at: CarbonInterface, required?: bool,
+     *     actor_staff_id?: ?int, staff_token?: mixed, client_event_id?: ?string, at: CarbonInterface, required?: bool,
      *     needs_approval?: bool, percent?: ?float, candidate_amounts?: list<int>, legacy_approver_staff_id?: ?int}  $ctx
      * @param  array<string, mixed>|null  $block  a normalised block ({@see block()})
      */
@@ -134,9 +143,8 @@ final class AuthorizationGate
                 $this->knownActor($device, $actor), null, 'no_authorization', 'approval'), null);
         }
 
-        $actor = $block['actor_staff_id'] ?? $actor;
         $outcome = match ($block['mode']) {
-            'position' => $this->position($device, $ctx, $actor),
+            'position' => $this->signedPosition($device, $ctx),
             'approval' => $this->approval($device, $ctx, $block, $actor),
             default => new AuthorizationOutcome(AuthorizationOutcome::FAILED, $this->knownActor($device, $actor), null, 'invalid_block', 'approval'),
         };
@@ -144,11 +152,35 @@ final class AuthorizationGate
         return $this->record($device, $ctx, $ref, $outcome, $block);
     }
 
+    /**
+     * F1 — a position block counts only for the staff member of the event's
+     * signed staff token; the block's own actor_staff_id is never trusted.
+     */
+    private function signedPosition(Device $device, array $ctx): AuthorizationOutcome
+    {
+        $eventStaff = $ctx['actor_staff_id'] ?? null;
+        $token = StaffToken::check($device, $ctx['staff_token'] ?? null, $eventStaff);
+        if ($token['failure'] !== null) {
+            // A paid sale is never refused over this: the verdict is recorded
+            // and the event is flagged.
+            $device->syncIntegrityFlags[] = $eventStaff === null ? 'actor_unverified' : 'actor_unverified:'.$eventStaff;
+
+            return new AuthorizationOutcome(AuthorizationOutcome::FAILED, $this->knownActor($device, $eventStaff), null,
+                'actor_unverified', 'position');
+        }
+
+        return $this->position($device, $ctx, $token['staff_id']);
+    }
+
     private function position(Device $device, array $ctx, ?int $actor): AuthorizationOutcome
     {
         $staff = $actor === null ? null : $this->staff($device, $actor);
         if ($staff === null) {
             return new AuthorizationOutcome(AuthorizationOutcome::FAILED, null, null, 'actor_unknown', 'position');
+        }
+        // A suspended (or since-terminated) actor never counts on their own tick.
+        if (! $this->activeAt($staff, Carbon::instance($ctx['at']))) {
+            return new AuthorizationOutcome(AuthorizationOutcome::FAILED, $actor, null, 'actor_inactive', 'position');
         }
         if ($ctx['needs_approval'] ?? false) {
             return new AuthorizationOutcome(AuthorizationOutcome::MISSING, $actor, null, 'needs_approval', 'position');

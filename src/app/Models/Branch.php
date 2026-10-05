@@ -35,6 +35,8 @@ class Branch extends Model
             'settings' => 'array',
             'receipt_template' => 'array',
             'location_check_enabled' => 'boolean',
+            'location_check_off_since' => 'datetime',
+            'location_check_off_windows' => 'array',
         ];
     }
 

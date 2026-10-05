@@ -51,8 +51,9 @@ final class GeofenceGuard
      * LAUNCH-P1 decision 2a — which location rule applies to an action this
      * device made at $madeAt (the event's client timestamp; null = now).
      *
-     *  - the branch's "Location check" is off → SKIP, before every other rule
-     *    (LAUNCH-P5 add-on).
+     *  - the branch's "Location check" is off, or the event was made while it
+     *    was off (location_check_off_windows / off_since) → SKIP, before
+     *    every other rule (LAUNCH-P5 add-on).
      *  - location_mode 'any'  → SKIP: the device may work anywhere.
      *  - location_mode 'branch' (default) → today's rule, EXCEPT an event made
      *    while the device was still 'any' (client timestamp inside any closed
@@ -73,6 +74,11 @@ final class GeofenceGuard
         if ($branch !== null && ! $branch->locationCheckEnabled()) {
             return self::SKIP;
         }
+        // ... and an event made while the check was off (an offline sale
+        // synced after it was turned back on) is not fenced either.
+        if ($branch !== null && $madeAt !== null && $this->madeWhileBranchOpen($branch, $madeAt)) {
+            return self::SKIP;
+        }
         $mode = $device->getAttribute('location_mode');
         if ($mode === 'any') {
             return self::SKIP;
@@ -88,6 +94,34 @@ final class GeofenceGuard
         }
 
         return $mode === null ? self::SKIP : self::BRANCH_LOCATION_MISSING;
+    }
+
+    /**
+     * LAUNCH-P5 add-on — $madeAt falls inside a period the branch's location
+     * check was off: a closed one (location_check_off_windows, written by the
+     * admin when the check is turned back on) or the current one
+     * (location_check_off_since, while still off).
+     */
+    private function madeWhileBranchOpen(Branch $branch, CarbonInterface $madeAt): bool
+    {
+        $windows = $branch->location_check_off_windows;
+        foreach (is_array($windows) ? $windows : [] as $window) {
+            if (! is_array($window) || ! is_string($window['from'] ?? null) || ! is_string($window['until'] ?? null)) {
+                continue;
+            }
+            try {
+                $from = Carbon::parse($window['from']);
+                $until = Carbon::parse($window['until']);
+            } catch (\Throwable) {
+                continue;
+            }
+            if ($madeAt->greaterThanOrEqualTo($from) && $madeAt->lessThan($until)) {
+                return true;
+            }
+        }
+        $offSince = $branch->location_check_off_since;
+
+        return $offSince !== null && ! $branch->locationCheckEnabled() && $madeAt->greaterThanOrEqualTo($offSince);
     }
 
     private function madeWhileAny(Device $device, CarbonInterface $madeAt): bool

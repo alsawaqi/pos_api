@@ -76,17 +76,18 @@ class BranchLocationCheckTest extends TestCase
     }
 
     /** @param  array{lat: float, lng: float}|null  $gps */
-    private function create(Device $device, ?array $gps): string
+    private function create(Device $device, ?array $gps, ?Carbon $at = null): string
     {
+        $at ??= now();
         $order = ['uuid' => (string) Str::uuid(), 'order_type' => 'quick', 'source' => 'main_pos', 'staff_id' => 7,
-            'opened_at' => now()->toIso8601String(), 'subtotal_baisas' => 3000, 'discount_total_baisas' => 0, 'tax_total_baisas' => 0,
+            'opened_at' => $at->toIso8601String(), 'subtotal_baisas' => 3000, 'discount_total_baisas' => 0, 'tax_total_baisas' => 0,
             'grand_total_baisas' => 3000,
             'lines' => [['product_id' => 1, 'qty' => 1, 'unit_price_baisas' => 3000, 'line_discount_baisas' => 0, 'line_total_baisas' => 3000]],
         ] + ($gps === null ? [] : ['gps' => $gps]);
         Auth::forgetGuards();
 
         return (string) $this->withToken((string) $device->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [[
-            'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.create', 'client_timestamp' => now()->toIso8601String(),
+            'client_event_id' => (string) Str::uuid(), 'event_type' => 'order.create', 'client_timestamp' => $at->toIso8601String(),
             'payload' => ['order' => $order],
         ]]])->assertOk()->json('data.results.0.status');
     }
@@ -137,6 +138,52 @@ class BranchLocationCheckTest extends TestCase
 
         $guard = app(GeofenceGuard::class);
         $this->assertSame(GeofenceGuard::SKIP, $guard->requirement($device, Branch::query()->findOrFail(10)));
+    }
+
+    public function test_a_sale_made_while_the_check_was_off_is_not_fenced_when_it_syncs_after_it_is_back_on(): void
+    {
+        // The admin turned the check off 07:00–08:00 and on again (now 09:00).
+        DB::table('pos_branches')->where('id', 10)->update(['location_check_enabled' => true, 'location_check_off_since' => null,
+            'location_check_off_windows' => json_encode([
+                ['from' => '2026-10-05T07:00:00+00:00', 'until' => '2026-10-05T08:00:00+00:00'],
+            ])]);
+        $device = $this->device();
+        $offline = Carbon::parse('2026-10-05 07:30:00', 'UTC');
+
+        $this->assertSame('processed', $this->create($device, self::OUTSIDE, $offline));
+        $this->assertSame('processed', $this->create($device, null, $offline));
+
+        // Made after the check was back on: still fenced.
+        $after = Carbon::parse('2026-10-05 08:30:00', 'UTC');
+        $this->assertSame('failed', $this->create($device, self::OUTSIDE, $after));
+        $this->assertSame('failed', $this->create($device, null, $after));
+        $this->assertSame('processed', $this->create($device, self::INSIDE, $after));
+        // Live actions (no event time) follow the switch as it is now.
+        $this->login($device, self::OUTSIDE)->assertStatus(422)->assertJsonPath('errors.0.code', 'outside_geofence');
+    }
+
+    public function test_the_guard_reads_every_off_window_and_the_open_period(): void
+    {
+        $guard = app(GeofenceGuard::class);
+        $device = $this->device();
+        DB::table('pos_branches')->where('id', 10)->update(['location_check_enabled' => false,
+            'location_check_off_since' => '2026-10-05 08:45:00', 'location_check_off_windows' => json_encode([
+                ['from' => '2026-10-04T10:00:00+00:00', 'until' => '2026-10-04T11:00:00+00:00'],
+                ['from' => '2026-10-05T06:00:00+00:00', 'until' => '2026-10-05T07:00:00+00:00'],
+                ['from' => 'not a time', 'until' => '2026-10-05T08:00:00+00:00'],
+            ])]);
+        $branch = fn (): Branch => Branch::query()->findOrFail(10);
+        $at = fn (string $time): Carbon => Carbon::parse($time, 'UTC');
+
+        $this->assertSame(GeofenceGuard::SKIP, $guard->requirement($device, $branch(), $at('2026-10-05 08:50:00')));
+        DB::table('pos_branches')->where('id', 10)->update(['location_check_enabled' => true, 'location_check_off_since' => null]);
+        foreach (['2026-10-04 10:30:00', '2026-10-05 06:00:00', '2026-10-05 06:59:59'] as $inside) {
+            $this->assertSame(GeofenceGuard::SKIP, $guard->requirement($device, $branch(), $at($inside)), $inside);
+        }
+        foreach (['2026-10-04 11:00:00', '2026-10-05 07:00:00', '2026-10-05 07:30:00', '2026-10-05 08:50:00'] as $outside) {
+            $this->assertSame(GeofenceGuard::ENFORCE, $guard->requirement($device, $branch(), $at($outside)), $outside);
+        }
+        $this->assertSame(GeofenceGuard::ENFORCE, $guard->requirement($device, $branch()));
     }
 
     public function test_the_config_sends_the_effective_location_mode_and_a_toggle_reaches_the_delta(): void

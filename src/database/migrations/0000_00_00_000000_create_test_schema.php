@@ -262,6 +262,12 @@ return new class extends Migration
             $table->boolean('sold_on_delivery')->default(true);
             $table->string('branch_scope', 16)->default('all');
             $table->text('description_ar')->nullable();
+            // LAUNCH review add-on (pos_admin 2026_10_06_100009): limited-time
+            // dates (inclusive Asia/Muscat calendar dates, NULL = no bound) and
+            // the cooking time in minutes (0..240, NULL = not set).
+            $table->date('on_sale_from')->nullable();
+            $table->date('on_sale_until')->nullable();
+            $table->smallInteger('cooking_minutes')->nullable();
             $table->timestamps();
             $table->softDeletes();
         });
@@ -279,6 +285,9 @@ return new class extends Migration
             $table->boolean('is_global')->default(false);
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->string('status', 32)->default('active');
+            // LAUNCH review add-on (pos_admin 2026_10_06_100010): 'extras' |
+            // 'remove' | 'instructions' (Postgres CHECK, rehearsal-verified).
+            $table->string('kind', 16)->default('extras');
             $table->timestamps();
             $table->softDeletes();
         });
@@ -300,6 +309,9 @@ return new class extends Migration
             $table->unsignedBigInteger('linked_product_id')->nullable();
             $table->unsignedSmallInteger('display_order')->default(0);
             $table->string('status', 32)->default('active');
+            // LAUNCH review add-on (pos_admin 2026_10_06_100010): the recipe
+            // ingredient a Remove option leaves out of the line's recipe copy.
+            $table->unsignedBigInteger('removes_ingredient_id')->nullable();
             $table->timestamps();
             $table->softDeletes();
         });
@@ -366,6 +378,31 @@ return new class extends Migration
             // item (sauce, dough) has its own recipe and yield, no stock.
             $table->boolean('is_prep')->default(false);
             $table->decimal('prep_yield_quantity', 14, 4)->nullable();
+            // LAUNCH review add-on (pos_admin 2026_10_06_100002): the container
+            // tills count in (the piece_* columns above stay its mirror) and
+            // the item's SKU.
+            $table->unsignedBigInteger('count_container_id')->nullable();
+            $table->string('sku', 64)->nullable();
+            $table->timestamps();
+            $table->softDeletes();
+        });
+
+        // LAUNCH review add-on — an ingredient's containers (pos_admin
+        // 2026_06_30_010000 + 2026_10_06_100001): `factor` = base units in
+        // ONE container, nesting included; a container may hold
+        // contains_quantity × another container of the same item. Containers
+        // are never sent to devices; pos_api reads them for stock.count.
+        Schema::create('pos_ingredient_units', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->string('name', 32);
+            $table->string('name_ar', 32)->nullable();
+            $table->decimal('factor', 14, 4);
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->unsignedBigInteger('contains_unit_id')->nullable();
+            $table->decimal('contains_quantity', 14, 4)->nullable();
             $table->timestamps();
             $table->softDeletes();
         });
@@ -447,6 +484,9 @@ return new class extends Migration
             $table->integer('min_choices')->default(1);
             $table->integer('max_choices')->default(1);
             $table->integer('sort_order')->default(0);
+            // LAUNCH review add-on (pos_admin 2026_10_06_100009): the main slot
+            // ("Make it a meal?"), at most one per combo.
+            $table->boolean('is_main')->default(false);
             $table->timestamps();
             $table->index(['combo_product_id', 'sort_order'], 'pos_combo_slots_combo_sort_idx');
         });
@@ -502,7 +542,46 @@ return new class extends Migration
             $table->unsignedBigInteger('ingredient_id');
             $table->decimal('quantity', 14, 4)->default(0);
             $table->timestamp('last_movement_at')->nullable();
+            // LAUNCH review add-on (pos_admin 2026_10_06_100007): when a count
+            // last set the breakdown by container, and when a device counted
+            // the total only.
+            $table->timestamp('containers_counted_at')->nullable();
+            $table->timestamp('containers_total_count_at')->nullable();
             $table->timestamps();
+        });
+
+        // LAUNCH review add-on (pos_admin 2026_10_06_100007) — the stock
+        // breakdown by LEAF container (branch_id NULL = the warehouse), shown
+        // next to the live total and never used to compute stock, and its
+        // append-only ledger. pos_api writes it only from stock.count.
+        Schema::create('pos_stock_container_balances', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
+            $table->unsignedBigInteger('ingredient_id');
+            $table->unsignedBigInteger('container_id');
+            $table->decimal('pieces', 14, 4)->default(0);
+            $table->timestamps();
+        });
+        DB::statement('CREATE UNIQUE INDEX "pos_stock_container_balances_branch_unique" ON "pos_stock_container_balances" ("branch_id", "ingredient_id", "container_id") WHERE "branch_id" IS NOT NULL');
+        DB::statement('CREATE UNIQUE INDEX "pos_stock_container_balances_warehouse_unique" ON "pos_stock_container_balances" ("company_id", "ingredient_id", "container_id") WHERE "branch_id" IS NULL');
+
+        Schema::create('pos_stock_container_movements', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id')->nullable();
+            $table->unsignedBigInteger('ingredient_id');
+            $table->unsignedBigInteger('container_id');
+            $table->decimal('delta_pieces', 14, 4);
+            $table->decimal('pieces_after', 14, 4);
+            $table->string('reason', 32);
+            $table->unsignedBigInteger('stock_movement_id')->nullable();
+            $table->string('reference_type')->nullable();
+            $table->unsignedBigInteger('reference_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_user_id')->nullable();
+            $table->unsignedBigInteger('recorded_by_pos_staff_id')->nullable();
+            $table->timestamp('occurred_at')->useCurrent();
+            $table->timestamp('created_at')->useCurrent();
         });
 
         // P-G4 — the merchant's central ingredient warehouse balance (schema
@@ -514,6 +593,8 @@ return new class extends Migration
             $table->unsignedBigInteger('ingredient_id');
             $table->decimal('quantity', 14, 4)->default(0);
             $table->timestamp('last_movement_at')->nullable();
+            // LAUNCH review add-on (pos_admin 2026_10_06_100007).
+            $table->timestamp('containers_counted_at')->nullable();
             $table->timestamps();
             $table->unique(['company_id', 'ingredient_id']);
         });
@@ -984,6 +1065,9 @@ return new class extends Migration
             $table->unsignedBigInteger('parent_order_item_id')->nullable()->index();
             $table->unsignedBigInteger('combo_slot_id')->nullable();
             $table->decimal('combo_extra_price', 12, 3)->default(0);
+            // LAUNCH review add-on (pos_admin 2026_10_06_100009): the server's
+            // cooking-time snapshot (a combo parent = its longest child).
+            $table->smallInteger('cooking_minutes')->nullable();
             $table->timestamps();
 
             // prepared | not_prepared (T11); no wastage arithmetic in T2.
@@ -1149,6 +1233,10 @@ return new class extends Migration
             $table->text('notes')->nullable();
             $table->unsignedBigInteger('recorded_by_user_id')->nullable();
             $table->timestamp('occurred_at')->useCurrent();
+            // LAUNCH review add-on (pos_admin 2026_10_06_100008): waste by container.
+            $table->unsignedBigInteger('container_id')->nullable();
+            $table->decimal('pieces', 14, 4)->nullable();
+            $table->string('container_label', 80)->nullable();
             $table->timestamps();
         });
 
@@ -1178,6 +1266,19 @@ return new class extends Migration
             $table->decimal('late_movement_units', 14, 4)->default(0);
             $table->unsignedBigInteger('waste_record_id')->nullable();
             $table->unique(['stock_count_id', 'ingredient_id'], 'pos_stock_count_lines_count_ingredient_unique');
+        });
+
+        // LAUNCH review add-on (pos_admin 2026_10_06_100008): the containers a
+        // count line was counted in (label and factor snapshots).
+        Schema::create('pos_stock_count_line_containers', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('stock_count_line_id');
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('container_id')->nullable();
+            $table->string('container_label', 80);
+            $table->decimal('container_factor', 14, 4);
+            $table->decimal('pieces', 14, 4);
+            $table->timestamps();
         });
 
         // ---- Phase 8.4 loyalty slice (earn-at-sale writes) ----
@@ -1338,6 +1439,10 @@ return new class extends Migration
             $table->string('unit_at_set', 16);
             $table->text('note')->nullable();
             $table->unsignedSmallInteger('sort_order')->default(0);
+            // LAUNCH review add-on (pos_admin 2026_10_06_100008): optional container.
+            $table->unsignedBigInteger('container_id')->nullable();
+            $table->decimal('pieces', 14, 4)->nullable();
+            $table->string('container_label', 80)->nullable();
             $table->timestamps();
             $table->unique(['restock_request_id', 'ingredient_id'], 'pos_rrl_request_ingredient_unique');
         });
@@ -1811,6 +1916,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_comp_reasons');
         Schema::dropIfExists('pos_void_reasons');
         Schema::dropIfExists('pos_addon_group_categories');
+        Schema::dropIfExists('pos_stock_count_line_containers');
         Schema::dropIfExists('pos_stock_count_lines');
         Schema::dropIfExists('pos_stock_counts');
         Schema::dropIfExists('pos_waste_records');
@@ -1832,6 +1938,8 @@ return new class extends Migration
         Schema::dropIfExists('pos_offers');
         Schema::dropIfExists('pos_discount_targets');
         Schema::dropIfExists('pos_discounts');
+        Schema::dropIfExists('pos_stock_container_movements');
+        Schema::dropIfExists('pos_stock_container_balances');
         Schema::dropIfExists('pos_branch_stock');
         Schema::dropIfExists('pos_ingredient_stock');
         Schema::dropIfExists('pos_product_stock_movements');
@@ -1839,6 +1947,7 @@ return new class extends Migration
         Schema::dropIfExists('pos_product_recipe_versions');
         Schema::dropIfExists('pos_product_recipes');
         Schema::dropIfExists('pos_ingredient_recipes');
+        Schema::dropIfExists('pos_ingredient_units');
         Schema::dropIfExists('pos_ingredients');
         Schema::dropIfExists('pos_product_sold_out');
         Schema::dropIfExists('pos_combo_slot_options');

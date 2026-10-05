@@ -149,7 +149,15 @@ final class CreateQrOrderAction
 
             $itemIds = [];
             foreach ($loaded->resolvedLines as $index => $resolved) {
-                $productSnapshots = $this->snapshots->product($resolved->product);
+                // LAUNCH review add-on — the line's Remove options leave their
+                // ingredients out of its recipe copy; a combo's children are
+                // built first so the parent snapshots their longest cooking time.
+                $productSnapshots = $this->snapshots->product(
+                    $resolved->product,
+                    null,
+                    $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
+                );
+                $childrenPayload = $resolved->isCombo() ? $this->children->payload($resolved, (int) $session->company_id) : [];
                 $item = OrderItem::query()->create([
                     'order_id' => $order->id,
                     'product_id' => $resolved->product->id,
@@ -164,6 +172,7 @@ final class CreateQrOrderAction
                     'component_snapshot_json' => $productSnapshots['component_snapshot_json'],
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $resolved->notes !== '' ? $resolved->notes : null,
+                    'cooking_minutes' => QrComboChildren::parentCookingMinutes($resolved->product, $childrenPayload),
                 ]);
                 $itemIds[$index] = (int) $item->id;
 
@@ -181,7 +190,7 @@ final class CreateQrOrderAction
                 }
                 // LAUNCH-P4 — a combo line's chosen items become its children.
                 if ($resolved->isCombo()) {
-                    $this->children->write($item, $this->children->payload($resolved, (int) $session->company_id));
+                    $this->children->write($item, $childrenPayload);
                 }
             }
 

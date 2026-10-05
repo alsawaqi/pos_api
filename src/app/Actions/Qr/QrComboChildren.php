@@ -6,6 +6,8 @@ namespace App\Actions\Qr;
 
 use App\Models\OrderItem;
 use App\Models\OrderItemAddon;
+use App\Models\Product;
+use App\Support\Catalogue\CookingTime;
 use App\Support\Money;
 use Carbon\CarbonInterface;
 
@@ -33,7 +35,13 @@ final class QrComboChildren
     {
         $children = [];
         foreach ($line->components as $component) {
-            $snapshots = $this->snapshots->product($component->product, $recipeAt);
+            // LAUNCH review add-on — each chosen item's own Remove options
+            // leave their ingredients out of that item's recipe copy.
+            $snapshots = $this->snapshots->product(
+                $component->product,
+                $recipeAt,
+                $this->snapshots->removedIngredientIds($companyId, $component->addonIds()),
+            );
             $addons = [];
             foreach ($component->addons as $resolvedAddon) {
                 $addons[] = [
@@ -56,12 +64,29 @@ final class QrComboChildren
                     'notes' => $component->notes !== '' ? $component->notes : null,
                     'combo_slot_id' => $component->slotId,
                     'combo_extra_price' => Money::toOmr($component->extraPriceBaisas),
+                    // LAUNCH review add-on — the server's cooking-time snapshot.
+                    'cooking_minutes' => CookingTime::of($component->product),
                 ],
                 'addons' => $addons,
             ];
         }
 
         return $children;
+    }
+
+    /**
+     * LAUNCH review add-on — a combo parent's cooking-time snapshot: its
+     * longest child, else the combo's own value. A payload frozen before the
+     * add-on has no child values (treated as none).
+     *
+     * @param  list<array{attributes: array<string, mixed>, addons: list<array<string, mixed>>}>  $children
+     */
+    public static function parentCookingMinutes(?Product $combo, array $children): ?int
+    {
+        return CookingTime::forLine($combo, array_map(
+            static fn (array $child): ?int => isset($child['attributes']['cooking_minutes']) ? (int) $child['attributes']['cooking_minutes'] : null,
+            $children,
+        ));
     }
 
     /**

@@ -39,7 +39,15 @@ final class AppendQrPricedLinesAction
     ): array {
         $itemIds = [];
         foreach ($loaded->resolvedLines as $index => $resolved) {
-            $productSnapshots = $this->snapshots->product($resolved->product, $recipeAt);
+            // LAUNCH review add-on — Remove options leave their ingredients out
+            // of the recipe copy; a combo parent snapshots its longest child's
+            // cooking time.
+            $productSnapshots = $this->snapshots->product(
+                $resolved->product,
+                $recipeAt,
+                $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
+            );
+            $childrenPayload = $resolved->isCombo() ? $this->children->payload($resolved, (int) $session->company_id, $recipeAt) : [];
             $item = OrderItem::query()->create([
                 'order_id' => $order->id,
                 'product_id' => $resolved->product->id,
@@ -52,6 +60,7 @@ final class AppendQrPricedLinesAction
                 'component_snapshot_json' => $productSnapshots['component_snapshot_json'],
                 'status' => OrderItem::STATUS_OPEN,
                 'notes' => $resolved->notes !== '' ? $resolved->notes : null,
+                'cooking_minutes' => QrComboChildren::parentCookingMinutes($resolved->product, $childrenPayload),
             ]);
             $itemIds[$index] = (int) $item->id;
 
@@ -70,7 +79,7 @@ final class AppendQrPricedLinesAction
             }
             // LAUNCH-P4 — a combo line's chosen items become its children.
             if ($resolved->isCombo()) {
-                $this->children->write($item, $this->children->payload($resolved, (int) $session->company_id, $recipeAt));
+                $this->children->write($item, $childrenPayload);
             }
         }
 
@@ -100,7 +109,14 @@ final class AppendQrPricedLinesAction
     ): array {
         $items = [];
         foreach ($loaded->resolvedLines as $index => $resolved) {
-            $productSnapshots = $this->snapshots->product($resolved->product, $recipeAt);
+            // LAUNCH review add-on — the stored payload carries the filtered
+            // recipe copy and the cooking-time snapshots from submit time.
+            $productSnapshots = $this->snapshots->product(
+                $resolved->product,
+                $recipeAt,
+                $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
+            );
+            $childrenPayload = $resolved->isCombo() ? $this->children->payload($resolved, (int) $session->company_id, $recipeAt) : [];
             $addons = [];
             foreach ($resolved->addons as $resolvedAddon) {
                 $addons[] = [
@@ -126,10 +142,11 @@ final class AppendQrPricedLinesAction
                     'component_snapshot_json' => $productSnapshots['component_snapshot_json'],
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $resolved->notes !== '' ? $resolved->notes : null,
+                    'cooking_minutes' => QrComboChildren::parentCookingMinutes($resolved->product, $childrenPayload),
                 ],
                 'addons' => $addons,
             ] + ($resolved->isCombo()
-                ? ['children' => $this->children->payload($resolved, (int) $session->company_id, $recipeAt)]
+                ? ['children' => $childrenPayload]
                 : []);
         }
 
@@ -244,6 +261,9 @@ final class AppendQrPricedLinesAction
                 'component_snapshot_json' => $attributes['component_snapshot_json'],
                 'status' => $attributes['status'],
                 'notes' => $attributes['notes'],
+                // LAUNCH review add-on — a round submitted before the add-on
+                // and confirmed after it has no value: NULL.
+                'cooking_minutes' => isset($attributes['cooking_minutes']) ? (int) $attributes['cooking_minutes'] : null,
             ]);
             $itemIds[(int) $index] = (int) $item->id;
 

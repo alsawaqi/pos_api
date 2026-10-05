@@ -11,6 +11,7 @@ use App\Models\Product;
 use App\Support\StockDecimal;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * LAUNCH-P3 — what an order line copies ("freezes") about stock use when it
@@ -42,10 +43,52 @@ final class RecipeCopy
 
     private readonly RecipeInForce $recipes;
 
-    public function __construct(int $companyId, ?CarbonInterface $at = null)
+    public function __construct(private readonly int $companyId, ?CarbonInterface $at = null)
     {
         $this->exploder = new PrepExploder($companyId);
         $this->recipes = new RecipeInForce($at);
+    }
+
+    /**
+     * LAUNCH review add-on (owner decision D12, tester call 1) — the recipe
+     * ingredients a line's chosen Remove options leave out
+     * (pos_addons.removes_ingredient_id), company-scoped and including
+     * deleted add-ons (an offline-queued sale still settles). A Remove option
+     * naming another company's ingredient can only come from a corrupted
+     * catalogue: it is skipped and logged, never failing the sale.
+     *
+     * @param  iterable<int|string>  $addOnIds
+     * @return list<int>
+     */
+    public function removedIngredientIds(iterable $addOnIds): array
+    {
+        $ids = [];
+        foreach ($addOnIds as $id) {
+            $ids[(int) $id] = true;
+        }
+        if ($ids === []) {
+            return [];
+        }
+
+        $removed = [];
+        $rows = DB::table('pos_addons')
+            ->leftJoin('pos_ingredients', 'pos_ingredients.id', '=', 'pos_addons.removes_ingredient_id')
+            ->where('pos_addons.company_id', $this->companyId)
+            ->whereIn('pos_addons.id', array_keys($ids))
+            ->whereNotNull('pos_addons.removes_ingredient_id')
+            ->get(['pos_addons.id', 'pos_addons.removes_ingredient_id', 'pos_ingredients.company_id as ingredient_company_id']);
+        foreach ($rows as $row) {
+            if ((int) $row->ingredient_company_id !== $this->companyId) {
+                Log::warning('Remove option names an ingredient outside its company; ignored', [
+                    'company_id' => $this->companyId, 'add_on_id' => (int) $row->id,
+                ]);
+
+                continue;
+            }
+            $removed[(int) $row->removes_ingredient_id] = true;
+        }
+
+        return array_keys($removed);
     }
 
     /**
@@ -66,15 +109,33 @@ final class RecipeCopy
      * LAUNCH-P3 P3-7: the same holds for an untracked product — only a
      * made-to-order ('ingredient') product deducts its recipe at sale.
      *
+     * LAUNCH review add-on (menu audit §7.2) — $removedIngredientIds (from
+     * the line's Remove options, {@see removedIngredientIds()}) drops those
+     * TOP-LEVEL recipe lines before prep items are exploded: "No burger
+     * sauce" skips every raw ingredient of the sauce, and an ingredient used
+     * directly and inside a sauce skips only the direct amount. Because the
+     * copy itself leaves the ingredient out, pay, void, refunds,
+     * cancellation waste, the pos_admin reversal and cost of goods all
+     * follow with no change. A line whose every recipe line is removed
+     * copies no recipe.
+     *
+     * @param  list<int>  $removedIngredientIds
      * @return list<array{ingredient_id: int, qty: float, unit: string|null, unit_cost: float}>|null
      */
-    public function productRecipe(?Product $product): ?array
+    public function productRecipe(?Product $product, array $removedIngredientIds = []): ?array
     {
         if ($product === null || (string) $product->stock_mode !== 'ingredient') {
             return null;
         }
 
         $lines = $this->recipes->lines((int) $product->id);
+        if ($removedIngredientIds !== []) {
+            $removed = array_fill_keys(array_map('intval', $removedIngredientIds), true);
+            $lines = array_values(array_filter(
+                $lines,
+                static fn (array $line): bool => ! isset($removed[(int) $line['ingredient_id']]),
+            ));
+        }
         if ($lines === []) {
             return null;
         }
@@ -100,6 +161,12 @@ final class RecipeCopy
      */
     public function addonStockUse(AddOn $addOn): array
     {
+        // LAUNCH review add-on — a Remove option uses no stock of its own:
+        // its effect is the ingredient it leaves out of the line's recipe.
+        if ($addOn->removes_ingredient_id !== null) {
+            return ['ingredient_snapshot_json' => null, 'consumption_snapshot_json' => null];
+        }
+
         $rows = DB::table('pos_addon_consumptions')
             ->where('add_on_id', (int) $addOn->id)
             ->orderBy('display_order')

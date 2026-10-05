@@ -31,6 +31,9 @@ class QrStatusControllerTest extends TestCase
         'grand_total_baisas',
         // LAUNCH-P4 — whether the tax is inside grand_total (QR web reads it).
         'prices_include_tax',
+        // LAUNCH review add-on — "Ready in about N min · Ordered at HH:MM".
+        'ready_in_minutes',
+        'ordered_at',
     ];
 
     /** @var list<string> */

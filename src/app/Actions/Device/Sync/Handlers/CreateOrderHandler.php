@@ -24,6 +24,7 @@ use App\Models\QrOrderRound;
 use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Support\Catalogue\CookingTime;
 use App\Support\CustomerIdentity;
 use App\Support\Money;
 use App\Support\Recipes\RecipeCopy;
@@ -251,6 +252,10 @@ class CreateOrderHandler implements SyncEventHandler
                 // still made-to-order (P3-7 holds for kept copies too).
                 $kept = $this->takeKeptLineCopy($keptCopies, $line);
 
+                // LAUNCH review add-on — the line's Remove options (ordinary
+                // add_on_ids) leave their ingredients out of its recipe copy;
+                // the cooking time is the server's snapshot (devices send
+                // nothing new). A kept, unchanged line keeps both copies.
                 $item = OrderItem::create([
                     'order_id' => $model->id,
                     'product_id' => $productId,
@@ -261,10 +266,11 @@ class CreateOrderHandler implements SyncEventHandler
                     'line_total' => Money::toOmr((int) $line['line_total_baisas']),
                     'recipe_snapshot_json' => $kept !== null
                         ? ((string) $product?->stock_mode === 'ingredient' ? $kept['recipe'] : null)
-                        : $copy->productRecipe($product),
+                        : $copy->productRecipe($product, $copy->removedIngredientIds($this->addOnIdsOf($line))),
                     'component_snapshot_json' => $kept !== null ? $kept['components'] : $this->snapshotComponents($productId),
                     'status' => OrderItem::STATUS_OPEN,
                     'notes' => $line['notes'] ?? null,
+                    'cooking_minutes' => $kept !== null ? ($kept['cooking_minutes'] ?? null) : CookingTime::of($product),
                 ]);
                 $itemIds[$index] = (int) $item->id;
 
@@ -275,10 +281,12 @@ class CreateOrderHandler implements SyncEventHandler
                 // money (the revenue sits on this line), their own recipe,
                 // component and add-on copies. Never refused for an invalid
                 // combo — the pricing check flags it.
+                $childMinutes = [];
                 foreach ($line['combo'] ?? [] as $component) {
                     $childId = (int) $component['product_id'];
                     $child = Product::withTrashed()->where('company_id', $device->company_id)->find($childId);
                     $keptChild = $kept !== null ? $this->takeKeptChildCopy($kept, $component) : null;
+                    $childMinutes[] = $childCooking = $keptChild !== null ? ($keptChild['cooking_minutes'] ?? null) : CookingTime::of($child);
                     $childItem = OrderItem::create([
                         'order_id' => $model->id,
                         'parent_order_item_id' => $item->id,
@@ -290,14 +298,23 @@ class CreateOrderHandler implements SyncEventHandler
                         'line_total' => Money::toOmr(0),
                         'recipe_snapshot_json' => $keptChild !== null
                             ? ((string) $child?->stock_mode === 'ingredient' ? $keptChild['recipe'] : null)
-                            : $copy->productRecipe($child),
+                            : $copy->productRecipe($child, $copy->removedIngredientIds($this->addOnIdsOf($component))),
                         'component_snapshot_json' => $keptChild !== null ? $keptChild['components'] : $this->snapshotComponents($childId),
                         'combo_slot_id' => (int) $component['slot_id'],
                         'combo_extra_price' => Money::toOmr((int) ($component['extra_price_baisas'] ?? 0)),
                         'status' => OrderItem::STATUS_OPEN,
                         'notes' => $component['notes'] ?? null,
+                        'cooking_minutes' => $childCooking,
                     ]);
                     $this->writeAddons($childItem, $component['addons'] ?? [], $device, $copy, $keptChild);
+                }
+                // LAUNCH review add-on — a combo parent stores its longest
+                // child's cooking time (else the combo's own value).
+                if ($kept === null && $product !== null && $product->isCombo()) {
+                    $parentCooking = CookingTime::forLine($product, $childMinutes);
+                    if ($parentCooking !== $item->cooking_minutes) {
+                        $item->update(['cooking_minutes' => $parentCooking]);
+                    }
                 }
             }
 
@@ -363,6 +380,20 @@ class CreateOrderHandler implements SyncEventHandler
                 'consumption_snapshot_json' => $stockUse['consumption_snapshot_json'],
             ]);
         }
+    }
+
+    /**
+     * The add_on_ids of a wire line or combo choice (its `addons` rows).
+     *
+     * @param  array<string, mixed>  $line
+     * @return list<int>
+     */
+    private function addOnIdsOf(array $line): array
+    {
+        return array_values(array_map(
+            static fn ($addon): int => (int) (is_array($addon) ? ($addon['add_on_id'] ?? 0) : 0),
+            is_array($line['addons'] ?? null) ? $line['addons'] : [],
+        ));
     }
 
     /**
@@ -905,6 +936,7 @@ class CreateOrderHandler implements SyncEventHandler
                     'recipe' => $child->recipe_snapshot_json,
                     'components' => $child->component_snapshot_json,
                     'addons' => $this->addonCopies($child),
+                    'cooking_minutes' => $child->cooking_minutes !== null ? (int) $child->cooking_minutes : null,
                 ];
                 $combo[] = $childKey;
             }
@@ -915,6 +947,7 @@ class CreateOrderHandler implements SyncEventHandler
                 'components' => $item->component_snapshot_json,
                 'addons' => $this->addonCopies($item),
                 'children' => $children,
+                'cooking_minutes' => $item->cooking_minutes !== null ? (int) $item->cooking_minutes : null,
             ];
         }
 

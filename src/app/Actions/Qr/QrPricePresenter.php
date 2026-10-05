@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Models\Order;
+use App\Support\Catalogue\CookingTime;
 use App\Support\Money;
 use App\Support\Pricing\PriceResult;
 
@@ -69,6 +70,11 @@ final class QrPricePresenter
                 'tax_total_baisas' => Money::toBaisas($order->tax_total),
                 'grand_total_baisas' => Money::toBaisas($order->grand_total),
                 'prices_include_tax' => (bool) $order->prices_include_tax,
+                // LAUNCH review add-on — "Ready in about N min": the longest
+                // cooking time of the order's live lines (int | null).
+                'ready_in_minutes' => CookingTime::readyInForOrder((int) $order->id),
+                // … and when it was ordered (ISO 8601 with offset), for "Ordered at HH:MM".
+                'ordered_at' => $order->created_at?->toIso8601String(),
             ],
         ];
     }

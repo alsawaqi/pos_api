@@ -22,14 +22,29 @@ use Illuminate\Support\Facades\DB;
 final class OrderLineSnapshotter
 {
     /**
+     * LAUNCH review add-on — $removedIngredientIds: the recipe ingredients
+     * the line's Remove options leave out ({@see removedIngredientIds()}).
+     *
+     * @param  list<int>  $removedIngredientIds
      * @return array{recipe_snapshot_json: array<int, array<string, mixed>>|null, component_snapshot_json: array<int, array{product_id: int, qty: float}>}
      */
-    public function product(Product $product, ?CarbonInterface $recipeAt = null): array
+    public function product(Product $product, ?CarbonInterface $recipeAt = null, array $removedIngredientIds = []): array
     {
         return [
-            'recipe_snapshot_json' => $this->recipe($product, new RecipeCopy((int) $product->company_id, $recipeAt)),
+            'recipe_snapshot_json' => $this->recipe($product, new RecipeCopy((int) $product->company_id, $recipeAt), $removedIngredientIds),
             'component_snapshot_json' => $this->components((int) $product->id),
         ];
+    }
+
+    /**
+     * The recipe ingredients a line's chosen add-ons remove (company-scoped).
+     *
+     * @param  iterable<int|string>  $addOnIds
+     * @return list<int>
+     */
+    public function removedIngredientIds(int $companyId, iterable $addOnIds): array
+    {
+        return (new RecipeCopy($companyId))->removedIngredientIds($addOnIds);
     }
 
     /**
@@ -48,10 +63,13 @@ final class OrderLineSnapshotter
         ];
     }
 
-    /** @return list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null */
-    private function recipe(Product $product, RecipeCopy $copy): ?array
+    /**
+     * @param  list<int>  $removedIngredientIds
+     * @return list<array{ingredient_id: int, qty: float, unit: string, unit_cost: float}>|null
+     */
+    private function recipe(Product $product, RecipeCopy $copy, array $removedIngredientIds = []): ?array
     {
-        $lines = $copy->productRecipe($product);
+        $lines = $copy->productRecipe($product, $removedIngredientIds);
 
         return $lines === null ? null : array_map(static fn (array $line): array => [
             'ingredient_id' => $line['ingredient_id'],

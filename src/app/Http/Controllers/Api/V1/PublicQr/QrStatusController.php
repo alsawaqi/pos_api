@@ -15,6 +15,7 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\TableSession;
+use App\Support\Catalogue\CookingTime;
 use App\Support\Money;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -55,6 +56,11 @@ class QrStatusController
                 'grand_total_baisas' => Money::toBaisas($order->grand_total),
                 // LAUNCH-P4 — true: the tax is already inside grand_total.
                 'prices_include_tax' => (bool) $order->prices_include_tax,
+                // LAUNCH review add-on — "Ready in about N min": the longest
+                // cooking time of the order's live lines (int | null).
+                'ready_in_minutes' => CookingTime::readyInForOrder((int) $order->id),
+                // … and when it was ordered (ISO 8601 with offset), for "Ordered at HH:MM".
+                'ordered_at' => $order->created_at?->toIso8601String(),
             ] : null,
         ];
 
@@ -151,6 +157,9 @@ class QrStatusController
                 'total_baisas' => (int) $round->total_baisas,
                 'submitted_at' => $round->submitted_at?->toIso8601String(),
                 'resolved_at' => $round->resolved_at?->toIso8601String(),
+                // LAUNCH review add-on — an accepted round's longest cooking time.
+                'ready_in_minutes' => $round->status === QrOrderRound::STATUS_ACCEPTED
+                    ? CookingTime::readyInForRound($round->priced_lines) : null,
             ])->values()->all(),
             'bill_totals' => $visibleOrder instanceof Order
                 ? TableBillAdjustmentView::publicTotals($visibleOrder) : null,

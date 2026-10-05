@@ -425,6 +425,11 @@ final class QrSharedBillIdentityTest extends TestCase
         $actual = $status['data']['dine_in']['rounds'][0];
         $this->assertSame('customer', $actual['entered_by']);
         unset($actual['entered_by']);
+        // LAUNCH review add-on — a second additive key: the accepted round's
+        // "ready in" (no line here has a cooking time).
+        $this->assertArrayHasKey('ready_in_minutes', $actual);
+        $this->assertNull($actual['ready_in_minutes']);
+        unset($actual['ready_in_minutes']);
         $expectedPublicLines = $round->priced_lines;
         foreach ($expectedPublicLines as &$expectedLine) {
             unset($expectedLine['order_item_id']);

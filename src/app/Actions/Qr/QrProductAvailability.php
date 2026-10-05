@@ -8,6 +8,7 @@ use App\Models\BranchProduct;
 use App\Models\Product;
 use App\Support\BusinessClock;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Catalogue\SaleDates;
 use DateTimeInterface;
 
 /**
@@ -35,6 +36,14 @@ final readonly class QrProductAvailability
     /** LAUNCH-P4 — the branch switched it off by hand ("sold out"), on every channel. */
     public const SOLD_OUT = 'sold_out';
 
+    /**
+     * LAUNCH review add-on (tester call 13) — outside the product's
+     * limited-time dates (on_sale_from / on_sale_until, Asia/Muscat). The QR
+     * menu leaves such a product out; the pricer refuses it like the daily
+     * hours; a staff round holds it with this reason.
+     */
+    public const OUTSIDE_DATES = 'outside_dates';
+
     private function __construct(public bool $available, public ?string $reason) {}
 
     /**
@@ -49,6 +58,9 @@ final readonly class QrProductAvailability
         }
         if ((string) $product->status !== 'active') {
             return new self(false, self::INACTIVE);
+        }
+        if (! SaleDates::isOnSale($product, $at)) {
+            return new self(false, self::OUTSIDE_DATES);
         }
         if ($soldOut) {
             return new self(false, self::SOLD_OUT);

@@ -139,11 +139,11 @@ final class CombosTest extends TestCase
         $this->assertSame([], $meal['addon_group_ids']);
         [$main, $side, $drink] = $this->meal['slots'];
         $this->assertSame([
-            ['id' => $main, 'name' => 'Main', 'name_ar' => 'Main (ع)', 'min' => 1, 'max' => 1, 'sort_order' => 0,
+            ['id' => $main, 'name' => 'Main', 'name_ar' => 'Main (ع)', 'min' => 1, 'max' => 1, 'sort_order' => 0, 'is_main' => false,
                 'options' => [['product_id' => $this->burger, 'extra_price_baisas' => 0, 'is_default' => true, 'sort_order' => 0]]],
-            ['id' => $side, 'name' => 'Side', 'name_ar' => 'Side (ع)', 'min' => 1, 'max' => 1, 'sort_order' => 1,
+            ['id' => $side, 'name' => 'Side', 'name_ar' => 'Side (ع)', 'min' => 1, 'max' => 1, 'sort_order' => 1, 'is_main' => false,
                 'options' => [['product_id' => $this->fries, 'extra_price_baisas' => 0, 'is_default' => true, 'sort_order' => 0]]],
-            ['id' => $drink, 'name' => 'Drink', 'name_ar' => 'Drink (ع)', 'min' => 1, 'max' => 1, 'sort_order' => 2,
+            ['id' => $drink, 'name' => 'Drink', 'name_ar' => 'Drink (ع)', 'min' => 1, 'max' => 1, 'sort_order' => 2, 'is_main' => false,
                 'options' => [
                     ['product_id' => $this->cola, 'extra_price_baisas' => 0, 'is_default' => true, 'sort_order' => 0],
                     ['product_id' => $this->juice, 'extra_price_baisas' => 300, 'is_default' => false, 'sort_order' => 1],

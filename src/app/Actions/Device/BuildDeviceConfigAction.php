@@ -34,6 +34,8 @@ use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Catalogue\CookingTime;
+use App\Support\Catalogue\SaleDates;
 use App\Support\OrderNumbering;
 use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Recipes\RecipeCopy;
@@ -1087,6 +1089,13 @@ class BuildDeviceConfigAction
             'sold_out' => isset($soldOut[(int) $p->id]),
             'description_ar' => $p->description_ar,
             'addon_group_ids' => $combo ? [] : array_values(array_unique(array_merge($own, $globalGroupIds))),
+            // LAUNCH review add-on (additive keys, tester call 17): the
+            // limited-time dates ('YYYY-MM-DD' | null, inclusive, Asia/Muscat;
+            // new names — available_from / available_until stay the daily
+            // hours) and the cooking time in minutes (int | null).
+            'on_sale_from' => SaleDates::format($p->on_sale_from ?? null),
+            'on_sale_until' => SaleDates::format($p->on_sale_until ?? null),
+            'cooking_minutes' => CookingTime::of($p),
         ];
         if ($combo) {
             $fields['combo'] = ['slots' => collect($slots ?? [])->map(fn (object $slot): array => [
@@ -1096,6 +1105,8 @@ class BuildDeviceConfigAction
                 'min' => (int) $slot->min_choices,
                 'max' => (int) $slot->max_choices,
                 'sort_order' => (int) $slot->sort_order,
+                // LAUNCH review add-on — the main slot ("Make it a meal?").
+                'is_main' => (bool) ($slot->is_main ?? false),
                 'options' => collect($options->get($slot->id) ?? [])->map(fn (object $option): array => [
                     'product_id' => (int) $option->product_id,
                     'extra_price_baisas' => (int) $this->baisas($option->extra_price),
@@ -1116,13 +1127,16 @@ class BuildDeviceConfigAction
      */
     private function sellableProducts(int $companyId, int $branchId): Builder
     {
-        return BranchCatalogue::soldAt(
+        return SaleDates::onSale(BranchCatalogue::soldAt(
             Product::query()->where('company_id', $companyId)
                 // P-G2 — internal items (cups/lids) never reach the POS menu.
                 ->where('is_internal', false)
                 ->where('status', 'active'),
             $branchId,
-        );
+            // LAUNCH review add-on — and only while on sale (its limited-time
+            // dates cover the merchant's today): old builds do not know the
+            // dates, so an out-of-range product is not sent at all.
+        ), SaleDates::day());
     }
 
     /**
@@ -1160,6 +1174,10 @@ class BuildDeviceConfigAction
                                 });
                         });
                 });
+            // LAUNCH review add-on — a limited-time date boundary crossed since
+            // the cursor moves no row: a product whose first day has come
+            // arrives, one whose last day has passed leaves via deleted.products.
+            SaleDates::orCrossedSince($q, SaleDates::day($since), SaleDates::day());
         });
     }
 
@@ -1263,6 +1281,10 @@ class BuildDeviceConfigAction
             'is_global' => (bool) $g->is_global,
             'display_order' => (int) $g->display_order,
             'status' => $g->status,
+            // LAUNCH review add-on (tester call 1) — 'extras' | 'remove' |
+            // 'instructions'. Old builds drop the key and show every group as
+            // an ordinary optional add-on group.
+            'kind' => (string) ($g->kind ?? 'extras'),
             'addons' => $addons
                 ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a, $consumptionByAddon?->get($a->id), $recipeCopy))->values()->all()
                 : [],
@@ -1287,6 +1309,9 @@ class BuildDeviceConfigAction
             // P-G3 — the real product behind this option: the device greys
             // the add-on when that product is sold out at the branch.
             'linked_product_id' => $a->linked_product_id !== null ? (int) $a->linked_product_id : null,
+            // LAUNCH review add-on — a Remove option's recipe ingredient (the
+            // server leaves it out of the line's recipe copy).
+            'removes_ingredient_id' => $a->removes_ingredient_id !== null ? (int) $a->removes_ingredient_id : null,
             'ingredient_id' => $a->ingredient_id !== null ? (int) $a->ingredient_id : null,
             'ingredient_qty' => $this->num($a->ingredient_qty),
             'ingredient_unit' => $a->ingredient_unit,

@@ -34,6 +34,28 @@ class Branch extends Model
             'opening_hours_json' => 'array',
             'settings' => 'array',
             'receipt_template' => 'array',
+            'location_check_enabled' => 'boolean',
         ];
+    }
+
+    /**
+     * LAUNCH-P5 add-on — the branch "Location check" switch is ON (the
+     * default; a row from before the column counts as on). Off: staff may log
+     * in and sell from any location at this branch.
+     */
+    public function locationCheckEnabled(): bool
+    {
+        return $this->getAttribute('location_check_enabled') !== false;
+    }
+
+    /** The switch of a branch by id (on when there is no such branch). */
+    public static function locationCheckEnabledFor(?int $branchId): bool
+    {
+        if ($branchId === null) {
+            return true;
+        }
+        $value = self::query()->whereKey($branchId)->value('location_check_enabled');
+
+        return $value === null || (bool) $value;
     }
 }

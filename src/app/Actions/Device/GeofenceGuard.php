@@ -51,6 +51,8 @@ final class GeofenceGuard
      * LAUNCH-P1 decision 2a — which location rule applies to an action this
      * device made at $madeAt (the event's client timestamp; null = now).
      *
+     *  - the branch's "Location check" is off → SKIP, before every other rule
+     *    (LAUNCH-P5 add-on).
      *  - location_mode 'any'  → SKIP: the device may work anywhere.
      *  - location_mode 'branch' (default) → today's rule, EXCEPT an event made
      *    while the device was still 'any' (client timestamp inside any closed
@@ -65,6 +67,12 @@ final class GeofenceGuard
      */
     public function requirement(Device $device, ?Branch $branch, ?CarbonInterface $madeAt = null): string
     {
+        // LAUNCH-P5 add-on — a branch whose "Location check" is off is open:
+        // no location rule applies there (never BRANCH_LOCATION_MISSING),
+        // whatever the device's own mode. The branch keeps its location.
+        if ($branch !== null && ! $branch->locationCheckEnabled()) {
+            return self::SKIP;
+        }
         $mode = $device->getAttribute('location_mode');
         if ($mode === 'any') {
             return self::SKIP;

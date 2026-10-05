@@ -462,10 +462,13 @@ class BuildDeviceConfigAction
             // LAUNCH-P1 2a — this device's own settings (full + delta, a tiny
             // scalar block like 'settings'). location_mode 'any' turns the
             // device's branch location lock off; 'branch' keeps it on.
+            // LAUNCH-P5 add-on — the EFFECTIVE mode: 'any' while the branch's
+            // "Location check" is off; every delta carries it, so a toggle
+            // reaches the branch's devices on their next refresh.
             'device' => [
                 'uuid' => $device->uuid,
                 'device_type' => $device->device_type,
-                'location_mode' => $device->locationMode(),
+                'location_mode' => $device->effectiveLocationMode(),
             ],
             // LAUNCH-P4 — the merchant's VAT policy (full + delta, tiny):
             // {vat_registered, prices_include_vat, vat_number}. Not
@@ -805,6 +808,8 @@ class BuildDeviceConfigAction
             'latitude' => $this->num($b->latitude),
             'longitude' => $this->num($b->longitude),
             'geofence_radius_m' => (int) $b->geofence_radius_m,
+            // LAUNCH-P5 add-on — informational; devices apply device.location_mode.
+            'location_check_enabled' => $b->locationCheckEnabled(),
             'default_order_type' => $b->default_order_type,
             'opening_hours' => $b->opening_hours_json,
             'settings' => $b->settings,

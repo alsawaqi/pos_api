@@ -56,7 +56,7 @@ class DeviceActivateController
                     'kiosk_id' => $device->kiosk_id,
                     ...app(ResolveDeviceSoftPos::class)->clientContract($device, $request->header('X-Mithqal-SoftPos-Capable') === '1'),
                     'name' => $device->name,
-                    'location_mode' => $device->locationMode(),
+                    'location_mode' => $device->effectiveLocationMode(),
                 ],
             ],
             'errors' => [],

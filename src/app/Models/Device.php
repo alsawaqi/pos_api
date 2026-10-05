@@ -158,6 +158,18 @@ class Device extends Model implements Authenticatable
         return $this->getAttribute('location_mode') === 'any' ? 'any' : 'branch';
     }
 
+    /**
+     * LAUNCH-P5 add-on — the mode the device must apply: 'any' while its
+     * branch's "Location check" is off, else its own {@see locationMode()}.
+     * Sent in the config (full and delta) and at activation, so the apps
+     * need no change.
+     */
+    public function effectiveLocationMode(): string
+    {
+        return Branch::locationCheckEnabledFor($this->branch_id === null ? null : (int) $this->branch_id)
+            ? $this->locationMode() : 'any';
+    }
+
     public function isPaymentStation(): bool
     {
         return $this->device_type === 'payment_station';

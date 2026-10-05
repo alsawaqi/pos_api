@@ -15,7 +15,9 @@ use App\Models\StockCountLine;
 use App\Models\StockMovement;
 use App\Models\SyncEvent;
 use App\Models\WasteRecord;
+use App\Support\Inventory\ContainerBreakdown;
 use App\Support\StockDecimal;
+use Brick\Math\BigDecimal;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -58,6 +60,11 @@ class StockCountHandler implements SyncEventHandler
             'lines.*.ingredient_id' => ['required', 'integer', 'distinct'],
             'lines.*.counted_pieces' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'lines.*.counted_units' => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            // LAUNCH review add-on — future apps count by container: the
+            // pieces of each container on the shelf (old apps never send it).
+            'lines.*.containers' => ['sometimes', 'nullable', 'array', 'max:50'],
+            'lines.*.containers.*.container_uuid' => ['required', 'string', 'max:64'],
+            'lines.*.containers.*.pieces' => ['required', 'numeric', 'min:0'],
             'note' => ['sometimes', 'nullable', 'string'],
             'staff_id' => ['sometimes', 'nullable', 'integer'],
             'counted_at' => ['sometimes', 'nullable', 'string'],
@@ -80,6 +87,7 @@ class StockCountHandler implements SyncEventHandler
 
         // Resolve + convert every line BEFORE writing anything, so a
         // bad line fails the whole event (atomic, like the merchant flow).
+        $breakdown = new ContainerBreakdown((int) $device->company_id);
         $resolved = [];
         $skippedPrep = [];
         foreach ($payload['lines'] as $line) {
@@ -104,6 +112,25 @@ class StockCountHandler implements SyncEventHandler
             $countedUnits = isset($line['counted_units']) && $line['counted_units'] !== null
                 ? (float) $line['counted_units']
                 : null;
+
+            // LAUNCH review add-on — counted containers (each one of THIS
+            // item's containers, by uuid). Without a counted total, the total
+            // is what they hold.
+            $containers = [];
+            foreach (is_array($line['containers'] ?? null) ? $line['containers'] : [] as $counted) {
+                $container = $breakdown->container((int) $ingredient->id, (string) $counted['container_uuid']);
+                if ($container === null) {
+                    throw new RuntimeException('stock.count line for ingredient '.$ingredient->id.' names a container of another item');
+                }
+                $containers[] = ['container' => $container, 'pieces' => StockDecimal::quantity($counted['pieces'])];
+            }
+            if ($containers !== [] && $countedPieces === null && $countedUnits === null) {
+                $countedUnits = array_sum(array_map(
+                    static fn (array $c): float => (float) $c['pieces'] * (float) $c['container']->factor,
+                    $containers,
+                ));
+            }
+
             if ($countedPieces === null && $countedUnits === null) {
                 throw new RuntimeException('stock.count line for ingredient '.$ingredient->id.' has no counted amount');
             }
@@ -125,13 +152,14 @@ class StockCountHandler implements SyncEventHandler
                 'ingredient' => $ingredient,
                 'counted_pieces' => $countedPieces,
                 'counted_units' => round((float) $countedUnits, StockDecimal::QUANTITY_SCALE),
+                'containers' => $containers,
             ];
         }
         if ($resolved === []) {
             throw new RuntimeException('stock.count names only prep items, which have no stock of their own');
         }
 
-        return DB::transaction(function () use ($resolved, $device, $staffId, $note, $countedAt, $skippedPrep): array {
+        return DB::transaction(function () use ($resolved, $device, $staffId, $note, $countedAt, $skippedPrep, $breakdown): array {
             $count = StockCount::create([
                 'uuid' => (string) Str::uuid(),
                 'company_id' => $device->company_id,
@@ -202,7 +230,7 @@ class StockCountHandler implements SyncEventHandler
                     $linesWithVariance++;
                 }
 
-                StockCountLine::create([
+                $countLine = StockCountLine::create([
                     'stock_count_id' => $count->id,
                     'ingredient_id' => $ingredient->id,
                     'counted_pieces' => $line['counted_pieces'] !== null
@@ -215,6 +243,8 @@ class StockCountHandler implements SyncEventHandler
                     'stock_movement_id' => $movementId,
                     'waste_record_id' => $wasteId,
                 ]);
+
+                $this->countBreakdown($breakdown, $device, $count, (int) $countLine->id, $line, $movementId, $staffId, $countedAt);
             }
 
             return [
@@ -223,6 +253,68 @@ class StockCountHandler implements SyncEventHandler
                 'lines_with_variance' => $linesWithVariance,
             ] + ($skippedPrep === [] ? [] : ['skipped_prep_ingredient_ids' => $skippedPrep]);
         });
+    }
+
+    /**
+     * LAUNCH review add-on — what a device count does to the branch's stock
+     * breakdown by container (never to the stock total):
+     *
+     *  - counted by container (a future app sends lines.*.containers): the
+     *    breakdown becomes exactly those containers (as leaf pieces), the
+     *    containers are kept on the count line, containers_counted_at is set;
+     *  - otherwise the legacy rule for today's apps (tester call 9):
+     *    (b) a total of 0 clears the breakdown (containers_counted_at);
+     *    (a) counted_pieces while the count container is the item's only leaf
+     *        container sets the breakdown to that container
+     *        (containers_counted_at);
+     *    (c) anything else leaves it and stamps containers_total_count_at.
+     *
+     * Every change is in the container ledger (reason device_count).
+     *
+     * @param  array{ingredient: Ingredient, counted_pieces: float|null, counted_units: float, containers: list<array{container: object, pieces: string}>}  $line
+     */
+    private function countBreakdown(ContainerBreakdown $breakdown, Device $device, StockCount $count, int $countLineId, array $line, ?int $movementId, ?int $staffId, Carbon $countedAt): void
+    {
+        $ingredient = $line['ingredient'];
+        $ingredientId = (int) $ingredient->id;
+        $branchId = (int) $device->branch_id;
+        $source = ['stock_movement_id' => $movementId, 'reference_type' => 'pos_stock_counts',
+            'reference_id' => (int) $count->id, 'pos_staff_id' => $staffId];
+
+        $leaf = null;
+        if ($line['containers'] !== []) {
+            $leaf = [];
+            $now = now();
+            foreach ($line['containers'] as $counted) {
+                $container = $counted['container'];
+                DB::table('pos_stock_count_line_containers')->insert([
+                    'stock_count_line_id' => $countLineId, 'company_id' => (int) $device->company_id,
+                    'container_id' => (int) $container->id, 'container_label' => mb_substr((string) $container->name, 0, 80),
+                    'container_factor' => StockDecimal::quantity($container->factor), 'pieces' => $counted['pieces'],
+                    'created_at' => $now, 'updated_at' => $now,
+                ]);
+                foreach ($breakdown->leafPieces($container, $counted['pieces']) as $leafId => $pieces) {
+                    $leaf[$leafId] = isset($leaf[$leafId]) ? $leaf[$leafId]->plus($pieces) : $pieces;
+                }
+            }
+        } elseif ($line['counted_units'] == 0.0) {
+            $leaf = [];
+        } elseif ($line['counted_pieces'] !== null && $ingredient->count_container_id !== null
+            && $breakdown->liveLeafIds($ingredientId) === [(int) $ingredient->count_container_id]) {
+            $leaf = [(int) $ingredient->count_container_id => BigDecimal::of(StockDecimal::exact($line['counted_pieces']))];
+        }
+
+        // The stamps ride the branch's stock row (never its updated_at, so no
+        // config delta moves); a count that moved nothing and found no row
+        // stamps nothing.
+        $stock = DB::table('pos_branch_stock')->where('branch_id', $branchId)->where('ingredient_id', $ingredientId);
+        if ($leaf === null) {
+            $stock->update(['containers_total_count_at' => $countedAt]);
+
+            return;
+        }
+        $breakdown->setBranch($branchId, $ingredientId, $leaf, ContainerBreakdown::REASON_DEVICE_COUNT, $countedAt, $source);
+        $stock->update(['containers_counted_at' => $countedAt]);
     }
 
     /**

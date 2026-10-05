@@ -173,6 +173,9 @@ final class QrPublicCustomerPrivacyTest extends TestCase
 
     public function test_known_and_unknown_customer_checkout_bodies_are_identical_after_identifier_normalisation(): void
     {
+        // Both orders are placed at one moment: the body carries ordered_at
+        // (LAUNCH review add-on), which must stay in the comparison.
+        $this->freezeSecond();
         Customer::query()->create([
             'uuid' => (string) Str::uuid(),
             'company_id' => 100,

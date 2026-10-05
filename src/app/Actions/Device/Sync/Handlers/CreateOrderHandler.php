@@ -27,6 +27,7 @@ use App\Models\TableSession;
 use App\Support\Catalogue\CookingTime;
 use App\Support\CustomerIdentity;
 use App\Support\Money;
+use App\Support\Orders\OneLineNote;
 use App\Support\Recipes\RecipeCopy;
 use App\Support\Recipes\RecipeInForce;
 use App\Support\Staff\SaleAuthorizations;
@@ -269,7 +270,8 @@ class CreateOrderHandler implements SyncEventHandler
                         : $copy->productRecipe($product, $copy->removedIngredientIds($this->addOnIdsOf($line))),
                     'component_snapshot_json' => $kept !== null ? $kept['components'] : $this->snapshotComponents($productId),
                     'status' => OrderItem::STATUS_OPEN,
-                    'notes' => $line['notes'] ?? null,
+                    // Fix order A-1 (H1) — one line on the kitchen ticket; cut, never refused.
+                    'notes' => OneLineNote::cut($line['notes'] ?? null),
                     'cooking_minutes' => $kept !== null ? ($kept['cooking_minutes'] ?? null) : CookingTime::of($product),
                 ]);
                 $itemIds[$index] = (int) $item->id;
@@ -303,7 +305,7 @@ class CreateOrderHandler implements SyncEventHandler
                         'combo_slot_id' => (int) $component['slot_id'],
                         'combo_extra_price' => Money::toOmr((int) ($component['extra_price_baisas'] ?? 0)),
                         'status' => OrderItem::STATUS_OPEN,
-                        'notes' => $component['notes'] ?? null,
+                        'notes' => OneLineNote::cut($component['notes'] ?? null),
                         'cooking_minutes' => $childCooking,
                     ]);
                     $this->writeAddons($childItem, $component['addons'] ?? [], $device, $copy, $keptChild);

@@ -42,6 +42,7 @@ use App\Support\Recipes\RecipeCopy;
 use App\Support\Staff\PositionPermissions;
 use App\Support\Staff\ShiftEndReminder;
 use App\Support\Staff\StaffBranches;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
@@ -78,6 +79,12 @@ class BuildDeviceConfigAction
      */
     public function handle(Device $device, ?Carbon $since = null): array
     {
+        // Fix order A-1 (M1) — ONE moment for the whole build: every read that
+        // depends on the clock (the sale-date checks, sliders, announcements)
+        // and meta.generated_at, which devices send back as the next cursor.
+        // A cursor stamped at the start is at-least-once: anything edited
+        // while the build ran comes again next time; nothing is skipped.
+        $at = now()->toImmutable();
         $companyId = (int) $device->company_id;
         $branchId = (int) $device->branch_id;
 
@@ -129,7 +136,7 @@ class BuildDeviceConfigAction
         // sold-out switch ride on each product for the device to apply per
         // order type — a product sold only inside combos still reaches the
         // device for its combo builder.
-        $productsQuery = $this->sellableProducts($companyId, $branchId)->orderBy('display_order');
+        $productsQuery = $this->sellableProducts($companyId, $branchId, $at)->orderBy('display_order');
         $soldOut = BranchCatalogue::soldOutAt($branchId);
         $reemitAll = $since !== null && $this->addonGroupsChangedSince($companyId, $since);
 
@@ -150,7 +157,7 @@ class BuildDeviceConfigAction
         // when a combo's slots or options changed, and (M2) every product
         // when an add-on group changed: a global group joins every product.
         if ($since !== null && ! $reemitAll) {
-            $this->changedProducts($productsQuery, $branchId, $since);
+            $this->changedProducts($productsQuery, $branchId, $since, $at);
         }
 
         $products = $productsQuery->get();
@@ -163,6 +170,12 @@ class BuildDeviceConfigAction
         $comboOptions = DB::table('pos_combo_slot_options')->whereIn('slot_id', $comboSlots->pluck('id')->all() ?: [0])
             ->orderBy('sort_order')->orderBy('id')->get()->groupBy('slot_id');
         $slotsByCombo = $comboSlots->groupBy('combo_product_id');
+        // Fix order A-1 (L2) — a combo without its own cooking time shows its
+        // longest option, as on the QR menu: the options this branch sells
+        // today (read here, a delta may not carry them).
+        $optionIds = $comboOptions->flatten(1)->pluck('product_id')->map(static fn ($id): int => (int) $id)->unique()->values()->all();
+        $optionCooking = $this->sellableProducts($companyId, $branchId, $at)
+            ->whereIn('pos_products.id', $optionIds ?: [0])->pluck('cooking_minutes', 'id');
         // M2 — "Apply to every product" groups join every product's list.
         $globalGroupIds = AddOnGroup::query()->where('company_id', $companyId)->where('is_global', true)
             ->where('status', 'active')->orderBy('display_order')->orderBy('id')->pluck('id')
@@ -313,7 +326,7 @@ class BuildDeviceConfigAction
         // "Live + in this device's loop" lives on the model as ONE pair of
         // scopes, shared with the slider.display impression gate — the two
         // must never drift again (see MarketingSlider::scopeLiveAt).
-        $now = now();
+        $now = $at;
         $sliders = MarketingSlider::query()
             ->liveAt($now)
             ->servedToDevice($device)
@@ -337,7 +350,7 @@ class BuildDeviceConfigAction
         $staffMessages = $this->changed(
             StaffMessage::query()
                 ->where('company_id', $companyId)
-                ->where('created_at', '>=', now()->subDays(30))
+                ->where('created_at', '>=', $at->subDays(30))
                 ->where(function ($q) use ($branchId, $branchStaffIds): void {
                     $q->where('target_type', StaffMessage::TARGET_COMPANY)
                         ->orWhere(function ($w) use ($branchId): void {
@@ -493,7 +506,7 @@ class BuildDeviceConfigAction
                 $deliveryPricesByProduct->get($p->id),
                 $minThresholdByIngredient,
                 $branchBalanceByIngredient,
-            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $slotsByCombo->get($p->id), $comboOptions)))->all(),
+            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $slotsByCombo->get($p->id), $comboOptions, $optionCooking)))->all(),
             'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
@@ -523,7 +536,7 @@ class BuildDeviceConfigAction
             'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
             'void_reasons' => $voidReasons->map(fn (VoidReason $r): array => $this->mapVoidReason($r))->all(),
             'comp_reasons' => $compReasons->map(fn (CompReason $r): array => $this->mapCompReason($r))->all(),
-            'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since, $prepIngredientIds)
+            'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since, $at, $prepIngredientIds)
                 + ['taxes' => $since === null ? [] : $this->nonEffectiveTaxIds($companyId, $taxes)],
         ];
 
@@ -532,7 +545,7 @@ class BuildDeviceConfigAction
             'meta' => [
                 'mode' => $since ? 'delta' : 'full',
                 'since' => $since?->toIso8601String(),
-                'generated_at' => now()->toIso8601String(),
+                'generated_at' => $at->toIso8601String(),
                 'money_unit' => 'baisas',
                 'company_id' => $companyId,
                 'branch_id' => $branchId,
@@ -647,7 +660,7 @@ class BuildDeviceConfigAction
      * @param  list<int>  $prepIngredientIds  changed ingredients that are prep items (LAUNCH-P3)
      * @return array<string, array<int>>
      */
-    private function deletedMap(int $companyId, int $branchId, array $branchFloorIds, ?Carbon $since, array $prepIngredientIds = []): array
+    private function deletedMap(int $companyId, int $branchId, array $branchFloorIds, ?Carbon $since, CarbonInterface $at, array $prepIngredientIds = []): array
     {
         $empty = [
             'floors' => [], 'tables' => [], 'categories' => [], 'products' => [],
@@ -698,9 +711,9 @@ class BuildDeviceConfigAction
             'products' => array_values(array_unique(array_merge(
                 $this->trashedIds(Product::query()->where('company_id', $companyId), $since),
                 array_values(array_diff(
-                    tap(Product::query()->where('company_id', $companyId), fn (Builder $q) => $this->changedProducts($q, $branchId, $since))
+                    tap(Product::query()->where('company_id', $companyId), fn (Builder $q) => $this->changedProducts($q, $branchId, $since, $at))
                         ->pluck('id')->map(fn ($id): int => (int) $id)->all(),
-                    $this->sellableProducts($companyId, $branchId)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+                    $this->sellableProducts($companyId, $branchId, $at)->pluck('id')->map(fn ($id): int => (int) $id)->all(),
                 )),
             ))),
             'addon_groups' => $this->trashedIds(AddOnGroup::query()->where('company_id', $companyId), $since),
@@ -1078,9 +1091,13 @@ class BuildDeviceConfigAction
      * @param  Collection<int|string, Collection<int, \stdClass>>  $options
      * @return array<string, mixed>
      */
-    private function launchP4ProductFields(Product $p, array $soldOut, array $globalGroupIds, $groupRows, $slots, Collection $options): array
+    private function launchP4ProductFields(Product $p, array $soldOut, array $globalGroupIds, $groupRows, $slots, Collection $options, ?Collection $optionCooking = null): array
     {
         $combo = $p->isCombo();
+        $optionMinutes = $combo ? collect($slots ?? [])
+            ->flatMap(static fn (object $slot): Collection => collect($options->get($slot->id) ?? []))
+            ->filter(static fn (object $option): bool => $optionCooking?->has($option->product_id) ?? false)
+            ->map(static fn (object $option) => $optionCooking->get($option->product_id)) : collect();
         $own = $groupRows ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all() : [];
         $fields = [
             'product_type' => $combo ? Product::TYPE_COMBO : Product::TYPE_STANDARD,
@@ -1095,7 +1112,7 @@ class BuildDeviceConfigAction
             // hours) and the cooking time in minutes (int | null).
             'on_sale_from' => SaleDates::format($p->on_sale_from ?? null),
             'on_sale_until' => SaleDates::format($p->on_sale_until ?? null),
-            'cooking_minutes' => CookingTime::of($p),
+            'cooking_minutes' => $combo ? CookingTime::comboFigure($p, $optionMinutes) : CookingTime::of($p),
         ];
         if ($combo) {
             $fields['combo'] = ['slots' => collect($slots ?? [])->map(fn (object $slot): array => [
@@ -1125,7 +1142,7 @@ class BuildDeviceConfigAction
      *
      * @return Builder<Product>
      */
-    private function sellableProducts(int $companyId, int $branchId): Builder
+    private function sellableProducts(int $companyId, int $branchId, CarbonInterface $at): Builder
     {
         return SaleDates::onSale(BranchCatalogue::soldAt(
             Product::query()->where('company_id', $companyId)
@@ -1136,7 +1153,7 @@ class BuildDeviceConfigAction
             // LAUNCH review add-on — and only while on sale (its limited-time
             // dates cover the merchant's today): old builds do not know the
             // dates, so an out-of-range product is not sent at all.
-        ), SaleDates::day());
+        ), SaleDates::day($at));
     }
 
     /**
@@ -1146,9 +1163,9 @@ class BuildDeviceConfigAction
      *
      * @param  Builder<Product>  $query
      */
-    private function changedProducts(Builder $query, int $branchId, Carbon $since): void
+    private function changedProducts(Builder $query, int $branchId, Carbon $since, CarbonInterface $at): void
     {
-        $query->where(function (Builder $q) use ($since, $branchId): void {
+        $query->where(function (Builder $q) use ($since, $branchId, $at): void {
             $q->where('pos_products.updated_at', '>', $since)
                 ->orWhereExists(function ($sub) use ($since, $branchId): void {
                     $sub->selectRaw('1')->from('pos_branch_product')
@@ -1177,7 +1194,11 @@ class BuildDeviceConfigAction
             // LAUNCH review add-on — a limited-time date boundary crossed since
             // the cursor moves no row: a product whose first day has come
             // arrives, one whose last day has passed leaves via deleted.products.
-            SaleDates::orCrossedSince($q, SaleDates::day($since), SaleDates::day());
+            // Fix order A-1 (M1) — the cursor's day is read a margin earlier
+            // ({@see SaleDates::CURSOR_MARGIN_MINUTES}), so a cursor stamped just
+            // after midnight by a build that read the catalogue just before it
+            // still sees the boundary (re-sending or re-purging is idempotent).
+            SaleDates::orCrossedSince($q, SaleDates::cursorDay($since), SaleDates::day($at));
         });
     }
 

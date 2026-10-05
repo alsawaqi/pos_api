@@ -136,7 +136,43 @@ final class BuildQrBranchMenuAction
         $taxPolicy = CompanyTaxPolicy::for($companyId);
         $shownOptions = static fn (object $slot): Collection => $options->get($slot->id, collect())
             ->filter(static fn (object $option): bool => $optionProducts->has((int) $option->product_id))->values();
-        $mealsByProduct = $this->meals($products, $slotsByCombo, $shownOptions, $optionProducts, $availabilityOf);
+        // Fix order A-1 (L2) — a combo's cooking figure: its own value, else
+        // the longest option this branch sells today (the device config's rule).
+        $comboCooking = static fn (Product $combo): ?int => CookingTime::comboFigure($combo, $slotsByCombo->get($combo->id, collect())
+            ->flatMap(static fn (object $slot): Collection => $shownOptions($slot))
+            ->map(static fn (object $option): ?Product => $optionProducts->get((int) $option->product_id))
+            ->filter(static fn (?Product $item): bool => $item !== null && (string) $item->status === 'active'
+                && BranchCatalogue::availableAt($item, $branchProducts->get($item->id)))
+            ->map(static fn (Product $item): ?int => CookingTime::of($item)));
+        // Fix order A-1 (L3) — a combo is unavailable while a required slot
+        // (min >= 1) has no available option left: the reason is that of the
+        // slot's first option (sold out, outside hours or dates, …), or
+        // outside_dates when every option has left the menu.
+        $optionAvailable = static function (object $option) use ($optionProducts, $availabilityOf): bool {
+            $item = $optionProducts->get((int) $option->product_id);
+
+            return $item !== null && $availabilityOf($item)->available;
+        };
+        $comboAvailability = static function (Product $combo) use ($availabilityOf, $slotsByCombo, $shownOptions, $optionAvailable, $optionProducts): QrProductAvailability {
+            $own = $availabilityOf($combo);
+            if (! $own->available) {
+                return $own;
+            }
+            foreach ($slotsByCombo->get($combo->id, collect()) as $slot) {
+                if ((int) $slot->min_choices < 1 || $shownOptions($slot)->contains($optionAvailable)) {
+                    continue;
+                }
+                $first = $shownOptions($slot)->first();
+
+                return QrProductAvailability::unavailable($first === null
+                    ? QrProductAvailability::OUTSIDE_DATES
+                    : (string) $availabilityOf($optionProducts->get((int) $first->product_id))->reason);
+            }
+
+            return $own;
+        };
+        $requiredAddonCost = $this->requiredAddonCost($groupIdsFor, $addonGroups->keyBy('id'), $addonsByGroup, $addonAvailability);
+        $mealsByProduct = $this->meals($products, $slotsByCombo, $shownOptions, $optionProducts, $comboAvailability, $optionAvailable, $requiredAddonCost);
 
         return [
             'branding' => app(ReadQrBranding::class)->handle($companyId, $branchId),
@@ -162,8 +198,9 @@ final class BuildQrBranchMenuAction
             })->values()->all(),
             'products' => $products->map(function (Product $product) use (
                 $availabilityOf, $groupIdsFor, $soldOut, $slotsByCombo, $optionProducts, $shownOptions, $mealsByProduct,
+                $comboAvailability, $comboCooking,
             ): array {
-                $availability = $availabilityOf($product);
+                $availability = $product->isCombo() ? $comboAvailability($product) : $availabilityOf($product);
                 $basePriceBaisas = Money::toBaisas($product->base_price);
                 $row = [
                     'id' => (int) $product->id,
@@ -190,11 +227,7 @@ final class BuildQrBranchMenuAction
                     // LAUNCH review add-on — the cooking time (a combo: its
                     // own, else its longest option) and the meals this
                     // product is the main of ("Make it a meal?").
-                    'cooking_minutes' => $product->isCombo()
-                        ? (CookingTime::of($product) ?? CookingTime::longest($slotsByCombo->get($product->id, collect())
-                            ->flatMap(static fn (object $slot): Collection => $shownOptions($slot))
-                            ->map(static fn (object $option): ?int => CookingTime::of($optionProducts->get((int) $option->product_id)))))
-                        : CookingTime::of($product),
+                    'cooking_minutes' => $product->isCombo() ? $comboCooking($product) : CookingTime::of($product),
                     'meals' => $mealsByProduct[(int) $product->id] ?? [],
                 ];
                 if ($product->isCombo()) {
@@ -289,34 +322,45 @@ final class BuildQrBranchMenuAction
     /**
      * LAUNCH review add-on (owner decision D9) — "Make it a meal?": per
      * product, the combos on this menu and available now (on sale, inside
-     * their hours, not sold out, sold here) whose MAIN slot offers it as an
-     * available option, and which can be completed now (every other required
-     * slot has an available option). price_from = the combo's price + this
-     * option's extra + the cheapest fill of the other slots' minimums
-     * (repeats allowed).
+     * their hours, not sold out, sold here, every required slot still has an
+     * available option) whose MAIN slot — a single pick, min = max = 1
+     * (tester call 15) — offers it as an available option.
+     *
+     * Fix order A-1 (L6) — price_from is the true cheapest completion: the
+     * combo's price + this option's extra + its required add-ons, plus, for
+     * every other slot, min × the cheapest available option (its extra and
+     * its own required add-ons; repeats allowed). Only available options and
+     * add-ons count; an option that cannot be completed is skipped.
      *
      * @param  Collection<int, Product>  $products
      * @param  Collection<int|string, Collection<int, object>>  $slotsByCombo
      * @param  callable(object): Collection<int, object>  $shownOptions
      * @param  Collection<int|string, Product>  $optionProducts
-     * @param  callable(Product): QrProductAvailability  $availabilityOf
+     * @param  callable(Product): QrProductAvailability  $comboAvailability
+     * @param  callable(object): bool  $optionAvailable
+     * @param  callable(Product): ?int  $requiredAddonCost
      * @return array<int, list<array{combo_product_id: int, slot_id: int, name: string, name_ar: string|null, image_url: string|null, price_from_baisas: int}>>
      */
-    private function meals(Collection $products, Collection $slotsByCombo, callable $shownOptions, Collection $optionProducts, callable $availabilityOf): array
+    private function meals(Collection $products, Collection $slotsByCombo, callable $shownOptions, Collection $optionProducts,
+        callable $comboAvailability, callable $optionAvailable, callable $requiredAddonCost): array
     {
-        $available = static function (object $option) use ($optionProducts, $availabilityOf): bool {
-            $item = $optionProducts->get((int) $option->product_id);
+        // The cost of ONE pick of an option, or null when it cannot be picked now.
+        $pickCost = static function (object $option) use ($optionProducts, $optionAvailable, $requiredAddonCost): ?int {
+            if (! $optionAvailable($option)) {
+                return null;
+            }
+            $addons = $requiredAddonCost($optionProducts->get((int) $option->product_id));
 
-            return $item !== null && $availabilityOf($item)->available;
+            return $addons === null ? null : Money::toBaisas($option->extra_price) + $addons;
         };
         $meals = [];
         foreach ($products as $combo) {
-            if (! $combo->isCombo() || ! $availabilityOf($combo)->available) {
+            if (! $combo->isCombo() || ! $comboAvailability($combo)->available) {
                 continue;
             }
             $slots = $slotsByCombo->get($combo->id, collect());
             $main = $slots->first(static fn (object $slot): bool => (bool) ($slot->is_main ?? false));
-            if ($main === null) {
+            if ($main === null || (int) $main->min_choices !== 1 || (int) $main->max_choices !== 1) {
                 continue;
             }
             $fill = 0;
@@ -324,26 +368,65 @@ final class BuildQrBranchMenuAction
                 if ((int) $slot->id === (int) $main->id || (int) $slot->min_choices <= 0) {
                     continue;
                 }
-                $cheapest = $shownOptions($slot)->filter($available)
-                    ->map(static fn (object $option): int => Money::toBaisas($option->extra_price))->min();
+                $cheapest = $shownOptions($slot)->map($pickCost)->filter(static fn (?int $cost): bool => $cost !== null)->min();
                 if ($cheapest === null) {
                     continue 2;
                 }
                 $fill += (int) $slot->min_choices * (int) $cheapest;
             }
-            foreach ($shownOptions($main)->filter($available) as $option) {
+            foreach ($shownOptions($main) as $option) {
+                $cost = $pickCost($option);
+                if ($cost === null) {
+                    continue;
+                }
                 $meals[(int) $option->product_id][] = [
                     'combo_product_id' => (int) $combo->id,
                     'slot_id' => (int) $main->id,
                     'name' => (string) $combo->name,
                     'name_ar' => $combo->name_ar,
                     'image_url' => $combo->image_url,
-                    'price_from_baisas' => Money::toBaisas($combo->base_price) + Money::toBaisas($option->extra_price) + $fill,
+                    'price_from_baisas' => Money::toBaisas($combo->base_price) + $cost + $fill,
                 ];
             }
         }
 
         return $meals;
+    }
+
+    /**
+     * Fix order A-1 (L6) — the cheapest set of a product's REQUIRED add-ons
+     * (each group's min_selections cheapest available options), or null when a
+     * required group cannot be filled now.
+     *
+     * @param  callable(Product): list<int>  $groupIdsFor
+     * @param  Collection<int|string, AddOnGroup>  $groupsById
+     * @param  Collection<int|string, Collection<int, AddOn>>  $addonsByGroup
+     * @param  Collection<int, array{available: bool, reason: string|null}>  $addonAvailability
+     * @return callable(Product|null): ?int
+     */
+    private function requiredAddonCost(callable $groupIdsFor, Collection $groupsById, Collection $addonsByGroup, Collection $addonAvailability): callable
+    {
+        return static function (?Product $item) use ($groupIdsFor, $groupsById, $addonsByGroup, $addonAvailability): ?int {
+            if ($item === null) {
+                return null;
+            }
+            $cost = 0;
+            foreach ($groupIdsFor($item) as $groupId) {
+                $minimum = (int) ($groupsById->get($groupId)?->min_selections ?? 0);
+                if ($minimum <= 0) {
+                    continue;
+                }
+                $prices = $addonsByGroup->get($groupId, collect())
+                    ->filter(static fn (AddOn $addon): bool => (bool) ($addonAvailability->get((int) $addon->id)['available'] ?? false))
+                    ->map(static fn (AddOn $addon): int => Money::toBaisas($addon->price_delta))->sort()->values();
+                if ($prices->count() < $minimum) {
+                    return null;
+                }
+                $cost += (int) $prices->take($minimum)->sum();
+            }
+
+            return $cost;
+        };
     }
 
     /** @param Collection<int, object>|null $rows @param array<int, true> $activeGroupSet @return list<int> */

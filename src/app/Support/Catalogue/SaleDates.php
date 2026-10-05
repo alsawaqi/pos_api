@@ -6,6 +6,7 @@ namespace App\Support\Catalogue;
 
 use App\Models\Product;
 use App\Support\BusinessClock;
+use DateTimeImmutable;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
@@ -23,10 +24,27 @@ use Illuminate\Database\Query\Builder as QueryBuilder;
  */
 final class SaleDates
 {
+    /**
+     * Fix order A-1 (M1) — how far before a delta cursor its "day" is read.
+     * The server stamps a cursor at the start of the build it read the
+     * catalogue in, so the cursor's own day is exact; the margin also covers
+     * a cursor stamped up to this long after that read (a build across Muscat
+     * midnight on an older server, a slow build). Products that start or end
+     * in the margin are re-sent or re-purged once more, which is idempotent.
+     */
+    public const CURSOR_MARGIN_MINUTES = 15;
+
     /** The merchant's calendar date of $at (default now): 'YYYY-MM-DD'. */
     public static function day(?DateTimeInterface $at = null): string
     {
         return BusinessClock::local($at)->format('Y-m-d');
+    }
+
+    /** The merchant's calendar date of a delta cursor, read {@see CURSOR_MARGIN_MINUTES} early. */
+    public static function cursorDay(DateTimeInterface $since): string
+    {
+        return self::day(DateTimeImmutable::createFromInterface($since)
+            ->modify('-'.self::CURSOR_MARGIN_MINUTES.' minutes'));
     }
 
     /** A stored date as 'YYYY-MM-DD', or null. */

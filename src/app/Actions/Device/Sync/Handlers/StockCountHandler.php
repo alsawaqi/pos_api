@@ -20,6 +20,7 @@ use App\Support\StockDecimal;
 use Brick\Math\BigDecimal;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -170,6 +171,7 @@ class StockCountHandler implements SyncEventHandler
             ]);
 
             $linesWithVariance = 0;
+            $staleBreakdown = [];
 
             foreach ($resolved as $line) {
                 /** @var Ingredient $ingredient */
@@ -244,14 +246,19 @@ class StockCountHandler implements SyncEventHandler
                     'waste_record_id' => $wasteId,
                 ]);
 
-                $this->countBreakdown($breakdown, $device, $count, (int) $countLine->id, $line, $movementId, $staffId, $countedAt);
+                if ($this->countBreakdown($breakdown, $device, $count, (int) $countLine->id, $line, $movementId, $staffId, $countedAt)) {
+                    $staleBreakdown[] = (int) $ingredient->id;
+                }
             }
 
             return [
                 'stock_count_id' => (int) $count->id,
                 'lines' => count($resolved),
                 'lines_with_variance' => $linesWithVariance,
-            ] + ($skippedPrep === [] ? [] : ['skipped_prep_ingredient_ids' => $skippedPrep]);
+            ] + ($skippedPrep === [] ? [] : ['skipped_prep_ingredient_ids' => $skippedPrep])
+              // Fix order A-1 (M2) — kept in the event's result: the lines whose
+              // breakdown was left alone (the count is older than its last change).
+              + ($staleBreakdown === [] ? [] : ['breakdown_unchanged_ingredient_ids' => $staleBreakdown]);
         });
     }
 
@@ -273,7 +280,7 @@ class StockCountHandler implements SyncEventHandler
      *
      * @param  array{ingredient: Ingredient, counted_pieces: float|null, counted_units: float, containers: list<array{container: object, pieces: string}>}  $line
      */
-    private function countBreakdown(ContainerBreakdown $breakdown, Device $device, StockCount $count, int $countLineId, array $line, ?int $movementId, ?int $staffId, Carbon $countedAt): void
+    private function countBreakdown(ContainerBreakdown $breakdown, Device $device, StockCount $count, int $countLineId, array $line, ?int $movementId, ?int $staffId, Carbon $countedAt): bool
     {
         $ingredient = $line['ingredient'];
         $ingredientId = (int) $ingredient->id;
@@ -304,17 +311,32 @@ class StockCountHandler implements SyncEventHandler
             $leaf = [(int) $ingredient->count_container_id => BigDecimal::of(StockDecimal::exact($line['counted_pieces']))];
         }
 
-        // The stamps ride the branch's stock row (never its updated_at, so no
-        // config delta moves); a count that moved nothing and found no row
-        // stamps nothing.
-        $stock = DB::table('pos_branch_stock')->where('branch_id', $branchId)->where('ingredient_id', $ingredientId);
-        if ($leaf === null) {
-            $stock->update(['containers_total_count_at' => $countedAt]);
-
-            return;
+        // Fix order A-1 (M2) — a count taken before the breakdown last changed
+        // (an offline till's count synced late, counts arriving out of order)
+        // leaves the breakdown alone; its total still reconciles as above. It
+        // counts as a total-only count, and the skip is logged and returned.
+        $skipped = false;
+        if ($leaf !== null && $breakdown->changedAfter($branchId, $ingredientId, $countedAt)) {
+            Log::info('stock.count: the container breakdown changed after this count; left as it is', [
+                'stock_count_id' => (int) $count->id, 'branch_id' => $branchId, 'ingredient_id' => $ingredientId,
+                'counted_at' => $countedAt->toIso8601String(),
+            ]);
+            $leaf = null;
+            $skipped = true;
         }
-        $breakdown->setBranch($branchId, $ingredientId, $leaf, ContainerBreakdown::REASON_DEVICE_COUNT, $countedAt, $source);
-        $stock->update(['containers_counted_at' => $countedAt]);
+
+        // The stamps ride the branch's stock row (never its updated_at, so no
+        // config delta moves) and never move backwards; a count that moved
+        // nothing and found no row stamps nothing.
+        $column = $leaf === null ? 'containers_total_count_at' : 'containers_counted_at';
+        if ($leaf !== null) {
+            $breakdown->setBranch($branchId, $ingredientId, $leaf, ContainerBreakdown::REASON_DEVICE_COUNT, $countedAt, $source);
+        }
+        DB::table('pos_branch_stock')->where('branch_id', $branchId)->where('ingredient_id', $ingredientId)
+            ->where(fn ($q) => $q->whereNull($column)->orWhere($column, '<', $countedAt))
+            ->update([$column => $countedAt]);
+
+        return $skipped;
     }
 
     /**

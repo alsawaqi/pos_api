@@ -15,6 +15,7 @@ use App\Models\TableSession;
 use App\Models\TableSessionEvent;
 use App\Support\Money;
 use App\Support\Orders\ComboChildren;
+use App\Support\Orders\OneLineNote;
 use App\Support\Pricing\BillMoney;
 use Carbon\CarbonInterface;
 use RuntimeException;
@@ -242,7 +243,9 @@ final class CancelStaffLineAction
 
     public function notes(?string $notes): string
     {
-        return mb_strtolower(trim((string) preg_replace('/\s+/u', ' ', $notes ?? '')));
+        // Fix order A-1 (H1) — the stored note is one line, cut to 140: a
+        // selector sent with the raw note still matches its line.
+        return mb_strtolower(trim((string) preg_replace('/\s+/u', ' ', (string) OneLineNote::cut($notes ?? ''))));
     }
 
     private function lineAudit(Order $order, int $itemId, int $reduction, string $requestId): void

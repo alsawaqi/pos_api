@@ -49,6 +49,17 @@ final class CookingTime
     }
 
     /**
+     * The menu figure of a combo (tester call 14), the same on devices and the
+     * QR menu: its own value, else the longest of its options on sale.
+     *
+     * @param  iterable<int|string|null>  $optionMinutes
+     */
+    public static function comboFigure(?object $combo, iterable $optionMinutes): ?int
+    {
+        return self::of($combo) ?? self::longest($optionMinutes);
+    }
+
+    /**
      * "Ready in about N min" for an order: the longest cooking-time snapshot
      * of its live (not void) lines, combo parents and children alike; null
      * when no line has one.

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Http\Requests\Api\V1\PublicQr\Concerns;
 
+use App\Http\Requests\Api\V1\PublicQr\PublicQrRequest;
+use App\Support\Orders\OneLineNote;
 use App\Support\QrApiResponse;
 use Illuminate\Http\Exceptions\HttpResponseException;
 
@@ -70,6 +72,12 @@ trait RejectsClientPricing
                 'Client-supplied prices are not accepted.',
                 422,
             ));
+        }
+        // Fix order A-1 (H1) — line and combo-pick notes are one line. A
+        // customer's (public QR) cleaned note longer than 140 is refused by the
+        // rules (max:140); a staff device's is cut instead.
+        if ($this->has('lines')) {
+            $this->merge(['lines' => OneLineNote::inLines($this->input('lines'), ! $this instanceof PublicQrRequest)]);
         }
     }
 

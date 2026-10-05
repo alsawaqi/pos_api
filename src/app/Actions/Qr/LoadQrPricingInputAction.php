@@ -13,6 +13,7 @@ use App\Models\Product;
 use App\Support\BusinessClock;
 use App\Support\Catalogue\BranchCatalogue;
 use App\Support\Money;
+use App\Support\Orders\OneLineNote;
 use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Pricing\DiscountRule;
 use App\Support\Pricing\Discounts;
@@ -430,7 +431,7 @@ final class LoadQrPricingInputAction
                 'product_id' => $line['product_id'],
                 'qty' => $line['qty'],
                 'addon_ids' => $this->addonIds($line['addon_ids']),
-                'notes' => $line['notes'] ?? '',
+                'notes' => OneLineNote::cut($line['notes']) ?? '',
                 'combo' => $this->normaliseCombo($line['combo'] ?? null),
             ];
         }
@@ -473,7 +474,7 @@ final class LoadQrPricingInputAction
                 'product_id' => $choice['product_id'],
                 'qty' => $qty,
                 'addon_ids' => $this->addonIds($addonIds),
-                'notes' => $notes ?? '',
+                'notes' => OneLineNote::cut($notes) ?? '',
             ];
         }
 

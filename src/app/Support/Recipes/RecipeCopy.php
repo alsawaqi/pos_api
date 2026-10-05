@@ -39,6 +39,9 @@ use Illuminate\Support\Facades\Log;
  */
 final class RecipeCopy
 {
+    /** pos_addon_groups.kind of a product's own "Remove" group. */
+    public const REMOVE_KIND = 'remove';
+
     private readonly PrepExploder $exploder;
 
     private readonly RecipeInForce $recipes;
@@ -71,11 +74,15 @@ final class RecipeCopy
         }
 
         $removed = [];
+        // Fix order A-1 (L1) — only an option of a Remove group removes: an
+        // "Extra garlic" carrying the column by mistake never drops base garlic.
         $rows = DB::table('pos_addons')
+            ->join('pos_addon_groups', 'pos_addon_groups.id', '=', 'pos_addons.add_on_group_id')
             ->leftJoin('pos_ingredients', 'pos_ingredients.id', '=', 'pos_addons.removes_ingredient_id')
             ->where('pos_addons.company_id', $this->companyId)
             ->whereIn('pos_addons.id', array_keys($ids))
             ->whereNotNull('pos_addons.removes_ingredient_id')
+            ->where('pos_addon_groups.kind', self::REMOVE_KIND)
             ->get(['pos_addons.id', 'pos_addons.removes_ingredient_id', 'pos_ingredients.company_id as ingredient_company_id']);
         foreach ($rows as $row) {
             if ((int) $row->ingredient_company_id !== $this->companyId) {
@@ -163,7 +170,9 @@ final class RecipeCopy
     {
         // LAUNCH review add-on — a Remove option uses no stock of its own:
         // its effect is the ingredient it leaves out of the line's recipe.
-        if ($addOn->removes_ingredient_id !== null) {
+        // Fix order A-1 (L1) — only when it really sits in a Remove group;
+        // any other option keeps its own stock use.
+        if ($addOn->removes_ingredient_id !== null && $this->isRemoveOption($addOn)) {
             return ['ingredient_snapshot_json' => null, 'consumption_snapshot_json' => null];
         }
 
@@ -263,6 +272,11 @@ final class RecipeCopy
         }
 
         return $out;
+    }
+
+    private function isRemoveOption(AddOn $addOn): bool
+    {
+        return DB::table('pos_addon_groups')->where('id', (int) $addOn->add_on_group_id)->value('kind') === self::REMOVE_KIND;
     }
 
     public function exploder(): PrepExploder

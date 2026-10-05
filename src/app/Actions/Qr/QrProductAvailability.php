@@ -46,6 +46,12 @@ final readonly class QrProductAvailability
 
     private function __construct(public bool $available, public ?string $reason) {}
 
+    /** Fix order A-1 (L3) — not orderable for one of the reasons above (a combo that cannot be completed). */
+    public static function unavailable(string $reason): self
+    {
+        return new self(false, $reason);
+    }
+
     /**
      * LAUNCH-P4 — the branch rule follows the product's branch scope
      * ({@see BranchCatalogue}); a hand-set sold-out switch (never stock

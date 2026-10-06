@@ -1978,6 +1978,11 @@ return new class extends Migration
             $table->timestamp('created_at');
             $table->index(['tablet_order_id', 'id'], 'pos_tablet_order_events_order_idx');
         });
+        // LAUNCH-P6 fix order 1 (pos_admin 2026_10_06_120002, F-1) — who took the payment.
+        Schema::table('pos_payments', function (Blueprint $table): void {
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->index(['staff_id', 'captured_at'], 'pos_payments_staff_captured_idx');
+        });
     }
 
     public function down(): void

@@ -617,6 +617,29 @@ final class StockByOrderTypeTest extends TestCase
         ], OrderItem::query()->sole()->recipe_snapshot_json);
     }
 
+    public function test_packaging_of_a_sale_synced_after_a_later_count_is_folded_into_that_count(): void
+    {
+        $countedAt = now()->subHour()->startOfSecond();
+        // The 08:00 count finds 9990 napkins: 10 short of the books.
+        $this->pushProcessed(self::TOKEN, [['client_event_id' => (string) Str::uuid(), 'event_type' => 'stock.count',
+            'client_timestamp' => $countedAt->toIso8601String(), 'payload' => ['staff_id' => 7, 'counted_at' => $countedAt->toIso8601String(),
+                'lines' => [['ingredient_id' => self::NAPKIN, 'counted_units' => 9990]]]]]);
+
+        // An offline till sold a dine-in latte at 07:00 (its napkin is per-order packaging) and syncs now.
+        $soldAt = now()->subHours(2)->toIso8601String();
+        $order = $this->p4Order([$this->latteLine(1)], 0, null, ['order_type' => 'dine_in', 'opened_at' => $soldAt]);
+        $create = $this->p4Event('order.create', $order);
+        $create['client_timestamp'] = $soldAt;
+        $this->pushProcessed(self::TOKEN, [$create, ['client_event_id' => (string) Str::uuid(), 'event_type' => 'order.pay',
+            'client_timestamp' => $soldAt, 'payload' => ['order_uuid' => $order['uuid'], 'paid_at' => $soldAt,
+                'payments' => [['method' => 'cash', 'amount_baisas' => 1500, 'change_given_baisas' => 0]]]]]);
+
+        $this->assertSame(9990.0, $this->branchBalance(self::NAPKIN));
+        $line = DB::table('pos_stock_count_lines')->sole();
+        $this->assertSame([-1.0, -9.0], [(float) $line->late_movement_units, (float) $line->variance_units]);
+        $this->assertSame(1.0, (float) DB::table('pos_stock_movements')->where('movement_type', 'count_correction')->sole()->quantity);
+    }
+
     public function test_another_companys_packaging_list_is_never_read(): void
     {
         $this->packaging('to_go', ['product_id' => $this->paperBag, 'quantity' => '5'], 200);

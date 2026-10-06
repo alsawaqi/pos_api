@@ -1923,10 +1923,67 @@ return new class extends Migration
             $table->string('stock_order_type', 16)->nullable();
             $table->json('packaging_snapshot_json')->nullable();
         });
+        // LAUNCH-P6 (pos_admin 2026_10_06_120001) — the customer tablet's
+        // order rows (points request, "Taken by", sent to the kitchen) and
+        // their append-only audit. FK-less per this mirror's convention.
+        Schema::create('pos_tablet_orders', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->string('client_uuid', 64);
+            $table->unsignedBigInteger('order_id');
+            $table->unsignedBigInteger('round_id')->nullable();
+            $table->unsignedBigInteger('table_id')->nullable();
+            $table->string('order_type', 16);
+            $table->string('payment_choice', 8)->default('cash');
+            $table->unsignedBigInteger('customer_id')->nullable();
+            $table->unsignedSmallInteger('ready_in_minutes')->nullable();
+            $table->unsignedInteger('subtotal_baisas');
+            $table->unsignedInteger('tax_baisas');
+            $table->unsignedInteger('total_baisas');
+            $table->json('kitchen_lines')->nullable();
+            $table->string('redeem_status', 16)->nullable();
+            $table->unsignedBigInteger('redeem_rule_id')->nullable();
+            $table->unsignedSmallInteger('redeem_blocks')->nullable();
+            $table->unsignedInteger('redeem_units')->nullable();
+            $table->unsignedInteger('redeem_amount_baisas')->nullable();
+            $table->unsignedBigInteger('redeem_discount_row_id')->nullable();
+            $table->unsignedBigInteger('redeem_resolved_by_staff_id')->nullable();
+            $table->unsignedBigInteger('redeem_resolved_by_device_id')->nullable();
+            $table->timestamp('redeem_resolved_at')->nullable();
+            $table->unsignedBigInteger('taken_by_staff_id')->nullable();
+            $table->unsignedBigInteger('taken_by_device_id')->nullable();
+            $table->timestamp('taken_at')->nullable();
+            $table->timestamp('sent_to_kitchen_at')->nullable();
+            $table->unsignedBigInteger('sent_by_staff_id')->nullable();
+            $table->unsignedBigInteger('sent_by_device_id')->nullable();
+            $table->timestamp('submitted_at');
+            $table->timestamps();
+            $table->unique(['device_id', 'client_uuid'], 'pos_tablet_orders_device_client_unique');
+            $table->index(['branch_id', 'sent_to_kitchen_at'], 'pos_tablet_orders_branch_sent_idx');
+            $table->index(['order_id'], 'pos_tablet_orders_order_idx');
+            $table->index(['round_id'], 'pos_tablet_orders_round_idx');
+        });
+        Schema::create('pos_tablet_order_events', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('tablet_order_id');
+            $table->string('event_type', 32);
+            $table->unsignedBigInteger('staff_id')->nullable();
+            $table->unsignedBigInteger('device_id')->nullable();
+            $table->json('payload')->nullable();
+            $table->timestamp('created_at');
+            $table->index(['tablet_order_id', 'id'], 'pos_tablet_order_events_order_idx');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_tablet_order_events');
+        Schema::dropIfExists('pos_tablet_orders');
         Schema::dropIfExists('pos_order_packaging_lines');
         Schema::dropIfExists('pos_payment_reversal_results');
         Schema::dropIfExists('pos_payment_reversal_lines');

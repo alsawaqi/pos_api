@@ -30,8 +30,11 @@ class Pay002ReadGuardsTest extends TestCase
         ]);
         $this->withToken('read-guard');
         foreach (['/payments/reversals', '/orders/'.Str::uuid().'/payments'] as $path) {
-            $this->getJson('/api/v1/device'.$path)->assertStatus($branch === null ? 401 : 409)
-                ->assertJsonPath($branch === null ? 'code' : 'errors.0.code', $branch === null ? 'device_reactivation_required' : 'device_not_attended');
+            // LAUNCH-P6 (tester call 1) — a tablet is refused earlier, by its allowlist (403).
+            $tablet = $type === 'customer_tablet' && $branch !== null;
+            $this->getJson('/api/v1/device'.$path)->assertStatus($branch === null ? 401 : ($tablet ? 403 : 409))
+                ->assertJsonPath($branch === null ? 'code' : 'errors.0.code', $branch === null ? 'device_reactivation_required'
+                    : ($tablet ? 'device_not_allowed_for_tablet' : 'device_not_attended'));
         }
         $this->assertDatabaseCount('pos_payment_reversals', 0);
         $this->assertDatabaseCount('pos_payment_reversal_results', 0);

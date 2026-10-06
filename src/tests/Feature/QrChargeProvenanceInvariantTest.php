@@ -285,9 +285,10 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                 $this->fallback($station, $order)
                     ->assertConflict()
                     ->assertJsonPath('errors.0.code', 'device_not_attended');
+                // LAUNCH-P6 (tester call 1) — refused earlier, by the tablet allowlist.
                 $this->fallback($customerTablet, $order)
-                    ->assertConflict()
-                    ->assertJsonPath('errors.0.code', 'device_not_attended');
+                    ->assertForbidden()
+                    ->assertJsonPath('errors.0.code', 'device_not_allowed_for_tablet');
                 $this->fallback($otherBranchTill, $order)
                     ->assertNotFound()
                     ->assertJsonPath('errors.0.code', 'order_not_found');
@@ -321,12 +322,9 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                     (string) $stationPay->json('data.results.0.result.error'),
                 );
 
-                $tabletVoid = $this->push($customerTablet, [$this->voidEvent($order)]);
-                $this->assertSyncStatus($tabletVoid, 'failed');
-                $this->assertStringContainsString(
-                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
-                    (string) $tabletVoid->json('data.results.0.result.error'),
-                );
+                // LAUNCH-P6 (tester call 1) — a tablet's token cannot reach sync at all.
+                $this->push($customerTablet, [$this->voidEvent($order)])
+                    ->assertForbidden()->assertJsonPath('errors.0.code', 'device_not_allowed_for_tablet');
                 $this->assertSame($held->getAttributes(), $order->fresh()->getAttributes());
             }
 
@@ -409,9 +407,10 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                     $this->assertSame(Order::STATUS_VOID, $order->fresh()->status);
                 }
             } else {
+                // LAUNCH-P6 (tester call 1) — a tablet is refused earlier, by its allowlist.
                 $fallback
-                    ->assertConflict()
-                    ->assertJsonPath('errors.0.code', 'device_not_attended');
+                    ->assertStatus($deviceType === 'customer_tablet' ? 403 : 409)
+                    ->assertJsonPath('errors.0.code', $deviceType === 'customer_tablet' ? 'device_not_allowed_for_tablet' : 'device_not_attended');
                 $this->assertSame($before, $order->fresh()->getAttributes(), $deviceType);
 
                 $this->fallback($rescuer, $order)
@@ -426,18 +425,26 @@ final class QrChargeProvenanceInvariantTest extends TestCase
                         'status' => Payment::STATUS_SUCCESS,
                     ]]),
                 ]);
-                $this->assertSyncStatus($pay, 'failed');
-                $this->assertStringContainsString(
-                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
-                    (string) $pay->json('data.results.0.result.error'),
-                );
-
-                $void = $this->push($device, [$this->voidEvent($order)]);
-                $this->assertSyncStatus($void, 'failed');
-                $this->assertStringContainsString(
-                    'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
-                    (string) $void->json('data.results.0.result.error'),
-                );
+                $void = null;
+                if ($deviceType === 'customer_tablet') {
+                    // LAUNCH-P6 (tester call 1) — a tablet's token cannot reach sync at all.
+                    $pay->assertForbidden()->assertJsonPath('errors.0.code', 'device_not_allowed_for_tablet');
+                    $this->push($device, [$this->voidEvent($order)])->assertForbidden();
+                } else {
+                    $this->assertSyncStatus($pay, 'failed');
+                    $this->assertStringContainsString(
+                        'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
+                        (string) $pay->json('data.results.0.result.error'),
+                    );
+                    $void = $this->push($device, [$this->voidEvent($order)]);
+                }
+                if ($void !== null) {
+                    $this->assertSyncStatus($void, 'failed');
+                    $this->assertStringContainsString(
+                        'only an attended fixed POS or handheld device may resolve an ambiguous QR charge',
+                        (string) $void->json('data.results.0.result.error'),
+                    );
+                }
                 $this->assertSame($held, $order->fresh()->getAttributes(), $deviceType);
 
                 $this->assertSyncStatus(
@@ -498,7 +505,11 @@ final class QrChargeProvenanceInvariantTest extends TestCase
         $order->update(['status' => Order::STATUS_KITCHEN]);
         $before = $order->fresh()->getAttributes();
 
-        foreach ([$station, $tablet] as $device) {
+        // LAUNCH-P6 (tester call 1) — a tablet's token cannot reach sync at all.
+        $this->app['auth']->forgetGuards();
+        $this->withToken((string) $tablet->plainTextToken)->postJson('/api/v1/device/sync/push', ['events' => [$this->voidEvent($order)]])
+            ->assertForbidden()->assertJsonPath('errors.0.code', 'device_not_allowed_for_tablet');
+        foreach ([$station] as $device) {
             $pay = $this->push($device, [
                 $this->payEvent($order, [[
                     'method' => Payment::METHOD_CASH,

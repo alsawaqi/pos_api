@@ -384,7 +384,11 @@ final class KitchenTicketClaimTest extends TestCase
     public function test_print_admission_uses_the_same_known_order_sources_as_the_accepted_feed(): void
     {
         $flow = $this->flow(['accepted_seq' => 1, 'needs_review' => false]);
-        foreach (['customer_tablet', 'future_source'] as $source) {
+        // LAUNCH-P6 (tester call 13) — a customer tablet's dine-in bill is
+        // admitted like a QR one; an unknown source still is not.
+        $flow['order']->update(['source' => 'customer_tablet']);
+        $this->assertSame([(int) $flow['round']->id], array_column(app(ListAcceptedDineInQrRoundsAction::class)->handle($flow['device'])['rounds'], 'id'));
+        foreach (['future_source'] as $source) {
             $flow['order']->update(['source' => $source]);
             $this->assertSame([], app(ListAcceptedDineInQrRoundsAction::class)->handle($flow['device'])['rounds']);
             $this->assertRefused('kitchen_round_not_found', fn () => $this->claim($flow));

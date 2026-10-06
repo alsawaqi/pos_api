@@ -48,8 +48,14 @@ class DeviceStationShiftRuleTest extends TestCase
             $this->app['auth']->forgetGuards();
 
             $response = $this->withToken($token)
-                ->postJson('/api/v1/device/sync/push', ['events' => [$this->openEvent()]])
-                ->assertOk();
+                ->postJson('/api/v1/device/sync/push', ['events' => [$this->openEvent()]]);
+            if ($type === 'customer_tablet') {
+                // LAUNCH-P6 (tester call 1) — a tablet's token cannot reach sync at all.
+                $response->assertForbidden()->assertJsonPath('errors.0.code', 'device_not_allowed_for_tablet');
+
+                continue;
+            }
+            $response->assertOk();
 
             $this->assertSame('failed', $response->json('data.results.0.status'), $type);
             $this->assertStringContainsString(

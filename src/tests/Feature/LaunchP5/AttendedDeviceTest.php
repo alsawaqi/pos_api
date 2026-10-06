@@ -51,7 +51,8 @@ class AttendedDeviceTest extends TestCase
             foreach ($this->routes() as [$method, $url, $body]) {
                 $this->app['auth']->forgetGuards();
                 $res = $this->withToken('mdev_ct'.$i)->json($method, $url, $body);
-                $res->assertStatus(403)->assertJsonPath('errors.0.code', 'device_not_attended');
+                // LAUNCH-P6 (tester call 1) — a tablet is now refused earlier, by its allowlist.
+                $res->assertStatus(403)->assertJsonPath('errors.0.code', $type === 'customer_tablet' ? 'device_not_allowed_for_tablet' : 'device_not_attended');
                 $this->assertStringNotContainsString('"check"', $res->getContent(), $type.' '.$url);
             }
         }

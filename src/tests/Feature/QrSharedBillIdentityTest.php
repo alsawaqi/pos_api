@@ -568,7 +568,9 @@ final class QrSharedBillIdentityTest extends TestCase
             ->assertJsonPath('data.results.0.result.receipt_number', 'LEGACY-777');
         $this->assertSame('LEGACY-777', $flow['order']->fresh()->receipt_number);
         $this->assertSame(0, DB::table('pos_order_sequences')->count());
-        foreach (['main_pos', 'handheld', 'customer_tablet'] as $source) {
+        // LAUNCH-P6 — a customer_tablet order now takes a server receipt number
+        // at pay (proven in LaunchP6\TabletStaffFlowTest); the staff sources do not.
+        foreach (['main_pos', 'handheld'] as $source) {
             $bill = Order::query()->create([
                 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
                 'device_id' => $flow['device']->id, 'source' => $source, 'order_type' => 'quick',
@@ -584,6 +586,16 @@ final class QrSharedBillIdentityTest extends TestCase
             $this->assertNull($bill->fresh()->receipt_number);
             $this->assertSame(0, DB::table('pos_order_sequences')->count());
         }
+        $tablet = Order::query()->create([
+            'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
+            'device_id' => $flow['device']->id, 'source' => 'customer_tablet', 'order_type' => 'quick',
+            'status' => Order::STATUS_HELD, 'subtotal' => '1.000', 'discount_total' => '0.000',
+            'comp_total' => '0.000', 'tax_total' => '0.000', 'grand_total' => '1.000', 'opened_at' => now(),
+        ]);
+        $this->payByUuid($flow['device'], $tablet, (string) Str::uuid())
+            ->assertOk()->assertJsonPath('data.results.0.status', 'processed');
+        $this->assertNotNull($tablet->fresh()->receipt_number);
+        $this->assertSame(1, DB::table('pos_order_sequences')->count());
     }
 
     private function staffOnlyFlow(string $deviceType): array

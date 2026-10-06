@@ -153,7 +153,9 @@ class Pay002ReversalsTest extends TestCase
                 $code = 'device_not_attended';
                 break;
             case 'tablet': $this->device->forceFill(['device_type' => 'customer_tablet'])->save();
-                $code = 'device_not_attended';
+                // LAUNCH-P6 (tester call 1) — refused earlier, by the tablet allowlist.
+                $code = 'device_not_allowed_for_tablet';
+                $http = 403;
                 break;
             case 'unassigned': $this->device->forceFill(['branch_id' => null])->save();
                 $code = 'device_not_attended';

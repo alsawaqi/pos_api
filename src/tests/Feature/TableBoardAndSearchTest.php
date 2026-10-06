@@ -181,7 +181,8 @@ final class TableBoardAndSearchTest extends TestCase
         $unsupported = $this->seatingDevice('customer_tablet');
         $inactive = $this->seatingDevice(attributes: ['status' => 'inactive']);
         $unassigned = $this->seatingDevice(attributes: ['branch_id' => null]);
-        foreach ([[$unsupported, 409], [$inactive, 401], [$unassigned, 401]] as [$device, $status]) {
+        // LAUNCH-P6 (tester call 1) — a tablet is refused by its allowlist (403).
+        foreach ([[$unsupported, 403], [$inactive, 401], [$unassigned, 401]] as [$device, $status]) {
             foreach (['board', 'feed', 'search?q=ab'] as $path) {
                 $this->app['auth']->forgetGuards();
                 $this->withToken($device->plainTextToken)->getJson('/api/v1/device/tables/'.$path)->assertStatus($status);

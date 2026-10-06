@@ -106,8 +106,13 @@ class CloseShiftHandler implements SyncEventHandler
     private static function paymentBelongsToShift($query, Shift $shift, string $payment): void
     {
         $payerFirst = PaymentStaffSchema::ready();
-        $query->where(function ($who) use ($shift, $payment, $payerFirst): void {
-            if ($payerFirst && (bool) $shift->is_shared && $shift->staff_id !== null) {
+        // Fix order 4 (F-16) — a shift on a decommissioned (soft-deleted)
+        // device is never a payer shift, here as in payerCoveringShift, so
+        // the paying device's shift is the one that counts the payment.
+        $payerShift = $payerFirst && (bool) $shift->is_shared && $shift->staff_id !== null
+            && $shift->device_id !== null && Device::query()->whereKey((int) $shift->device_id)->exists();
+        $query->where(function ($who) use ($shift, $payment, $payerFirst, $payerShift): void {
+            if ($payerShift) {
                 $who->where(fn ($mine) => $mine->where($payment.'.staff_id', (int) $shift->staff_id)
                     ->whereNotExists(fn ($earlier) => self::payerCoveringShift($earlier, $payment)
                         ->where('payer_shift.id', '<', (int) $shift->id)));
@@ -130,6 +135,9 @@ class CloseShiftHandler implements SyncEventHandler
             // Fix order 3 (F-14) — a shift whose device was deleted matches no
             // payment, so it cannot take one from the paying device's shift.
             ->whereNotNull('payer_shift.device_id')
+            // Fix order 4 (F-16) — nor one on a decommissioned (soft-deleted) device.
+            ->whereExists(fn ($live) => $live->selectRaw('1')->from('pos_devices as payer_device')
+                ->whereColumn('payer_device.id', 'payer_shift.device_id')->whereNull('payer_device.deleted_at'))
             ->whereColumn('payer_shift.company_id', 'pos_orders.company_id')
             ->whereColumn('payer_shift.branch_id', 'pos_orders.branch_id')
             ->whereColumn('payer_shift.opened_at', '<=', $payment.'.captured_at')

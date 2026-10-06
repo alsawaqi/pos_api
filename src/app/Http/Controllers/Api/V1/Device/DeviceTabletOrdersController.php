@@ -36,7 +36,7 @@ final class DeviceTabletOrdersController
         $device = $this->device($request);
         $rows = $this->action->rows($device, $request->boolean('unpaid_only'));
 
-        return QrApiResponse::success(['orders' => $this->presenter->forStaff($rows)], [
+        return QrApiResponse::success(['orders' => $this->presenter->forStaff($rows, $device)], [
             'generated_at' => now()->toIso8601String(), 'money_unit' => 'baisas',
         ]);
     }

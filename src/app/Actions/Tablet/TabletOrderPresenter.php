@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Actions\Tablet;
 
+use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Customer;
+use App\Models\Device;
 use App\Models\LoyaltyRule;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -13,6 +15,7 @@ use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TabletOrder;
 use App\Support\Money;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -20,6 +23,9 @@ use Illuminate\Support\Facades\DB;
 final class TabletOrderPresenter
 {
     public const UNPAID = [Order::STATUS_OPEN, Order::STATUS_HELD, Order::STATUS_AWAITING_PAYMENT, Order::STATUS_KITCHEN];
+
+    /** Fix order 4 (F-15) — the charge states that need staff recovery (counter fallback, holder's pay or manager review). */
+    public const RECOVERY_STATES = ['lapsed', 'uncertain', 'recovered'];
 
     /**
      * What the tablet shows after ordering ("Thank you … Ready in about N
@@ -57,11 +63,12 @@ final class TabletOrderPresenter
      * @param  Collection<int, TabletOrder>  $rows
      * @return list<array<string, mixed>>
      */
-    public function forStaff(Collection $rows): array
+    public function forStaff(Collection $rows, ?Device $viewer = null): array
     {
         if ($rows->isEmpty()) {
             return [];
         }
+        $now = now();
         $companyId = (int) $rows->first()->company_id;
         $orders = Order::query()->where('company_id', $companyId)->whereIn('id', $rows->pluck('order_id'))->get()->keyBy('id');
         $rounds = QrOrderRound::query()->whereIn('id', $rows->pluck('round_id')->filter())->get()->keyBy('id');
@@ -74,7 +81,7 @@ final class TabletOrderPresenter
         $phones = Customer::withTrashed()->where('company_id', $companyId)->whereIn('id', $rows->pluck('customer_id')->filter())->pluck('phone', 'id');
         $rules = LoyaltyRule::withTrashed()->where('company_id', $companyId)->whereIn('id', $rows->pluck('redeem_rule_id')->filter())->get()->keyBy('id');
 
-        return $rows->map(function (TabletOrder $row) use ($orders, $rounds, $tables, $seatings, $staff, $phones, $rules): array {
+        return $rows->map(function (TabletOrder $row) use ($orders, $rounds, $tables, $seatings, $staff, $phones, $rules, $viewer, $now): array {
             $order = $orders->get($row->order_id);
             $round = $row->round_id === null ? null : $rounds->get($row->round_id);
             $table = $row->table_id === null ? null : $tables->get($row->table_id);
@@ -87,6 +94,7 @@ final class TabletOrderPresenter
                 || $round?->status === QrOrderRound::STATUS_REJECTED;
             // A dine-in round staff confirmed elsewhere (the table board) is sent too.
             $sent = $row->sent_to_kitchen_at !== null || ($row->isDineIn() && $round?->status === QrOrderRound::STATUS_ACCEPTED);
+            $charge = $this->charge($order, ! $paid && ! $closed, $viewer, $now);
 
             return [
                 'tablet_order_uuid' => (string) $row->uuid,
@@ -117,8 +125,48 @@ final class TabletOrderPresenter
                     $row->sent_by_device_id === null ? null : (int) $row->sent_by_device_id, $row->sent_to_kitchen_at) : null,
                 'ready_in_minutes' => $row->ready_in_minutes,
                 'submitted_at' => $row->submitted_at?->toIso8601String(),
+                'charge' => $charge,
+                'recovery_needed' => in_array($charge['state'], self::RECOVERY_STATES, true),
             ];
         })->values()->all();
+    }
+
+    /**
+     * LAUNCH-P6 fix order 4 (F-15) — the cash / card claim on an unpaid order,
+     * so a till or handheld can show "being paid" or "needs recovery":
+     *  - none: nothing claimed (or the order is paid / closed);
+     *  - claimed: a live claim (`held_by_this_device` says whose);
+     *  - lapsed: the claim ran out (by time, or stamped by the sweeper) with
+     *    no result — the holder's late pay, the counter fallback or a manager
+     *    review resolves it;
+     *  - uncertain: a card result is unknown — fallback or manager review;
+     *  - recovered: moved to the counter with its charge facts kept — an
+     *    attended pay, void or manager review resolves it.
+     *
+     * @return array{state: string, device_id: int|null, deadline_at: string|null, held_by_this_device: bool}
+     */
+    private function charge(?Order $order, bool $unpaid, ?Device $viewer, CarbonInterface $at): array
+    {
+        $deviceId = $order?->charge_device_id === null ? null : (int) $order->charge_device_id;
+        $state = 'none';
+        if ($order !== null && $unpaid && $order->charge_claimed_at !== null) {
+            $guard = app(QrChargeRecoveryGuard::class);
+            $state = match (true) {
+                $order->charge_outcome === Order::CHARGE_OUTCOME_UNCERTAIN => 'uncertain',
+                $order->status === Order::STATUS_AWAITING_PAYMENT && $order->charge_outcome === null
+                    && $order->charge_deadline_at?->gt($at) => 'claimed',
+                $order->status === Order::STATUS_AWAITING_PAYMENT && $guard->isAmbiguousCharge($order, $at) => 'lapsed',
+                $order->status !== Order::STATUS_AWAITING_PAYMENT && $guard->isAmbiguousCharge($order, $at) => 'recovered',
+                default => 'none',
+            };
+        }
+
+        return [
+            'state' => $state,
+            'device_id' => $state === 'none' ? null : $deviceId,
+            'deadline_at' => $state === 'none' ? null : $order?->charge_deadline_at?->toIso8601String(),
+            'held_by_this_device' => $state !== 'none' && $viewer !== null && $deviceId === (int) $viewer->id,
+        ];
     }
 
     /** @return array<string, mixed>|null */

@@ -73,7 +73,7 @@ final class TabletOrderEditAction
             $done = TabletOrderEvent::query()->where('tablet_order_id', $row->id)->where('event_type', 'edited')->get()
                 ->first(static fn (TabletOrderEvent $event): bool => ($event->payload['client_request_id'] ?? null) === $requestId);
             if ($done !== null) {
-                return ['outcome' => 'replayed', 'order' => $this->staff->present($row)];
+                return ['outcome' => 'replayed', 'order' => $this->staff->present($row, $device)];
             }
             $this->staff->assertOpen($row);
             $round = $row->round_id === null ? null : QrOrderRound::query()->whereKey($row->round_id)->first();
@@ -166,7 +166,7 @@ final class TabletOrderEditAction
                 'client_request_id' => $requestId, 'before' => $before, 'after' => $after,
             ]);
 
-            return ['outcome' => 'edited', 'order' => $this->staff->present($row->fresh())];
+            return ['outcome' => 'edited', 'order' => $this->staff->present($row->fresh(), $device)];
         });
     }
 

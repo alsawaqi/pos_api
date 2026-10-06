@@ -223,8 +223,10 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
 
             // A live claim held by this device already paid the fail-closed
             // geofence cost before the tap. Every other path keeps the legacy
-            // settle-time fence unchanged.
-            if (! $claimHeldByDevice) {
+            // settle-time fence unchanged. Fix order 4 (F-17) — so did the
+            // holder's claim whose cash arrives late (the fence was checked at
+            // the claim; the holder may sync from elsewhere once online).
+            if (! $claimHeldByDevice && ! $tabletLateHolderPay) {
                 $this->enforceGeofence($device, $payload, $event);
             }
 

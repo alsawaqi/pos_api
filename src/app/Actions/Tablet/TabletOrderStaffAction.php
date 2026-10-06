@@ -127,7 +127,7 @@ final class TabletOrderStaffAction
             $this->assertOpen($row);
             $outcome = $this->claim($row, $device, $staffId, $takeOver);
 
-            return ['outcome' => $outcome, 'order' => $this->present($row)];
+            return ['outcome' => $outcome, 'order' => $this->present($row, $device)];
         });
     }
 
@@ -137,7 +137,7 @@ final class TabletOrderStaffAction
         return DB::transaction(function () use ($device, $staffId, $uuid): array {
             $row = $this->locked($device, $uuid);
             if ($row->sent_to_kitchen_at !== null) {
-                return ['outcome' => 'replayed', 'order' => $this->present($row)];
+                return ['outcome' => 'replayed', 'order' => $this->present($row, $device)];
             }
             $this->assertOpen($row);
             $this->claim($row, $device, $staffId, false);
@@ -184,7 +184,7 @@ final class TabletOrderStaffAction
                 QrOrderRound::query()->whereKey($row->round_id)->update(['accepted_seq' => $this->acceptedSequence->next()]);
             }
 
-            return ['outcome' => 'sent', 'order' => $this->present($row->fresh())];
+            return ['outcome' => 'sent', 'order' => $this->present($row->fresh(), $device)];
         });
     }
 
@@ -197,7 +197,7 @@ final class TabletOrderStaffAction
         return DB::transaction(function () use ($device, $staffId, $uuid, $payload, $staffToken): array {
             $row = $this->locked($device, $uuid);
             if ($row->redeem_status === TabletOrder::REDEEM_APPROVED) {
-                return ['outcome' => 'replayed', 'order' => $this->present($row)];
+                return ['outcome' => 'replayed', 'order' => $this->present($row, $device)];
             }
             $this->assertRequested($row);
             $this->assertOpen($row);
@@ -243,7 +243,7 @@ final class TabletOrderStaffAction
                 'discount_row_id' => (int) $row->redeem_discount_row_id, 'client_request_id' => $requestId,
             ]);
 
-            return ['outcome' => 'approved', 'order' => $this->present($row->fresh())];
+            return ['outcome' => 'approved', 'order' => $this->present($row->fresh(), $device)];
         });
     }
 
@@ -253,7 +253,7 @@ final class TabletOrderStaffAction
         return DB::transaction(function () use ($device, $staffId, $uuid): array {
             $row = $this->locked($device, $uuid);
             if ($row->redeem_status === TabletOrder::REDEEM_REJECTED) {
-                return ['outcome' => 'replayed', 'order' => $this->present($row)];
+                return ['outcome' => 'replayed', 'order' => $this->present($row, $device)];
             }
             $this->assertRequested($row);
             $this->claim($row, $device, $staffId, false);
@@ -262,7 +262,7 @@ final class TabletOrderStaffAction
             TabletOrderEvent::record($row, 'redeem_rejected', $staffId, (int) $device->id, ['rule_id' => (int) $row->redeem_rule_id,
                 'blocks' => (int) $row->redeem_blocks]);
 
-            return ['outcome' => 'rejected', 'order' => $this->present($row->fresh())];
+            return ['outcome' => 'rejected', 'order' => $this->present($row->fresh(), $device)];
         });
     }
 
@@ -494,8 +494,8 @@ final class TabletOrderStaffAction
     }
 
     /** @return array<string, mixed> */
-    public function present(TabletOrder $row): array
+    public function present(TabletOrder $row, ?Device $viewer = null): array
     {
-        return app(TabletOrderPresenter::class)->forStaff(collect([$row]))[0];
+        return app(TabletOrderPresenter::class)->forStaff(collect([$row]), $viewer)[0];
     }
 }

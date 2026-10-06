@@ -89,27 +89,49 @@ class CloseShiftHandler implements SyncEventHandler
     }
 
     /**
-     * LAUNCH-P6 fix order 1 (F-1) — a QR / tablet payment taken on a device
-     * that has NO shift of its own at that moment belongs to the shared shift
-     * of the staff member who took it (pos_payments.staff_id): staff open the
-     * shift on the till and take cash on the handheld. A paying device with
-     * its own shift keeps the payment (matched by device), so nothing counts
-     * twice. Applies only to a shared shift that names its staff member.
+     * LAUNCH-P6 fix order 2 (F-9; P5 owner decision 4 "each cashier keeps
+     * their own drawer") — which shift a QR / tablet payment belongs to:
+     *
+     *  1. the payer's (pos_payments.staff_id) shared shift covering the payment
+     *     time at the order's branch — the lowest id if, exceptionally, two
+     *     cover it;
+     *  2. otherwise (no payer recorded, or the payer has no covering shared
+     *     shift) the shift of the device that took the payment;
+     *  3. otherwise none.
+     *
+     * Exactly one shift counts a payment. The callers bound the payment time
+     * by the shift's own window. Without the payer column (pos_admin 120002 not
+     * migrated) only rule 2 applies, as before.
      */
-    private static function paidByShiftStaff($query, Shift $shift, string $payment): void
+    private static function paymentBelongsToShift($query, Shift $shift, string $payment): void
     {
-        $query->where($payment.'.staff_id', (int) $shift->staff_id)
-            ->whereNotExists(fn ($own) => $own->selectRaw('1')->from('pos_shifts as payer_shift')
-                ->whereColumn('payer_shift.device_id', $payment.'.device_id')
-                ->where('payer_shift.company_id', (int) $shift->company_id)
-                ->whereColumn('payer_shift.opened_at', '<=', $payment.'.captured_at')
-                ->where(fn ($end) => $end->whereNull('payer_shift.closed_at')
-                    ->orWhereColumn('payer_shift.closed_at', '>=', $payment.'.captured_at')));
+        $payerFirst = PaymentStaffSchema::ready();
+        $query->where(function ($who) use ($shift, $payment, $payerFirst): void {
+            if ($payerFirst && (bool) $shift->is_shared && $shift->staff_id !== null) {
+                $who->where(fn ($mine) => $mine->where($payment.'.staff_id', (int) $shift->staff_id)
+                    ->whereNotExists(fn ($earlier) => self::payerCoveringShift($earlier, $payment)
+                        ->where('payer_shift.id', '<', (int) $shift->id)));
+            }
+            $who->orWhere(function ($device) use ($shift, $payment, $payerFirst): void {
+                $device->where($payment.'.device_id', (int) $shift->device_id);
+                if ($payerFirst) {
+                    $device->whereNotExists(fn ($cover) => self::payerCoveringShift($cover, $payment));
+                }
+            });
+        });
     }
 
-    private static function staffFallback(Shift $shift): bool
+    /** A shared shift of the payment's payer, at the order's branch, open at the payment time. */
+    private static function payerCoveringShift($query, string $payment)
     {
-        return (bool) $shift->is_shared && $shift->staff_id !== null && PaymentStaffSchema::ready();
+        return $query->selectRaw('1')->from('pos_shifts as payer_shift')
+            ->whereColumn('payer_shift.staff_id', $payment.'.staff_id')
+            ->where('payer_shift.is_shared', true)
+            ->whereColumn('payer_shift.company_id', 'pos_orders.company_id')
+            ->whereColumn('payer_shift.branch_id', 'pos_orders.branch_id')
+            ->whereColumn('payer_shift.opened_at', '<=', $payment.'.captured_at')
+            ->where(fn ($end) => $end->whereNull('payer_shift.closed_at')
+                ->orWhereColumn('payer_shift.closed_at', '>=', $payment.'.captured_at'));
     }
 
     /**
@@ -503,12 +525,7 @@ class CloseShiftHandler implements SyncEventHandler
                     if ($shift->device_id !== null) {
                         $scope->where(function ($qr) use ($shift, $paymentDeviceColumn): void {
                             self::settledByPayment($qr);
-                            $qr->where(function ($who) use ($shift, $paymentDeviceColumn): void {
-                                $who->where($paymentDeviceColumn, $shift->device_id);
-                                if (self::staffFallback($shift)) {
-                                    $who->orWhere(fn ($payer) => self::paidByShiftStaff($payer, $shift, Str::before($paymentDeviceColumn, '.')));
-                                }
-                            });
+                            self::paymentBelongsToShift($qr, $shift, Str::before($paymentDeviceColumn, '.'));
                         });
                     } else {
                         $scope->whereRaw('0 = 1');
@@ -606,12 +623,7 @@ class CloseShiftHandler implements SyncEventHandler
                     ->from('pos_payments as qr_shift_payment')
                     ->whereColumn('qr_shift_payment.order_id', 'pos_orders.id')
                     ->where('qr_shift_payment.status', Payment::STATUS_SUCCESS)
-                    ->where(function ($who) use ($shift): void {
-                        $who->where('qr_shift_payment.device_id', $shift->device_id);
-                        if (self::staffFallback($shift)) {
-                            $who->orWhere(fn ($payer) => self::paidByShiftStaff($payer, $shift, 'qr_shift_payment'));
-                        }
-                    })
+                    ->where(fn ($who) => self::paymentBelongsToShift($who, $shift, 'qr_shift_payment'))
                     ->whereBetween('qr_shift_payment.captured_at', $window);
 
                 if ($linkedPaymentIdColumn !== null) {

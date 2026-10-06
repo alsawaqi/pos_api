@@ -14,6 +14,7 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\TableSession;
+use App\Models\TabletOrder;
 use App\Support\Money;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
@@ -268,9 +269,20 @@ final class ClaimQrSettlementAction
 
     private function isAttendedSettleableQrOrder(Order $order): bool
     {
-        return $order->source === Order::SOURCE_QR_WEB
+        return ($order->source === Order::SOURCE_QR_WEB
             && (($order->order_type === 'dine_in' && $order->table_id !== null)
-                || ($order->order_type === 'quick' && $order->table_id === null));
+                || ($order->order_type === 'quick' && $order->table_id === null)))
+            // LAUNCH-P6 fix order 2 (F-10) — a customer tablet's Quick / To go
+            // order (its tablet row) is claimed the same way before staff take
+            // the cash, so nobody edits it while it is being paid.
+            || self::isTabletCounterOrder($order);
+    }
+
+    /** A Quick / To go order the customer tablet wrote (never by `source`). */
+    public static function isTabletCounterOrder(Order $order): bool
+    {
+        return in_array($order->order_type, ['quick', 'to_go'], true) && $order->table_id === null
+            && $order->qr_session_id === null && TabletOrder::query()->where('order_id', $order->id)->exists();
     }
 
     private function lockSettlementSession(Order $order, Device $device): ?QrSession

@@ -12,6 +12,7 @@ use App\Actions\Qr\ReleaseQrChargeAction;
 use App\Actions\Qr\ReopenDineInQrPaymentAction;
 use App\Models\Device;
 use App\Models\Order;
+use App\Models\TabletOrder;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,11 +36,15 @@ final class DeviceQrCancelSettlementController
             $result = DB::transaction(function () use ($device, $input, $present, $release, $move, $reopen): array {
                 $order = Order::query()->where('uuid', $input['order_uuid'])
                     ->where('company_id', $device->company_id)->where('branch_id', $device->branch_id)
-                    ->where('source', Order::SOURCE_QR_WEB)
-                    ->where(function ($query): void {
-                        $query->where(fn ($quick) => $quick->where('order_type', 'quick')->whereNull('table_id'))
-                            ->orWhere(fn ($dineIn) => $dineIn->where('order_type', 'dine_in')->whereNotNull('table_id'));
-                    })->lockForUpdate()->first();
+                    ->where(fn ($kinds) => $kinds->where(fn ($qr) => $qr->where('source', Order::SOURCE_QR_WEB)
+                        ->where(function ($query): void {
+                            $query->where(fn ($quick) => $quick->where('order_type', 'quick')->whereNull('table_id'))
+                                ->orWhere(fn ($dineIn) => $dineIn->where('order_type', 'dine_in')->whereNotNull('table_id'));
+                        }))
+                        // LAUNCH-P6 fix order 2 (F-10) — a customer tablet's Quick / To go order.
+                        ->orWhere(fn ($tablet) => $tablet->whereIn('order_type', ['quick', 'to_go'])->whereNull('table_id')
+                            ->whereIn('id', TabletOrder::query()->select('order_id')->where('company_id', (int) $device->company_id))))
+                    ->lockForUpdate()->first();
                 if ($order === null) {
                     throw new QrChargeException('order_not_found', 404, 'The QR order was not found.');
                 }

@@ -8,6 +8,7 @@ use App\Actions\Tables\StaffTableCheckoutAction;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
+use App\Models\TabletOrder;
 use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 
@@ -29,14 +30,16 @@ final class ReadQrCheckoutAction
                 ->where('uuid', $uuid)
                 ->where('company_id', (int) $device->company_id)
                 ->where('branch_id', (int) $device->branch_id)
-                ->where(function ($query): void {
-                    $query->where('source', Order::SOURCE_QR_WEB)->orWhere(fn ($staff) => $staff
+                ->where(function ($query) use ($device): void {
+                    $query->where(fn ($qr) => $qr->where('source', Order::SOURCE_QR_WEB)->where(function ($types): void {
+                        $types->where(fn ($q) => $q->where('order_type', 'quick')->whereNull('table_id'))
+                            ->orWhere(fn ($q) => $q->where('order_type', 'dine_in')->whereNotNull('table_id'));
+                    }))->orWhere(fn ($staff) => $staff
                         ->whereIn('source', ['main_pos', 'handheld', 'customer_tablet'])->where('order_type', 'dine_in')
-                        ->whereNull('qr_session_id')->whereNotNull('table_id')->whereNotNull('table_session_id'));
-                })
-                ->where(function ($query): void {
-                    $query->where(fn ($q) => $q->where('order_type', 'quick')->whereNull('table_id'))
-                        ->orWhere(fn ($q) => $q->where('order_type', 'dine_in')->whereNotNull('table_id'));
+                        ->whereNull('qr_session_id')->whereNotNull('table_id')->whereNotNull('table_session_id'))
+                        // LAUNCH-P6 fix order 2 (F-10) — a claimed customer tablet Quick / To go order.
+                        ->orWhere(fn ($tablet) => $tablet->whereIn('order_type', ['quick', 'to_go'])->whereNull('table_id')
+                            ->whereIn('id', TabletOrder::query()->select('order_id')->where('company_id', (int) $device->company_id)));
                 })
                 ->lockForUpdate()
                 ->first();

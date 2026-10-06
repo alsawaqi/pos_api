@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
+use App\Models\TabletOrder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -29,8 +30,11 @@ final class MoveQuickQrOrderToCounterAction
                 ->where('uuid', $uuid)
                 ->where('company_id', $device->company_id)
                 ->where('branch_id', $device->branch_id)
-                ->where('order_type', 'quick')
-                ->where('source', Order::SOURCE_QR_WEB)
+                // LAUNCH-P6 fix order 2 (F-10) — or a customer tablet's Quick /
+                // To go order whose cash claim is released back to the counter.
+                ->where(fn ($kinds) => $kinds->where(fn ($qr) => $qr->where('order_type', 'quick')->where('source', Order::SOURCE_QR_WEB))
+                    ->orWhere(fn ($tablet) => $tablet->whereIn('order_type', ['quick', 'to_go'])->whereNull('table_id')
+                        ->whereIn('id', TabletOrder::query()->select('order_id')->where('company_id', (int) $device->company_id))))
                 ->lockForUpdate()
                 ->first();
             if ($order === null) {

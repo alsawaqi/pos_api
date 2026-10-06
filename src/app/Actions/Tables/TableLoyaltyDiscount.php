@@ -132,14 +132,15 @@ final class TableLoyaltyDiscount
         // redeem transaction at pay is not counted a second time.
         $tabletCount = DB::table('pos_tablet_orders as tr')->join('pos_orders as o', 'o.id', '=', 'tr.order_id')
             ->where('tr.company_id', $order->company_id)->where('tr.customer_id', $customer->id)
-            ->where('tr.redeem_status', 'approved')->whereNull('o.table_session_id')->where('o.status', '!=', Order::STATUS_VOID)
+            ->where('tr.redeem_status', 'approved')->where(fn ($live) => self::liveTabletSlot($live, 'tr'))
+            ->whereNull('o.table_session_id')->where('o.status', '!=', Order::STATUS_VOID)
             ->where('tr.redeem_resolved_at', '>=', $day)->where('tr.redeem_resolved_at', '<', $end)->count();
         $counterCount = DB::table('pos_loyalty_transactions as t')->join('pos_loyalty_accounts as a', 'a.id', '=', 't.loyalty_account_id')
             ->join('pos_orders as o', 'o.id', '=', 't.order_id')->where('t.company_id', $order->company_id)
             ->where('a.customer_id', $customer->id)->where('a.company_id', $order->company_id)
             ->whereNull('o.table_session_id')->where('o.status', '!=', Order::STATUS_VOID)->where('t.type', 'redeem')
             ->whereNotExists(fn ($q) => $q->selectRaw('1')->from('pos_tablet_orders as tx')
-                ->whereColumn('tx.order_id', 'o.id')->where('tx.redeem_status', 'approved'))
+                ->whereColumn('tx.order_id', 'o.id')->where('tx.redeem_status', 'approved')->where(fn ($live) => self::liveTabletSlot($live, 'tx')))
             ->where('t.occurred_at', '>=', $day)->where('t.occurred_at', '<', $end)->count();
         if ($tableCount + $tabletCount + $counterCount >= 3) {
             throw AdjustTableBillAction::refusal('loyalty_customer_limit', 'This customer has reached the daily redemption limit.');
@@ -152,7 +153,7 @@ final class TableLoyaltyDiscount
         // LAUNCH-P6 — the same staff member's tablet redeem approvals on Quick /
         // To go orders (a dine-in one is journalled as a table adjustment).
         $staffCount += DB::table('pos_tablet_orders as tr')->join('pos_orders as o', 'o.id', '=', 'tr.order_id')
-            ->where('tr.company_id', $order->company_id)->where('tr.redeem_status', 'approved')
+            ->where('tr.company_id', $order->company_id)->where('tr.redeem_status', 'approved')->where(fn ($live) => self::liveTabletSlot($live, 'tr'))
             ->where('tr.redeem_resolved_by_staff_id', (int) $staffId)->whereNull('o.table_session_id')
             ->where('tr.redeem_resolved_at', '>=', $shift?->opened_at ?? $day)
             ->when($shift === null, fn ($q) => $q->where('tr.redeem_resolved_at', '<', $end))->count();
@@ -168,6 +169,23 @@ final class TableLoyaltyDiscount
         return ['rule_id' => (int) $rule->id, 'blocks' => $blocks, 'points' => $points ? $units : 0,
             'stamps' => $points ? 0 : $units, 'amount_baisas' => $amount, 'discount_row_id' => (int) $row->id,
             'customer_id' => (int) $customer->id, 'shift_id' => $shift === null ? null : (int) $shift->id];
+    }
+
+    /**
+     * LAUNCH-P6 fix order 2 (F-12) — an approved tablet row counts towards the
+     * limits only while its points slot still exists on the order: its own
+     * positive slot row, with no later slot row (a clearing reversal or a
+     * replacing redemption) after it. Derived from the slot, so a missed
+     * "superseded" write can never block a customer or a staff member.
+     */
+    private static function liveTabletSlot($query, string $alias): void
+    {
+        $query->whereExists(fn ($slot) => $slot->selectRaw('1')->from('pos_order_discounts as live_slot')
+            ->whereColumn('live_slot.id', $alias.'.redeem_discount_row_id')->whereColumn('live_slot.order_id', $alias.'.order_id')
+            ->where('live_slot.amount_type_snapshot', 'table_loyalty_redeem')->where('live_slot.amount', '>', 0))
+            ->whereNotExists(fn ($later) => $later->selectRaw('1')->from('pos_order_discounts as later_slot')
+                ->whereColumn('later_slot.order_id', $alias.'.order_id')->whereIn('later_slot.amount_type_snapshot', self::TYPES)
+                ->whereColumn('later_slot.id', '>', $alias.'.redeem_discount_row_id'));
     }
 
     /** Read under redeem's customer/account locks, across all branches of this merchant. */

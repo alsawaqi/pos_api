@@ -88,6 +88,18 @@ final class TabletOrderEditAction
             if ($order === null) {
                 throw new TabletOrderException('tablet_order_closed', 409, 'This tablet order is no longer open.');
             }
+            // Fix order 2 (F-10) — while staff hold the cash claim (or its
+            // outcome is approved / uncertain) nobody may change what is being
+            // paid; a claim released as cancelled / declined with no payment
+            // goes back to the counter and the order may change again.
+            if (! $row->isDineIn() && Order::query()->whereKey($order->id)->withLiveClaim(now())->exists()) {
+                throw new TabletOrderException('tablet_order_being_paid', 409, 'Staff are taking the payment for this order; cancel the payment first.');
+            }
+            if (! $row->isDineIn() && $order->status === Order::STATUS_AWAITING_PAYMENT
+                && in_array($order->charge_outcome, [Order::CHARGE_OUTCOME_CANCELLED, Order::CHARGE_OUTCOME_DECLINED], true)
+                && ! $order->payments()->exists()) {
+                $order->update(['status' => Order::STATUS_HELD] + array_fill_keys(PresentQrPendingOrderAction::CHARGE_FIELDS, null));
+            }
             if (in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true)
                 || (! $row->isDineIn() && (! in_array($order->status, [Order::STATUS_HELD, Order::STATUS_OPEN], true)
                     || ! $this->present->hasNoChargeProvenance($order)))) {
@@ -115,6 +127,11 @@ final class TabletOrderEditAction
 
             if ($row->isDineIn()) {
                 $round = QrOrderRound::query()->whereKey($row->round_id)->lockForUpdate()->first();
+                // Fix order 2 (F-11) — re-check under the lock: a round confirmed
+                // or rejected since the read above is no longer editable.
+                if ($round === null || $round->status !== QrOrderRound::STATUS_PENDING_CONFIRMATION) {
+                    throw new TabletOrderException('tablet_order_closed', 409, 'This tablet order is no longer open.');
+                }
                 $confirmPayload = $this->append->buildPayload($context, $loaded, $price, $now);
                 $after = $this->freeze->handle($loaded, $price);
                 $round->update(['priced_lines' => $after, 'confirm_payload' => $confirmPayload,

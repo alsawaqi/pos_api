@@ -33,6 +33,46 @@ final class CustomerIdentity
             })->orderBy('id')->first();
     }
 
+    /**
+     * LAUNCH-P6 fix order 7 (F-23) — the live customer of this merchant for an
+     * Omani number stored in ANY equivalent form (+968XXXXXXXX, 968XXXXXXXX,
+     * 00968XXXXXXXX, XXXXXXXX, or its canonical column), merges followed. When
+     * several match (duplicates made before phones were normalised), the
+     * choice is deterministic: one with a loyalty balance first, then the most
+     * recent order, then the lowest id. Stored phones are never rewritten
+     * (merging and normalising duplicates is Phase 9). Any other number keeps
+     * the exact rule of {@see liveMatch()}.
+     */
+    public static function equivalentMatch(int $companyId, string $phone): ?Customer
+    {
+        $canonical = CanonicalPhone::of($phone);
+        if ($canonical === null || ! preg_match('/^968([0-9]{8})$/', $canonical, $m)) {
+            $match = self::liveMatch($companyId, $phone);
+
+            return $match === null ? null : self::survivor($companyId, (int) $match->id);
+        }
+        $forms = ['+'.$canonical, $canonical, '00'.$canonical, $m[1]];
+        $survivors = Customer::query()->where('company_id', $companyId)
+            ->where(fn ($query) => $query->whereIn('phone', $forms)->orWhere('phone_canonical', $canonical))
+            ->orderBy('id')->pluck('id')
+            ->map(static fn ($id): ?Customer => self::survivor($companyId, (int) $id))->filter()->unique('id')->keyBy('id');
+        if ($survivors->count() <= 1) {
+            return $survivors->first();
+        }
+        $ids = $survivors->keys()->all();
+        $withBalance = DB::table('pos_loyalty_accounts')->where('company_id', $companyId)->whereIn('customer_id', $ids)
+            ->where(fn ($query) => $query->where('point_balance', '>', 0)->orWhere('stamp_count', '>', 0))
+            ->pluck('customer_id')->map(static fn ($id): int => (int) $id)->flip();
+        $lastOrder = DB::table('pos_orders')->where('company_id', $companyId)->whereIn('customer_id', $ids)
+            ->groupBy('customer_id')->selectRaw('customer_id, MAX(id) AS last_order_id')->pluck('last_order_id', 'customer_id');
+
+        return $survivors->sortBy([
+            static fn (Customer $a, Customer $b): int => (int) $withBalance->has((int) $b->id) <=> (int) $withBalance->has((int) $a->id),
+            static fn (Customer $a, Customer $b): int => (int) ($lastOrder[$b->id] ?? 0) <=> (int) ($lastOrder[$a->id] ?? 0),
+            static fn (Customer $a, Customer $b): int => (int) $a->id <=> (int) $b->id,
+        ])->first();
+    }
+
     public static function survivor(int $companyId, int $id, bool $revive = false): ?Customer
     {
         $seen = [];

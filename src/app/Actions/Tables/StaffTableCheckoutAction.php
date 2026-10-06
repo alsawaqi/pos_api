@@ -45,6 +45,17 @@ final class StaffTableCheckoutAction
             && $order->table_id !== null && $order->table_session_id !== null;
     }
 
+    /**
+     * LAUNCH-P6 fix order 7 (F-21) — the bill's owning device is a customer
+     * tablet of the bill's merchant (decided by the device, never by the
+     * order's `source`).
+     */
+    public static function tabletOwned(Order $order): bool
+    {
+        return $order->device_id !== null && Device::withTrashed()->whereKey((int) $order->device_id)
+            ->where('company_id', (int) $order->company_id)->value('device_type') === 'customer_tablet';
+    }
+
     public function find(Device $device, string $uuid): ?Order
     {
         $order = Order::query()->where('uuid', trim($uuid))->where('company_id', $device->company_id)
@@ -103,7 +114,10 @@ final class StaffTableCheckoutAction
             }
             // Another device cannot exclude an offline tender on the creator's
             // legacy copy. Exact recovery proves that copy is fenced/retired.
-            if ((int) $order->device_id !== (int) $current->id && ! $this->hasOwnerRecovery($order, $seat)) {
+            // LAUNCH-P6 fix order 7 (F-21) — a bill a customer tablet opened
+            // has no such copy (a tablet keeps no offline bill and can never
+            // tender), so any attended device of the branch may check it out.
+            if ((int) $order->device_id !== (int) $current->id && ! self::tabletOwned($order) && ! $this->hasOwnerRecovery($order, $seat)) {
                 throw new QrChargeException('staff_bill_owner_required', 409, 'Recover the original draft on its owning device before checkout on another device.');
             }
             $detail = $this->detail->inspectLocked($current, (int) $order->table_id, static fn (Device $device, array $data): array => $data);

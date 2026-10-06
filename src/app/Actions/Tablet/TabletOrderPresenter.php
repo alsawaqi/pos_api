@@ -113,6 +113,10 @@ final class TabletOrderPresenter
                 'round_status' => $round?->status,
                 'lines' => $row->isDineIn() ? ($round?->priced_lines ?? []) : ($row->kitchen_lines ?? []),
                 'total_baisas' => (int) $row->total_baisas,
+                // Fix order 7 (F-22) — this tablet order's own total as
+                // submitted or edited (a dine-in round: the round's), next to
+                // `grand_total_baisas`, the bill now ("pay this").
+                'order_total_baisas' => $row->isDineIn() && $round !== null ? (int) $round->total_baisas : (int) $row->total_baisas,
                 'grand_total_baisas' => $order === null ? null : Money::toBaisas($order->grand_total),
                 'prices_include_tax' => (bool) $order?->prices_include_tax,
                 'customer_id' => $row->customer_id === null ? null : (int) $row->customer_id,

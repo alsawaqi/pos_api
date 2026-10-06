@@ -39,12 +39,14 @@ final class TabletLoyalty
         return '+'.$canonical;
     }
 
-    /** The live customer of this merchant for an E.164 phone (merges followed), or null. */
+    /**
+     * The live customer of this merchant for an E.164 phone (merges followed),
+     * or null. Fix order 7 (F-23) — stored in any equivalent Omani form, the
+     * one with points first ({@see CustomerIdentity::equivalentMatch()}).
+     */
     public static function customer(int $companyId, string $phone): ?Customer
     {
-        $match = CustomerIdentity::liveMatch($companyId, $phone);
-
-        return $match === null ? null : CustomerIdentity::survivor($companyId, (int) $match->id);
+        return CustomerIdentity::equivalentMatch($companyId, $phone);
     }
 
     /**

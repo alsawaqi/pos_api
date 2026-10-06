@@ -133,7 +133,11 @@ final class SubmitTabletOrderAction
         }
 
         // Customer before the table graph (the table adjustment's lock order).
-        $customerId = $phone === null ? null : $this->customers->handle($companyId, $phone, null)->customerId;
+        // Fix order 7 (F-23) — an existing customer stored in any equivalent
+        // Omani form is linked (the one with points first); a new one is
+        // created only when no form matches.
+        $customerId = $phone === null ? null
+            : (TabletLoyalty::customer($companyId, $phone)?->id ?? $this->customers->handle($companyId, $phone, null)->customerId);
 
         return $type === 'dine_in'
             ? $this->dineIn($tablet, $payload, $lines, $customerId, $redeem, $now, $at)

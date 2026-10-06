@@ -84,6 +84,8 @@ final class CreateQrOrderAction
                 (int) $session->branch_id,
                 $payload['lines'],
                 DateTimeImmutable::createFromInterface($now),
+                null,
+                'quick',
             );
             $price = Totals::priceOrder($loaded->pricingInput);
             // LAUNCH-P2 P2-7 — sell, but warn: the shelf count never refuses a

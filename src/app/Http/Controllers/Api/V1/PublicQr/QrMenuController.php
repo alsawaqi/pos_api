@@ -21,7 +21,8 @@ final class QrMenuController
         $session = $request->attributes->get('qr_session');
 
         return QrApiResponse::success(
-            $this->menu->handle((int) $session->company_id, (int) $session->branch_id),
+            // Fix order PK-A1 (L3) — a table session is dine in, any other quick.
+            $this->menu->handle((int) $session->company_id, (int) $session->branch_id, null, $session->isDineIn() ? 'dine_in' : 'quick'),
             ['money_unit' => 'baisas'],
         );
     }

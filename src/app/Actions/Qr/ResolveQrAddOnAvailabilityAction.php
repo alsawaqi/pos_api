@@ -8,6 +8,7 @@ use App\Models\AddOn;
 use App\Models\BranchProduct;
 use App\Models\Product;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Recipes\OrderTypes;
 use DateTimeInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -28,6 +29,12 @@ final class ResolveQrAddOnAvailabilityAction
     public function __construct(private readonly QrBranchProductQuery $products) {}
 
     /**
+     * Fix order PK-A1 (L3) — $orderType: the order type of the QR session
+     * (a table = 'dine_in', a quick order = 'quick'). Only the option's
+     * product lines "Used for" that type count, so a to-go-only cup never
+     * greys an option on a table, and a dine-in-only add is not netted
+     * against a to-go-only remove. null = every line (the old rule).
+     *
      * @param  Collection<int, AddOn>  $addons
      * @return Collection<int, array{available: bool, reason: string|null}>
      */
@@ -36,6 +43,7 @@ final class ResolveQrAddOnAvailabilityAction
         int $branchId,
         Collection $addons,
         DateTimeInterface $at,
+        ?string $orderType = null,
     ): Collection {
         if ($addons->isEmpty()) {
             return collect();
@@ -50,7 +58,11 @@ final class ResolveQrAddOnAvailabilityAction
             ->orderBy('id')
             ->get();
 
+        $bit = OrderTypes::bit(OrderTypes::bucket($orderType));
         foreach ($rows as $row) {
+            if ($bit !== null && (OrderTypes::normalize($row->order_types ?? null) & $bit) === 0) {
+                continue;
+            }
             $addonId = (int) $row->add_on_id;
             $productId = (int) $row->component_product_id;
             $direction = (string) $row->direction;

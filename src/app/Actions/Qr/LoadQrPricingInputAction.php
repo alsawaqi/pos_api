@@ -64,16 +64,17 @@ final class LoadQrPricingInputAction
         array $lines,
         ?DateTimeImmutable $now = null,
         ?bool $pricesIncludeTax = null,
+        ?string $orderType = null,
     ): QrPricingLoadResult {
-        return $this->load($companyId, $branchId, $lines, $now, false, $pricesIncludeTax);
+        return $this->load($companyId, $branchId, $lines, $now, false, $pricesIncludeTax, $orderType);
     }
 
     /** Staff may sell tablet-hidden products, but never internal ingredients.
      * @param  list<array<string, mixed>>  $lines
      */
-    public function handleForStaff(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null, ?bool $pricesIncludeTax = null): QrPricingLoadResult
+    public function handleForStaff(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null, ?bool $pricesIncludeTax = null, ?string $orderType = null): QrPricingLoadResult
     {
-        return $this->load($companyId, $branchId, $lines, $now, true, $pricesIncludeTax);
+        return $this->load($companyId, $branchId, $lines, $now, true, $pricesIncludeTax, $orderType);
     }
 
     /** @param list<array<string, mixed>> $lines */
@@ -84,10 +85,11 @@ final class LoadQrPricingInputAction
         ?DateTimeImmutable $now,
         bool $staff,
         ?bool $pricesIncludeTax = null,
+        ?string $orderType = null,
     ): QrPricingLoadResult {
         $now = BusinessClock::local($now);
         $normalisedLines = $this->normaliseLines($lines);
-        $context = $this->context($companyId, $branchId, $normalisedLines, $now, $staff);
+        $context = $this->context($companyId, $branchId, $normalisedLines, $now, $staff, $orderType);
 
         // Every line's own product first (the refusal order callers know).
         foreach ($normalisedLines as $line) {
@@ -150,7 +152,7 @@ final class LoadQrPricingInputAction
      *                       product), not the customer QR menu
      * @return array{priceable: list<array<string, mixed>>, held: list<array{line_index: int, product_id: int, addon_id: ?int, reason: string}>}
      */
-    public function classify(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null, bool $staff = false): array
+    public function classify(int $companyId, int $branchId, array $lines, ?DateTimeImmutable $now = null, bool $staff = false, ?string $orderType = null): array
     {
         $now = BusinessClock::local($now);
         $normalised = [];
@@ -165,7 +167,7 @@ final class LoadQrPricingInputAction
                 ];
             }
         }
-        $context = $this->context($companyId, $branchId, array_values($normalised), $now, $staff);
+        $context = $this->context($companyId, $branchId, array_values($normalised), $now, $staff, $orderType);
         $priceable = [];
         foreach ($normalised as $index => $line) {
             $product = $context['products']->get($line['product_id']);
@@ -201,7 +203,7 @@ final class LoadQrPricingInputAction
      * @param  list<array<string, mixed>>  $lines
      * @return array<string, mixed>
      */
-    private function context(int $companyId, int $branchId, array $lines, DateTimeImmutable $now, bool $staff): array
+    private function context(int $companyId, int $branchId, array $lines, DateTimeImmutable $now, bool $staff, ?string $orderType = null): array
     {
         $lineProductIds = array_values(array_unique(array_column($lines, 'product_id')));
         $componentProductIds = [];
@@ -242,7 +244,8 @@ final class LoadQrPricingInputAction
             'sold_out' => BranchCatalogue::soldOutAt($branchId, $allIds),
             'groups' => $this->applicableGroups($companyId, $groupProducts),
             'addons' => $addons,
-            'addon_availability' => $this->addonAvailability->handle($companyId, $branchId, $addons->values(), $now),
+            // Fix order PK-A1 (L3) — option lines "Used for" the order's type only.
+            'addon_availability' => $this->addonAvailability->handle($companyId, $branchId, $addons->values(), $now, $orderType),
             'slots' => $slots->groupBy('combo_product_id'),
             'options' => $options,
         ];

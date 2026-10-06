@@ -33,6 +33,8 @@ final class QrQuoteController
                 (int) $session->branch_id,
                 $request->validated('lines'),
                 DateTimeImmutable::createFromInterface(now()),
+                null,
+                $session->isDineIn() ? 'dine_in' : 'quick',
             );
             $quote = $this->presenter->quote($loaded, Totals::priceOrder($loaded->pricingInput));
         } catch (QrCatalogueException $exception) {

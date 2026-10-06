@@ -44,6 +44,8 @@ final class BuildQrTableMenuAction
         $menu = $this->menu->handle(
             (int) $table->company_id,
             (int) $floor->branch_id,
+            null,
+            'dine_in',
         );
 
         $branch = Branch::query()->whereKey((int) $floor->branch_id)

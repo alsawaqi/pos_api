@@ -97,7 +97,7 @@ final class AppendStaffRoundAction
             $at = DateTimeImmutable::createFromInterface($now);
             // LAUNCH-P4 M5 — staff rounds use the staff set: every in-store
             // product of the branch, whatever the QR menu switch says.
-            $classified = $this->pricing->classify((int) $device->company_id, (int) $device->branch_id, $requestedLines, $at, staff: true);
+            $classified = $this->pricing->classify((int) $device->company_id, (int) $device->branch_id, $requestedLines, $at, staff: true, orderType: 'dine_in');
             $held = $classified['held'];
             $loaded = null;
             $price = null;
@@ -105,7 +105,7 @@ final class AppendStaffRoundAction
                 try {
                     // LAUNCH-P4 — a further round is priced in the bill's tax mode.
                     $loaded = $this->pricing->handleForStaff((int) $device->company_id, (int) $device->branch_id, $classified['priceable'], $at,
-                        $order !== null ? (bool) $order->prices_include_tax : null);
+                        $order !== null ? (bool) $order->prices_include_tax : null, 'dine_in');
                     $price = Totals::priceOrder($loaded->pricingInput);
                 } catch (QrCatalogueException $exception) {
                     // A catalogue edit between classification and pricing holds

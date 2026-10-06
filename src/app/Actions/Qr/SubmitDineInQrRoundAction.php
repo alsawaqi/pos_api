@@ -222,6 +222,7 @@ final class SubmitDineInQrRoundAction
                 $payload['lines'],
                 DateTimeImmutable::createFromInterface($now),
                 $order !== null ? (bool) $order->prices_include_tax : null,
+                'dine_in',
             );
             $price = Totals::priceOrder($loaded->pricingInput);
             // LAUNCH-P2 P2-7 — sell, but warn: the shelf count never refuses a round.

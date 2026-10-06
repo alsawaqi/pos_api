@@ -45,7 +45,7 @@ final class BuildQrBranchMenuAction
     /**
      * @return array{categories: list<array<string, mixed>>, products: list<array<string, mixed>>, addon_groups: list<array<string, mixed>>}
      */
-    public function handle(int $companyId, int $branchId, ?DateTimeInterface $at = null): array
+    public function handle(int $companyId, int $branchId, ?DateTimeInterface $at = null, ?string $orderType = null): array
     {
         $at = BusinessClock::local($at);
         // LAUNCH review add-on — a product or combo outside its limited-time
@@ -112,6 +112,8 @@ final class BuildQrBranchMenuAction
             $branchId,
             $addonsByGroup->flatten(1),
             $at,
+            // Fix order PK-A1 (L3) — the session's order type (table / quick).
+            $orderType,
         );
         $groupOrder = array_flip($activeGroupIds);
         $groupIdsFor = function (Product $product) use ($productBindings, $categoryBindings, $globalGroupIds, $activeGroupSet, $groupOrder): array {

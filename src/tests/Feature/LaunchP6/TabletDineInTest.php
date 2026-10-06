@@ -135,12 +135,12 @@ final class TabletDineInTest extends TestCase
         $round = QrOrderRound::query()->sole();
         $seating = TableSession::query()->sole();
 
-        $this->p6As($this->till, 'POST', "/api/v1/device/tables/{$seating->uuid}/rounds/{$round->id}/confirm")->assertOk()
+        $this->p6Staff($this->till, 7, 'POST', "/api/v1/device/tables/{$seating->uuid}/rounds/{$round->id}/confirm")->assertOk()
             ->assertJsonPath('data.outcome', 'accepted');
 
         $row = $this->p6Row($data['tablet_order_uuid']);
         $this->assertNotNull($row->sent_to_kitchen_at);
-        $this->assertSame([(int) $this->till->id, null], [(int) $row->sent_by_device_id, $row->sent_by_staff_id]);
+        $this->assertSame([(int) $this->till->id, 7], [(int) $row->sent_by_device_id, (int) $row->sent_by_staff_id]);
         $this->assertSame([], $this->p6As($this->handheld, 'GET', '/api/v1/device/order-attention', [], ['X-Pos-Capabilities' => 'tablet-orders'])
             ->json('data.tablet_order_keys'));
         $listed = collect($this->p6Staff($this->till, 7, 'GET', '/api/v1/device/tablet-orders')->json('data.orders'))->sole();
@@ -150,7 +150,7 @@ final class TabletDineInTest extends TestCase
         // Rejecting a pending tablet round from the board drops it from the list.
         $second = $this->p6Submit(['order_type' => 'dine_in', 'table_uuid' => $table->uuid])->assertCreated()->json('data');
         $pending = QrOrderRound::query()->where('status', QrOrderRound::STATUS_PENDING_CONFIRMATION)->sole();
-        $this->p6As($this->till, 'POST', "/api/v1/device/tables/{$seating->uuid}/rounds/{$pending->id}/reject")->assertOk();
+        $this->p6Staff($this->till, 7, 'POST', "/api/v1/device/tables/{$seating->uuid}/rounds/{$pending->id}/reject")->assertOk();
         $this->assertNotContains($second['tablet_order_uuid'],
             array_column($this->p6Staff($this->till, 7, 'GET', '/api/v1/device/tablet-orders')->json('data.orders'), 'tablet_order_uuid'));
     }

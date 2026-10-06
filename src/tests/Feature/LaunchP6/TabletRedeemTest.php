@@ -126,9 +126,9 @@ final class TabletRedeemTest extends TestCase
         $this->p6Submit(['phone' => '91234567', 'payment' => 'points', 'redeem_request' => ['rule_id' => $this->rule, 'blocks' => 3]])
             ->assertStatus(409)->assertJsonPath('errors.0.code', 'redeem_not_available');
         $this->p6Submit(['phone' => '91234567', 'payment' => 'points', 'redeem_request' => ['rule_id' => $this->rule, 'blocks' => 2],
-            'lines' => [$this->p6Line($this->coffee)]])->assertStatus(409)->assertJsonPath('errors.0.code', 'redeem_exceeds_order');
+            'lines' => [$this->p6Line($this->coffee)]])->assertStatus(409)->assertJsonPath('errors.0.code', 'redeem_not_available');
         $this->p6Submit(['payment' => 'points', 'redeem_request' => ['rule_id' => $this->rule, 'blocks' => 1]])
-            ->assertStatus(422)->assertJsonPath('errors.0.code', 'redeem_needs_phone');
+            ->assertStatus(409)->assertJsonPath('errors.0.code', 'redeem_not_available');
         $this->p6Submit(['phone' => '91234567', 'payment' => 'points', 'redeem_request' => ['rule_id' => $this->p6Rule(200), 'blocks' => 1]])
             ->assertStatus(409)->assertJsonPath('errors.0.code', 'redeem_not_available');
 

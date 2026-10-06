@@ -24,6 +24,7 @@ use App\Models\QrOrderRound;
 use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Models\TabletOrder;
 use App\Support\Catalogue\CookingTime;
 use App\Support\CustomerIdentity;
 use App\Support\Money;
@@ -163,6 +164,12 @@ class CreateOrderHandler implements SyncEventHandler
                 || TableSession::query()->where('order_id', $existing->id)->exists()
                 || QrOrderRound::query()->where('order_id', $existing->id)->whereNotNull('table_session_id')->exists())) {
                 throw new RuntimeException('shared_table_snapshot_replacement_forbidden');
+            }
+            // LAUNCH-P6 fix order 1 (F-3) — a customer tablet order is server-
+            // owned (priced lines, points request, customer, kitchen round):
+            // no device snapshot may replace it.
+            if ($existing !== null && TabletOrder::query()->where('order_id', $existing->id)->exists()) {
+                throw new RuntimeException('tablet_order_replacement_forbidden');
             }
 
             $columns = [
@@ -807,7 +814,9 @@ class CreateOrderHandler implements SyncEventHandler
         $validator = Validator::make($order, [
             'uuid' => ['required', 'uuid'],
             'order_type' => ['required', 'string', 'in:'.implode(',', Order::TYPES)],
-            'source' => ['required', 'string', 'in:'.implode(',', Order::SOURCES), 'not_in:'.Order::SOURCE_QR_WEB],
+            // LAUNCH-P6 fix order 1 (F-3) — only the tablet's own route writes a
+            // customer_tablet order; a device may never label one so.
+            'source' => ['required', 'string', 'in:'.implode(',', Order::SOURCES), 'not_in:'.Order::SOURCE_QR_WEB.',customer_tablet'],
             'subtotal_baisas' => ['required', 'integer', 'min:0'],
             'discount_total_baisas' => ['required', 'integer', 'min:0'],
             'tax_total_baisas' => ['required', 'integer', 'min:0'],

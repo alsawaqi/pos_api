@@ -83,7 +83,7 @@ final class SubmitTabletOrderAction
         }
         $redeem = is_array($payload['redeem_request'] ?? null) ? $payload['redeem_request'] : null;
         if ($redeem !== null && $phone === null) {
-            throw new TabletOrderException('redeem_needs_phone', 422, 'Enter a phone number to use points.');
+            throw self::redeemRefused();
         }
 
         for ($attempt = 0; ; $attempt++) {
@@ -367,6 +367,15 @@ final class SubmitTabletOrderAction
      *
      * @param  array{rule_id: int, blocks: int}|null  $redeem
      */
+    /**
+     * Fix order 1 (F-5) — every points refusal at submit is the same answer,
+     * so stepping `blocks` reveals nothing about a phone's balance.
+     */
+    public static function redeemRefused(): TabletOrderException
+    {
+        return new TabletOrderException('redeem_not_available', 409, "These points can't be used for this order.");
+    }
+
     private function assertRedeemable(int $companyId, ?int $customerId, ?array $redeem, int $netBaisas): void
     {
         if ($redeem === null) {
@@ -376,15 +385,15 @@ final class SubmitTabletOrderAction
         $account = $reward === null || $customerId === null ? null : LoyaltyAccount::query()->where('company_id', $companyId)
             ->where('customer_id', $customerId)->where('loyalty_rule_id', (int) $redeem['rule_id'])->first();
         if ($reward === null || $account === null) {
-            throw new TabletOrderException('redeem_not_available', 409, 'These points cannot be used.');
+            throw self::redeemRefused();
         }
         $balance = (int) ($reward['kind'] === 'stamps' ? $account->stamp_count : $account->point_balance);
         $available = $balance - TableLoyaltyDiscount::pendingUnits($companyId, $customerId, (int) $redeem['rule_id'], $reward['kind']);
         if ($available < $reward['unit'] * (int) $redeem['blocks']) {
-            throw new TabletOrderException('redeem_not_available', 409, 'There are not enough points for this.');
+            throw self::redeemRefused();
         }
         if ($netBaisas <= $reward['value_baisas'] * (int) $redeem['blocks']) {
-            throw new TabletOrderException('redeem_exceeds_order', 409, 'The points must leave something to pay.');
+            throw self::redeemRefused();
         }
     }
 

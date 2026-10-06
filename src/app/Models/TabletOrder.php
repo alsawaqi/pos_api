@@ -27,6 +27,9 @@ final class TabletOrder extends Model
 
     public const REDEEM_REJECTED = 'rejected';
 
+    /** Fix order 1 (F-2) — approved, but its bill slot was later cleared. */
+    public const REDEEM_SUPERSEDED = 'superseded';
+
     /** @return array<string, string> */
     protected function casts(): array
     {

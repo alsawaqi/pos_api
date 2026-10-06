@@ -15,6 +15,7 @@ use App\Models\Payment;
 use App\Models\Shift;
 use App\Models\SyncEvent;
 use App\Support\Money;
+use App\Support\PaymentStaffSchema;
 use App\Support\Staff\AuthorizationGate;
 use Illuminate\Contracts\Database\Query\Builder;
 use Illuminate\Contracts\Database\Query\Expression;
@@ -62,16 +63,54 @@ class CloseShiftHandler implements SyncEventHandler
     /** How many order uuids one close may list (a long shift on a busy till). */
     public const MAX_ORDER_UUIDS = 5000;
 
-    /**
-     * Sources whose money belongs to the drawer of the device that SETTLED
-     * them (the successful payment's device and time), not the order's own
-     * device or staff: QR orders (opened by a station), and LAUNCH-P6
-     * customer tablet orders (opened by the tablet, paid at a till or
-     * handheld).
-     */
-    private const SETTLED_BY_PAYMENT_DEVICE = [Order::SOURCE_QR_WEB, 'customer_tablet'];
-
     public function __construct(private readonly AuthorizationGate $gate) {}
+
+    /**
+     * Orders whose money belongs to the drawer that SETTLED them (the
+     * successful payment's device and time), not the order's own device or
+     * staff: QR orders (opened by a station), and LAUNCH-P6 customer tablet
+     * orders (opened by the tablet, paid at a till or handheld). Fix order 1
+     * (F-3): a tablet order is one with a pos_tablet_orders row, never a
+     * device-sent `source`.
+     */
+    private static function settledByPayment($query): void
+    {
+        $query->where(fn ($settled) => $settled->where('pos_orders.source', Order::SOURCE_QR_WEB)
+            ->orWhereExists(fn ($tablet) => $tablet->selectRaw('1')->from('pos_tablet_orders as shift_tablet')
+                ->whereColumn('shift_tablet.order_id', 'pos_orders.id')));
+    }
+
+    /** Every other order: attributed by its own device / staff (the legacy rule). */
+    private static function notSettledByPayment($query): void
+    {
+        $query->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
+            ->whereNotExists(fn ($tablet) => $tablet->selectRaw('1')->from('pos_tablet_orders as shift_tablet')
+                ->whereColumn('shift_tablet.order_id', 'pos_orders.id'));
+    }
+
+    /**
+     * LAUNCH-P6 fix order 1 (F-1) — a QR / tablet payment taken on a device
+     * that has NO shift of its own at that moment belongs to the shared shift
+     * of the staff member who took it (pos_payments.staff_id): staff open the
+     * shift on the till and take cash on the handheld. A paying device with
+     * its own shift keeps the payment (matched by device), so nothing counts
+     * twice. Applies only to a shared shift that names its staff member.
+     */
+    private static function paidByShiftStaff($query, Shift $shift, string $payment): void
+    {
+        $query->where($payment.'.staff_id', (int) $shift->staff_id)
+            ->whereNotExists(fn ($own) => $own->selectRaw('1')->from('pos_shifts as payer_shift')
+                ->whereColumn('payer_shift.device_id', $payment.'.device_id')
+                ->where('payer_shift.company_id', (int) $shift->company_id)
+                ->whereColumn('payer_shift.opened_at', '<=', $payment.'.captured_at')
+                ->where(fn ($end) => $end->whereNull('payer_shift.closed_at')
+                    ->orWhereColumn('payer_shift.closed_at', '>=', $payment.'.captured_at')));
+    }
+
+    private static function staffFallback(Shift $shift): bool
+    {
+        return (bool) $shift->is_shared && $shift->staff_id !== null && PaymentStaffSchema::ready();
+    }
 
     /**
      * LAUNCH-P5 (A5, owner decisions 3 and 4). A P5 build (auth_v: 1) sends
@@ -463,16 +502,21 @@ class CloseShiftHandler implements SyncEventHandler
                     // rows. Deleted-device shifts have no drawer identity.
                     if ($shift->device_id !== null) {
                         $scope->where(function ($qr) use ($shift, $paymentDeviceColumn): void {
-                            $qr->whereIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
-                                ->where($paymentDeviceColumn, $shift->device_id);
+                            self::settledByPayment($qr);
+                            $qr->where(function ($who) use ($shift, $paymentDeviceColumn): void {
+                                $who->where($paymentDeviceColumn, $shift->device_id);
+                                if (self::staffFallback($shift)) {
+                                    $who->orWhere(fn ($payer) => self::paidByShiftStaff($payer, $shift, Str::before($paymentDeviceColumn, '.')));
+                                }
+                            });
                         });
                     } else {
                         $scope->whereRaw('0 = 1');
                     }
 
                     $scope->orWhere(function ($legacy) use ($shift, $activityAtColumn): void {
+                        self::notSettledByPayment($legacy);
                         $legacy
-                            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
                             ->where(function ($identity) use ($shift, $activityAtColumn): void {
                                 $this->applyLegacyOrderIdentity(
                                     $identity,
@@ -545,7 +589,7 @@ class CloseShiftHandler implements SyncEventHandler
             $orders
                 ->where('pos_orders.company_id', $shift->company_id)
                 ->where('pos_orders.branch_id', $shift->branch_id)
-                ->whereIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE);
+                ->where(fn ($settled) => self::settledByPayment($settled));
 
             if ($shift->device_id === null) {
                 $orders->whereRaw('0 = 1');
@@ -562,7 +606,12 @@ class CloseShiftHandler implements SyncEventHandler
                     ->from('pos_payments as qr_shift_payment')
                     ->whereColumn('qr_shift_payment.order_id', 'pos_orders.id')
                     ->where('qr_shift_payment.status', Payment::STATUS_SUCCESS)
-                    ->where('qr_shift_payment.device_id', $shift->device_id)
+                    ->where(function ($who) use ($shift): void {
+                        $who->where('qr_shift_payment.device_id', $shift->device_id);
+                        if (self::staffFallback($shift)) {
+                            $who->orWhere(fn ($payer) => self::paidByShiftStaff($payer, $shift, 'qr_shift_payment'));
+                        }
+                    })
                     ->whereBetween('qr_shift_payment.captured_at', $window);
 
                 if ($linkedPaymentIdColumn !== null) {
@@ -591,7 +640,7 @@ class CloseShiftHandler implements SyncEventHandler
         $window = [$shift->opened_at, $closedAt];
 
         $legacyOrders = DB::table('pos_orders')
-            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
+            ->where(fn ($legacy) => self::notSettledByPayment($legacy))
             ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_PAID)
             // P-G7 — confirmed delivery-provider orders never put money in
@@ -645,7 +694,7 @@ class CloseShiftHandler implements SyncEventHandler
             ->get();
 
         $legacyVoids = DB::table('pos_orders')
-            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
+            ->where(fn ($legacy) => self::notSettledByPayment($legacy))
             ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_VOID)
             ->whereBetween('opened_at', $window)
@@ -662,7 +711,7 @@ class CloseShiftHandler implements SyncEventHandler
 
         $legacyRoundUp = DB::table('pos_roundup_donations')
             ->join('pos_orders', 'pos_roundup_donations.order_id', '=', 'pos_orders.id')
-            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
+            ->where(fn ($legacy) => self::notSettledByPayment($legacy))
             ->where($this->orderBelongsToShift($shift, 'pos_roundup_donations.created_at'))
             ->whereBetween('pos_roundup_donations.created_at', $window)
             ->sum('pos_roundup_donations.amount');

@@ -9,6 +9,7 @@ use App\Models\PosStaff;
 use App\Support\Staff\StaffBranches;
 use App\Support\Staff\StaffToken;
 use Closure;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -31,6 +32,23 @@ final class RequireTabletStaff
 
     public function handle(Request $request, Closure $next): Response
     {
+        $check = self::verify($request);
+        if ($check['failure'] !== null) {
+            return self::refusal($check['failure']);
+        }
+        $request->attributes->set(self::STAFF, (int) $check['staff_id']);
+
+        return $next($request);
+    }
+
+    /**
+     * The request's staff member, or why there is none (also used by the
+     * table round review for a tablet round — fix order 1 F-6).
+     *
+     * @return array{staff_id: ?int, failure: ?string}
+     */
+    public static function verify(Request $request): array
+    {
         $device = $request->user();
         $token = $request->header(StaffToken::HEADER);
         $check = $device instanceof Device
@@ -42,14 +60,15 @@ final class RequireTabletStaff
             && StaffBranches::staffWorksAt((int) $check['staff_id'], (int) $device->branch_id))) {
             $reason = 'staff_inactive';
         }
-        if ($reason !== null) {
-            return response()->json(['data' => ['reason' => $reason], 'errors' => [[
-                'code' => 'staff_unverified',
-                'message' => 'Log in again to do this.',
-            ]]], 403);
-        }
-        $request->attributes->set(self::STAFF, (int) $check['staff_id']);
 
-        return $next($request);
+        return $reason === null ? ['staff_id' => (int) $check['staff_id'], 'failure' => null] : ['staff_id' => null, 'failure' => $reason];
+    }
+
+    public static function refusal(string $reason): JsonResponse
+    {
+        return response()->json(['data' => ['reason' => $reason], 'errors' => [[
+            'code' => 'staff_unverified',
+            'message' => 'Log in again to do this.',
+        ]]], 403);
     }
 }

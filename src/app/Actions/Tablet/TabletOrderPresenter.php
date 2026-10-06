@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Tablet;
 
+use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Customer;
 use App\Models\LoyaltyRule;
 use App\Models\Order;
@@ -109,7 +110,7 @@ final class TabletOrderPresenter
                 'customer_id' => $row->customer_id === null ? null : (int) $row->customer_id,
                 'phone_masked' => $row->customer_id === null ? null : TabletLoyalty::masked($phones->get($row->customer_id)),
                 'payment' => (string) $row->payment_choice,
-                'redeem' => $this->redeem($row, $rules->get($row->redeem_rule_id), $person),
+                'redeem' => $this->redeem($row, $rules->get($row->redeem_rule_id), $person, $order),
                 'taken_by' => $row->taken_by_staff_id === null ? null : $person((int) $row->taken_by_staff_id,
                     $row->taken_by_device_id === null ? null : (int) $row->taken_by_device_id, $row->taken_at),
                 'sent_to_kitchen' => $sent ? $person($row->sent_by_staff_id === null ? null : (int) $row->sent_by_staff_id,
@@ -121,7 +122,7 @@ final class TabletOrderPresenter
     }
 
     /** @return array<string, mixed>|null */
-    private function redeem(TabletOrder $row, ?LoyaltyRule $rule, \Closure $person): ?array
+    private function redeem(TabletOrder $row, ?LoyaltyRule $rule, \Closure $person, ?Order $order): ?array
     {
         if ($row->redeem_status === null) {
             return null;
@@ -129,6 +130,12 @@ final class TabletOrderPresenter
         $reward = $rule === null ? null : TabletLoyalty::reward((int) $row->company_id, (int) $rule->id);
         $blocks = (int) $row->redeem_blocks;
         $approved = $row->redeem_status === TabletOrder::REDEEM_APPROVED;
+        $settled = in_array($row->redeem_status, [TabletOrder::REDEEM_APPROVED, TabletOrder::REDEEM_SUPERSEDED], true);
+        // Fix order 1 (F-2) — an approved request shows what the bill's points
+        // slot takes NOW (0 once the slot is gone); `approved_*` keep what was
+        // approved.
+        $slot = $approved && $order !== null ? TableLoyaltyDiscount::current($order) : null;
+        $live = $slot !== null && (int) $slot['discount_row_id'] === (int) $row->redeem_discount_row_id;
 
         return [
             'status' => (string) $row->redeem_status,
@@ -137,9 +144,16 @@ final class TabletOrderPresenter
             'kind' => $reward['kind'] ?? ($rule?->type === 'visit_based' ? 'stamps' : 'points'),
             'blocks' => $blocks,
             // Requested: what approving it now would take (the amount the
-            // approver's proof names); approved: what was taken.
-            'units' => $approved ? (int) $row->redeem_units : ($reward === null ? null : $reward['unit'] * $blocks),
-            'amount_baisas' => $approved ? (int) $row->redeem_amount_baisas : ($reward === null ? null : $reward['value_baisas'] * $blocks),
+            // approver's proof names); approved: what the bill's slot takes
+            // now; superseded / rejected: nothing.
+            'units' => $settled || $row->redeem_status === TabletOrder::REDEEM_REJECTED
+                ? ($live ? (int) $slot['points'] + (int) $slot['stamps'] : 0)
+                : ($reward === null ? null : $reward['unit'] * $blocks),
+            'amount_baisas' => $settled || $row->redeem_status === TabletOrder::REDEEM_REJECTED
+                ? ($live ? (int) $slot['amount_baisas'] : 0)
+                : ($reward === null ? null : $reward['value_baisas'] * $blocks),
+            'approved_units' => $settled ? (int) $row->redeem_units : null,
+            'approved_amount_baisas' => $settled ? (int) $row->redeem_amount_baisas : null,
             'available' => $reward !== null,
             'resolved_by' => $row->redeem_resolved_at === null ? null : $person($row->redeem_resolved_by_staff_id === null ? null
                 : (int) $row->redeem_resolved_by_staff_id, $row->redeem_resolved_by_device_id === null ? null

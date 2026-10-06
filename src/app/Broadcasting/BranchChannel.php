@@ -17,6 +17,7 @@ final class BranchChannel
 {
     public function join(Device $device, int $branchId): bool
     {
-        return $device->branch_id !== null && (int) $device->branch_id === $branchId;
+        // LAUNCH-P6 fix order 1 (F-4) — a customer tablet joins no live channel.
+        return $device->device_type !== 'customer_tablet' && $device->branch_id !== null && (int) $device->branch_id === $branchId;
     }
 }

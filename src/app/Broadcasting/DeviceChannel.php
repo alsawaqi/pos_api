@@ -15,6 +15,7 @@ final class DeviceChannel
 {
     public function join(Device $device, int $deviceId): bool
     {
-        return (int) $device->id === $deviceId;
+        // LAUNCH-P6 fix order 1 (F-4) — a customer tablet joins no live channel.
+        return $device->device_type !== 'customer_tablet' && (int) $device->id === $deviceId;
     }
 }

@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1\Device;
 
+use App\Actions\Tablet\TabletOrderEditAction;
 use App\Actions\Tablet\TabletOrderException;
 use App\Actions\Tablet\TabletOrderPresenter;
 use App\Actions\Tablet\TabletOrderStaffAction;
 use App\Http\Middleware\RequireTabletStaff;
+use App\Http\Requests\Api\V1\Tablet\TabletEditLinesRequest;
 use App\Models\Device;
 use App\Support\QrApiResponse;
 use App\Support\Staff\StaffToken;
@@ -71,6 +73,12 @@ final class DeviceTabletOrdersController
 
         return $this->run(fn (): array => $this->action->approve($this->device($request), $this->staff($request), $uuid,
             $request->only(['client_request_id', 'authorization']), is_string($token) && $token !== '' ? $token : null));
+    }
+
+    /** PUT device/tablet-orders/{uuid}/lines {client_request_id, lines} — fix order 1 (F-8). */
+    public function edit(TabletEditLinesRequest $request, string $uuid, TabletOrderEditAction $edit): JsonResponse
+    {
+        return $this->run(fn (): array => $edit->handle($this->device($request), $this->staff($request), $uuid, $request->validated()));
     }
 
     /** POST device/tablet-orders/{uuid}/redeem/reject */

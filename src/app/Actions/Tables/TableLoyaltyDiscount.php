@@ -11,6 +11,8 @@ use App\Models\Order;
 use App\Models\OrderDiscount;
 use App\Models\Shift;
 use App\Models\TableSessionEvent;
+use App\Models\TabletOrder;
+use App\Models\TabletOrderEvent;
 use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 
@@ -50,11 +52,32 @@ final class TableLoyaltyDiscount
         if ($amount <= 0) {
             return;
         }
-        $row = self::rows($order)->where('amount', '>', 0)->orderByDesc('id')->firstOrFail()->replicate();
+        $source = self::rows($order)->where('amount', '>', 0)->orderByDesc('id')->firstOrFail();
+        $row = $source->replicate();
         $row->amount = Money::toOmr(-$amount);
         $row->amount_type_snapshot = 'table_loyalty_reversal';
         $row->applied_at = now();
         $row->save();
+        // LAUNCH-P6 fix order 1 (F-2) — a customer tablet's approved points on
+        // this slot no longer apply (a staff clear, a customer change, a
+        // line-cancel clamp, a void, a staff redemption replacing it): its
+        // row becomes `superseded`, audited. Written after the commit, never
+        // under this writer's bill locks (the tablet row is always locked
+        // first by the tablet routes — fix order 1 F-7).
+        $orderId = (int) $order->id;
+        $sourceId = (int) $source->id;
+        $reversalId = (int) $row->id;
+        DB::afterCommit(static function () use ($orderId, $sourceId, $reversalId): void {
+            DB::transaction(static function () use ($orderId, $sourceId, $reversalId): void {
+                $rows = TabletOrder::query()->where('order_id', $orderId)->where('redeem_status', TabletOrder::REDEEM_APPROVED)
+                    ->where('redeem_discount_row_id', $sourceId)->lockForUpdate()->get();
+                foreach ($rows as $tablet) {
+                    $tablet->update(['redeem_status' => TabletOrder::REDEEM_SUPERSEDED]);
+                    TabletOrderEvent::record($tablet, 'redeem_superseded', null, null,
+                        ['discount_row_id' => $sourceId, 'reversal_row_id' => $reversalId]);
+                }
+            });
+        });
     }
 
     /** Runs inside the existing locked table-graph adjustment transaction. */
@@ -157,7 +180,8 @@ final class TableLoyaltyDiscount
         // points slot reserves its units exactly like a table bill.
         $bills = Order::query()->where('company_id', $companyId)
             ->where('customer_id', $customerId)
-            ->where(fn ($q) => $q->whereNotNull('table_session_id')->orWhere('source', 'customer_tablet'))
+            ->where(fn ($q) => $q->whereNotNull('table_session_id')
+                ->orWhereIn('id', DB::table('pos_tablet_orders')->select('order_id')->where('company_id', $companyId)))
             ->whereNotIn('status', [Order::STATUS_PAID, Order::STATUS_VOID])
             ->whereIn('id', OrderDiscount::query()->select('order_id')
                 ->whereIn('amount_type_snapshot', self::TYPES)

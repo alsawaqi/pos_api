@@ -4,6 +4,7 @@ use App\Http\Middleware\AttachSentryDeviceContext;
 use App\Http\Middleware\EnsureCompanyActive;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\ResolveQrSession;
+use App\Http\Middleware\RestrictCustomerTablet;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -23,7 +24,8 @@ return Application::configure(basePath: dirname(__DIR__))
     // as /api/v1/broadcasting/auth, behind the `pos_device` guard + JSON
     // middleware, so it lives on the device API contract (not the default
     // web-session /broadcasting/auth, which this token-only API has no use for).
-    ->withBroadcasting(__DIR__.'/../routes/channels.php', ['middleware' => ['api', 'auth:pos_device']])
+    // LAUNCH-P6 fix order 1 (F-4) — a customer tablet's token joins no live channel.
+    ->withBroadcasting(__DIR__.'/../routes/channels.php', ['middleware' => ['api', 'auth:pos_device', RestrictCustomerTablet::class]])
     ->withMiddleware(function (Middleware $middleware): void {
         // QR client secrets and checkout idempotency keys are opaque values.
         // Preserve their exact bytes so JSON binding and later header checks

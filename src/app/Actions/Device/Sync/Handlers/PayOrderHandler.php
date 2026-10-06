@@ -28,7 +28,9 @@ use App\Models\QrSession;
 use App\Models\RoundupDonation;
 use App\Models\SyncEvent;
 use App\Models\TableSession;
+use App\Models\TabletOrder;
 use App\Support\Money;
+use App\Support\PaymentStaffSchema;
 use App\Support\Staff\SaleAuthorizations;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -113,6 +115,16 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             if ($order->status === Order::STATUS_COMBINED) {
                 throw new RuntimeException('combined order is not payable: '.$orderUuid);
             }
+
+            // LAUNCH-P6 fix order 1 (F-3) — a tablet order is one the tablet wrote
+            // (its pos_tablet_orders row), never one a device merely labelled.
+            $isTablet = TabletOrder::query()->where('order_id', $order->id)->exists();
+            // F-1 — who took the payment (order.pay staff_id), kept on the
+            // payment when a staff member of this merchant (else NULL; the
+            // payer check further down still flags an unknown one).
+            $payerId = isset($payload['staff_id']) && PaymentStaffSchema::ready() && DB::table('pos_staff')
+                ->where('company_id', $order->company_id)->where('id', (int) $payload['staff_id'])->exists()
+                ? (int) $payload['staff_id'] : null;
 
             $claimAt = now();
             $claimIsLive = Order::query()
@@ -254,7 +266,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                     'bank_id' => $device->bank_id,
                     'bank_response' => is_array($tender['bank_response'] ?? null) ? $tender['bank_response'] : null,
                     'captured_at' => $capturedAt,
-                ] + $softpos);
+                ] + (PaymentStaffSchema::ready() ? ['staff_id' => $payerId] : []) + $softpos);
 
                 $paymentIds[] = (int) $payment->id;
                 $tenderedBaisas += (int) $tender['amount_baisas'];
@@ -295,7 +307,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 $orderUpdate['charge_outcome'] = Order::CHARGE_OUTCOME_APPROVED;
             }
             if (trim((string) $order->receipt_number) === ''
-                && ($order->source === Order::SOURCE_QR_WEB || $order->source === 'customer_tablet' || $order->table_session_id !== null)) {
+                && ($order->source === Order::SOURCE_QR_WEB || $isTablet || $order->table_session_id !== null)) {
                 // LAUNCH-P6 — a customer tablet order's receipt number is the server's too.
                 $allocation = $this->orderNumbers->handle($device);
                 if ($allocation !== null) {
@@ -373,7 +385,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             $redeemWarning = null;
             // LAUNCH-P6 — a customer tablet order (Quick / To go too) redeems only
             // what staff approved on it (its slot), never an event's own block.
-            if ($order->table_session_id !== null || $order->source === 'customer_tablet') {
+            if ($order->table_session_id !== null || $isTablet) {
                 $loyaltyRedeem = TableLoyaltyDiscount::current($order);
             }
             if ($loyaltyRedeem !== null && isset($loyaltyRedeem['rule_id'])) {
@@ -704,7 +716,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
     {
         // LAUNCH-P6 — a customer tablet order earns like a QR one when a phone
         // linked a customer (every active rule), and nothing without one.
-        $tablet = $order->source === 'customer_tablet';
+        $tablet = TabletOrder::query()->where('order_id', $order->id)->exists();
         if (($order->table_session_id !== null || $tablet) && $order->customer_id === null) {
             return [];
         }

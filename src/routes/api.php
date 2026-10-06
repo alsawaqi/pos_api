@@ -162,7 +162,9 @@ Route::prefix('v1')->group(function (): void {
             Route::post('device/tablet/quote', [DeviceTabletController::class, 'quote'])->name('device.tablet.quote');
             Route::post('device/tablet/loyalty/lookup', [DeviceTabletController::class, 'lookup'])
                 ->middleware('throttle:tablet-loyalty-lookup')->name('device.tablet.loyalty.lookup');
-            Route::post('device/tablet/orders', [DeviceTabletController::class, 'store'])->name('device.tablet.orders.store');
+            // Fix order 1 (F-5) — a submit with a phone shares the lookup's 10/min.
+            Route::post('device/tablet/orders', [DeviceTabletController::class, 'store'])
+                ->middleware('throttle:tablet-loyalty-lookup')->name('device.tablet.orders.store');
         });
         // LAUNCH-P6 — the staff side of tablet orders (a till or a handheld
         // with a logged-in staff member's X-Staff-Token).
@@ -175,6 +177,9 @@ Route::prefix('v1')->group(function (): void {
                 ->middleware('throttle:qr-table-device-write')->name('device.tablet-orders.send');
             Route::post('device/tablet-orders/{uuid}/redeem/approve', [DeviceTabletOrdersController::class, 'approve'])
                 ->middleware(['throttle:qr-table-device-write', 'throttle:manager-pin'])->name('device.tablet-orders.redeem.approve');
+            // Fix order 1 (F-8) — staff edit the lines before sending.
+            Route::put('device/tablet-orders/{uuid}/lines', [DeviceTabletOrdersController::class, 'edit'])
+                ->middleware('throttle:qr-table-device-write')->name('device.tablet-orders.lines');
             Route::post('device/tablet-orders/{uuid}/redeem/reject', [DeviceTabletOrdersController::class, 'reject'])
                 ->middleware('throttle:qr-table-device-write')->name('device.tablet-orders.redeem.reject');
         });

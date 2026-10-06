@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1\Device;
 use App\Actions\Qr\QrDineInException;
 use App\Actions\Tables\ReadTableDetailAction;
 use App\Models\Device;
+use App\Support\DeviceCapabilities;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,7 +19,7 @@ final class DeviceTableDetailController
         /** @var Device $device */
         $device = $request->user();
         try {
-            $response = QrApiResponse::success($read->handle($device, (int) $tableId), [
+            $response = QrApiResponse::success($read->handle($device, (int) $tableId, DeviceCapabilities::tabletOrders($request)), [
                 'money_unit' => 'baisas', 'generated_at' => now()->toIso8601String(),
             ]);
         } catch (QrDineInException $exception) {

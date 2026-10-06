@@ -14,8 +14,6 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
-use App\Models\TabletOrder;
-use App\Models\TabletOrderEvent;
 use App\Support\Money;
 use Closure;
 use Illuminate\Support\Carbon;
@@ -38,16 +36,15 @@ final class ConfirmStaffRoundAction
     ) {}
 
     /**
-     * LAUNCH-P6 — confirming a customer tablet's pending round (here, from the
-     * table board) is sending it to the kitchen: its tablet order is marked
-     * sent by this device ($markTablet; the tablet send route records its own
-     * staff member instead).
+     * LAUNCH-P6 fix order 1 (F-6, F-7) — a customer tablet's round is reviewed
+     * through TabletOrderStaffAction::reviewRound, which locks the tablet row
+     * BEFORE calling this; this path never touches a tablet row.
      *
      * @return array<string, mixed>
      */
-    public function handle(Device $device, string $uuid, int $roundId, bool $markTablet = true): array
+    public function handle(Device $device, string $uuid, int $roundId): array
     {
-        return $this->locked($device, $uuid, $roundId, function (Device $device, TableSession $seating, Order $order, QrOrderRound $round) use ($markTablet): array {
+        return $this->locked($device, $uuid, $roundId, function (Device $device, TableSession $seating, Order $order, QrOrderRound $round): array {
             if ($round->status !== QrOrderRound::STATUS_PENDING_CONFIRMATION) {
                 return $this->present($seating, $order, $round, 'replayed');
             }
@@ -87,13 +84,6 @@ final class ConfirmStaffRoundAction
                 'outcome' => QrOrderRound::STATUS_ACCEPTED,
                 'dropped_line_count' => $droppedCount,
             ], (int) $device->id);
-            $tablet = $markTablet ? TabletOrder::query()->where('round_id', $round->id)->where('order_id', $order->id)
-                ->whereNull('sent_to_kitchen_at')->lockForUpdate()->first() : null;
-            if ($tablet !== null) {
-                $tablet->fill(['sent_to_kitchen_at' => now(), 'sent_by_device_id' => (int) $device->id])->save();
-                TabletOrderEvent::record($tablet, 'sent_to_kitchen', null, (int) $device->id, ['round_id' => (int) $round->id,
-                    'via' => 'table_round_confirm']);
-            }
 
             return $this->present($seating, $order->fresh(), $round->fresh(), 'accepted');
         });

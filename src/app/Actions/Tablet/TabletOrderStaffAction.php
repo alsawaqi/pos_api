@@ -11,6 +11,7 @@ use App\Actions\Qr\RefreshQrOrderTotalsAction;
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Actions\Tables\ConfirmStaffRoundAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
+use App\Actions\Tables\RejectStaffRoundAction;
 use App\Actions\Tables\ResolveStaffSeatingAction;
 use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Device;
@@ -59,6 +60,7 @@ final class TabletOrderStaffAction
         private readonly EnsureLegacyTableBillBaselineAction $baseline,
         private readonly AppendTableSessionEventAction $journal,
         private readonly AuthorizationGate $gate,
+        private readonly RejectStaffRoundAction $rejectRound,
     ) {}
 
     /**
@@ -148,7 +150,7 @@ final class TabletOrderStaffAction
                     throw new TabletOrderException('tablet_order_closed', 409, 'This tablet order is no longer open.');
                 }
                 try {
-                    $result = $this->confirm->handle($device, (string) $seating->uuid, (int) $round->id, markTablet: false);
+                    $result = $this->confirm->handle($device, (string) $seating->uuid, (int) $round->id);
                 } catch (QrDineInException $exception) {
                     throw new TabletOrderException($exception->codeName, $exception->httpStatus, $exception->getMessage());
                 }
@@ -265,6 +267,50 @@ final class TabletOrderStaffAction
     }
 
     /**
+     * Fix order 1 (F-6) — the table board / detail confirming or rejecting a
+     * tablet's pending dine-in round goes through the tablet rules: the staff
+     * member of the X-Staff-Token, the "Taken by" rule (an untaken order is
+     * taken), and is recorded. Returns the table review's own answer.
+     *
+     * Lock order (F-7): the tablet row FIRST, then the staff review's device
+     * -> tables -> orders -> credentials -> seatings -> round. No table path
+     * ever locks a tablet row after its table graph.
+     *
+     * @return array<string, mixed>
+     */
+    public function reviewRound(Device $device, int $staffId, string $seatingUuid, int $roundId, bool $confirm): array
+    {
+        return DB::transaction(function () use ($device, $staffId, $seatingUuid, $roundId, $confirm): array {
+            $row = TabletOrder::query()->where('round_id', $roundId)->where('company_id', (int) $device->company_id)
+                ->where('branch_id', (int) $device->branch_id)->lockForUpdate()->first();
+            if ($row === null) {
+                throw new TabletOrderException('tablet_order_not_found', 404, 'The tablet order was not found in this branch.');
+            }
+            $round = QrOrderRound::query()->whereKey($roundId)->first();
+            if ($round?->status === QrOrderRound::STATUS_PENDING_CONFIRMATION) {
+                $this->assertOpen($row);
+                $this->claim($row, $device, $staffId, false);
+            }
+            try {
+                $result = $confirm
+                    ? $this->confirm->handle($device, $seatingUuid, $roundId)
+                    : $this->rejectRound->handle($device, $seatingUuid, $roundId);
+            } catch (QrDineInException $exception) {
+                throw new TabletOrderException($exception->codeName, $exception->httpStatus, $exception->getMessage());
+            }
+            if ($confirm && $result['outcome'] === 'accepted' && $row->sent_to_kitchen_at === null) {
+                $row->fill(['sent_to_kitchen_at' => now(), 'sent_by_staff_id' => $staffId, 'sent_by_device_id' => (int) $device->id])->save();
+                TabletOrderEvent::record($row, 'sent_to_kitchen', $staffId, (int) $device->id, ['round_id' => $roundId, 'via' => 'table_review']);
+            }
+            if (! $confirm && $result['outcome'] === 'rejected') {
+                TabletOrderEvent::record($row, 'round_rejected', $staffId, (int) $device->id, ['round_id' => $roundId]);
+            }
+
+            return $result;
+        });
+    }
+
+    /**
      * Quick / To go: the held order's own header takes the redemption (the
      * table slot rows, so payment redeems the points exactly as on a bill).
      *
@@ -282,6 +328,7 @@ final class TabletOrderStaffAction
         if ($order->customer_id === null || (int) $order->customer_id !== (int) $row->customer_id) {
             throw new TabletOrderException('redeem_customer_mismatch', 409, 'The order no longer belongs to this customer.');
         }
+        self::assertNoActiveSlot($order);
         $inclusive = (bool) $order->prices_include_tax;
         $net = BillMoney::net((int) $row->total_baisas, (int) $row->tax_baisas, $inclusive);
         $result = $this->tableRedeem(fn (): array => TableLoyaltyDiscount::redeem($order, $intent, $net));
@@ -337,6 +384,7 @@ final class TabletOrderStaffAction
                 if ($order->customer_id === null || (int) $order->customer_id !== (int) $row->customer_id) {
                     throw new TabletOrderException('redeem_customer_mismatch', 409, 'The table bill belongs to another customer.');
                 }
+                self::assertNoActiveSlot($order);
                 $this->baseline->assertReadyForCharge($order);
                 $a = $this->totals->amounts($order);
                 $net = RefreshQrOrderTotalsAction::net($a);
@@ -374,7 +422,19 @@ final class TabletOrderStaffAction
         }
     }
 
-    private function locked(Device $device, string $uuid): TabletOrder
+    /**
+     * Fix order 1 (F-2) — one points redemption per bill: approving never
+     * replaces one already on it (a staff redemption or an earlier tablet
+     * approval); staff clear that one first.
+     */
+    private static function assertNoActiveSlot(Order $order): void
+    {
+        if (TableLoyaltyDiscount::amount($order) > 0) {
+            throw new TabletOrderException('bill_points_already_used', 409, 'Points are already used on this bill.');
+        }
+    }
+
+    public function locked(Device $device, string $uuid): TabletOrder
     {
         $row = Str::isUuid($uuid) ? TabletOrder::query()->where('uuid', $uuid)
             ->where('company_id', (int) $device->company_id)->where('branch_id', (int) $device->branch_id)
@@ -386,7 +446,7 @@ final class TabletOrderStaffAction
         return $row;
     }
 
-    private function assertOpen(TabletOrder $row): void
+    public function assertOpen(TabletOrder $row): void
     {
         $order = Order::query()->whereKey($row->order_id)->first();
         $round = $row->round_id === null ? null : QrOrderRound::query()->whereKey($row->round_id)->first();
@@ -412,7 +472,7 @@ final class TabletOrderStaffAction
      * Take (or keep) the row for this staff member. Another member's take is
      * refused unless $takeOver (audited with the previous holder).
      */
-    private function claim(TabletOrder $row, Device $device, int $staffId, bool $takeOver): string
+    public function claim(TabletOrder $row, Device $device, int $staffId, bool $takeOver): string
     {
         if ($row->taken_by_staff_id !== null && (int) $row->taken_by_staff_id === $staffId) {
             return 'already_yours';
@@ -434,7 +494,7 @@ final class TabletOrderStaffAction
     }
 
     /** @return array<string, mixed> */
-    private function present(TabletOrder $row): array
+    public function present(TabletOrder $row): array
     {
         return app(TabletOrderPresenter::class)->forStaff(collect([$row]))[0];
     }

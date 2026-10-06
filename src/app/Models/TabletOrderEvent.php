@@ -15,7 +15,9 @@ final class TabletOrderEvent extends Model
 
     protected $guarded = [];
 
-    public const TYPES = ['submitted', 'taken', 'taken_over', 'sent_to_kitchen', 'redeem_approved', 'redeem_rejected'];
+    public const TYPES = ['submitted', 'taken', 'taken_over', 'sent_to_kitchen', 'redeem_approved', 'redeem_rejected',
+        // Fix order 1 (F-2, F-6, F-8).
+        'redeem_superseded', 'round_rejected', 'edited'];
 
     /** @return array<string, string> */
     protected function casts(): array

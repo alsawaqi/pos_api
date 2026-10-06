@@ -13,6 +13,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Models\TabletOrder;
 use Closure;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Arr;
@@ -27,9 +28,18 @@ final class ReadTableDetailAction
         private readonly QrChargeRecoveryGuard $recovery,
     ) {}
 
+    /**
+     * LAUNCH-P6 fix order 1 (F-6) — a `tablet-orders` build sees a customer
+     * tablet's round as `entered_by: "tablet"` with its tablet order; an old
+     * build keeps today's shape (it cannot act on such a round).
+     */
+    private bool $tabletRows = false;
+
     /** @return array<string, mixed> */
-    public function handle(Device $device, int $tableId): array
+    public function handle(Device $device, int $tableId, bool $tabletRows = false): array
     {
+        $this->tabletRows = $tabletRows;
+
         return $this->inspect($device, $tableId, static fn (Device $current, array $detail): array => $detail);
     }
 
@@ -208,7 +218,7 @@ final class ReadTableDetailAction
     {
         return [
             'id' => (int) $round->id, 'round_no' => (int) $round->round_no, 'status' => (string) $round->status,
-            'entered_by' => $round->qr_session_id === null ? 'staff' : 'customer',
+            'entered_by' => $this->tabletRows && $this->tabletUuid($round) !== null ? 'tablet' : ($round->qr_session_id === null ? 'staff' : 'customer'),
             'client_request_id' => $round->qr_session_id === null ? $round->client_request_id : null,
             'needs_review' => (bool) $round->needs_review,
             'priced_lines' => array_map(static function (array $line): array {
@@ -238,6 +248,13 @@ final class ReadTableDetailAction
             'submitted_at' => $round->submitted_at?->toIso8601String(),
             'resolved_at' => $round->resolved_at?->toIso8601String(),
             'kitchen_printed_at' => $round->getRawOriginal('kitchen_printed_at'),
-        ];
+        ] + ($this->tabletRows ? ['tablet_order_uuid' => $this->tabletUuid($round)] : []);
+    }
+
+    private function tabletUuid(QrOrderRound $round): ?string
+    {
+        $uuid = TabletOrder::query()->where('round_id', $round->id)->value('uuid');
+
+        return $uuid === null ? null : (string) $uuid;
     }
 }

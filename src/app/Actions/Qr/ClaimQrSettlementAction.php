@@ -8,6 +8,8 @@ use App\Actions\Device\GeofenceGuard;
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Actions\Tables\StaffTableCheckoutAction;
+use App\Actions\Tablet\TabletOrderException;
+use App\Actions\Tablet\TabletOrderStaffAction;
 use App\Models\Branch;
 use App\Models\Device;
 use App\Models\Order;
@@ -16,6 +18,7 @@ use App\Models\QrSession;
 use App\Models\TableSession;
 use App\Models\TabletOrder;
 use App\Support\Money;
+use App\Support\Staff\StaffToken;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -55,7 +58,11 @@ final class ClaimQrSettlementAction
      * } $payload
      * @return array<string, mixed>
      */
-    public function handle(Device $device, array $payload): array
+    /**
+     * @param  array{staff_id: ?int, failure: ?string}|null  $staff  the caller's verified X-Staff-Token
+     *                                                               (RequireTabletStaff::verify); needed for a tablet order only
+     */
+    public function handle(Device $device, array $payload, ?array $staff = null): array
     {
         if (! $this->recovery->isAttendedDevice($device)) {
             throw new QrChargeException(
@@ -85,8 +92,12 @@ final class ClaimQrSettlementAction
             throw new QrChargeException('order_not_found', 404, 'The order was not found.');
         }
 
-        $result = DB::transaction(function () use ($device, $orderId, $orderUuid, $gps): array|QrChargeException {
+        $result = DB::transaction(function () use ($device, $orderId, $orderUuid, $gps, $staff): array|QrChargeException {
             $now = now();
+            // LAUNCH-P6 fix order 5 (F-19) — lock order: a customer tablet's
+            // row first, as on every tablet route (fix order 1 F-7).
+            $tablet = TabletOrder::query()->where('order_id', (int) $orderId)->where('company_id', (int) $device->company_id)
+                ->where('branch_id', (int) $device->branch_id)->lockForUpdate()->first();
             $order = Order::query()
                 ->whereKey((int) $orderId)
                 ->where('uuid', $orderUuid)
@@ -215,6 +226,9 @@ final class ClaimQrSettlementAction
                 );
             }
 
+            if ($tablet !== null && self::isTabletCounterOrder($order)) {
+                $this->admitTabletClaim($tablet, $device, $staff);
+            }
             $this->enforceClaimGeofence($device, $gps);
             $claimSeconds = max(1, (int) config('qr.settlement_claim_seconds', 300));
             $wasOpen = $order->status === Order::STATUS_OPEN;
@@ -276,6 +290,31 @@ final class ClaimQrSettlementAction
             // order (its tablet row) is claimed the same way before staff take
             // the cash, so nobody edits it while it is being paid.
             || self::isTabletCounterOrder($order);
+    }
+
+    /**
+     * LAUNCH-P6 fix order 5 — a NEW claim on a customer tablet's Quick / To go
+     * order (a same-holder replay and the recovery paths never come here):
+     *  - F-18: refused while its points request is unanswered, 409
+     *    redeem_pending — paying the full total would lose the points;
+     *  - F-19: the taker rule, for the staff member of the X-Staff-Token
+     *    (403 staff_unverified without a valid one): an untaken order is taken
+     *    by the claimer, another member's take is 409 tablet_order_taken with
+     *    taken_by (take it over on the tablet-orders screen first).
+     * The tablet row is already locked (first).
+     *
+     * @param  array{staff_id: ?int, failure: ?string}|null  $staff
+     */
+    private function admitTabletClaim(TabletOrder $tablet, Device $device, ?array $staff): void
+    {
+        if ($tablet->redeem_status === TabletOrder::REDEEM_REQUESTED) {
+            throw new QrChargeException('redeem_pending', 409, 'Answer the points request first.');
+        }
+        if ($staff === null || $staff['failure'] !== null || $staff['staff_id'] === null) {
+            throw new TabletOrderException('staff_unverified', 403, 'Log in again to do this.',
+                ['reason' => $staff['failure'] ?? StaffToken::MISSING]);
+        }
+        app(TabletOrderStaffAction::class)->claim($tablet, $device, (int) $staff['staff_id'], false);
     }
 
     /** A Quick / To go order the customer tablet wrote (never by `source`). */

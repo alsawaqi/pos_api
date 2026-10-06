@@ -12,9 +12,11 @@ use App\Actions\Device\Sync\ApplyLoyaltyEarnAction;
 use App\Actions\Device\Sync\ApplyLoyaltyRedeemAction;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Device\Sync\RecordSaleCommissionAction;
+use App\Actions\Device\Sync\SyncRefusal;
 use App\Actions\Device\Sync\TenantReferenceGuard;
 use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\CloseTableSessionForOrderAction;
+use App\Actions\Qr\PresentQrPendingOrderAction;
 use App\Actions\Qr\PublicTableLoyalty;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Actions\Tables\TableLoyaltyDiscount;
@@ -197,6 +199,15 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             }
             if ($order->status === Order::STATUS_AWAITING_PAYMENT && ! $claimIsLive && ! $tabletLateHolderPay) {
                 throw new RuntimeException('awaiting-payment order has no live charge claim: '.$orderUuid);
+            }
+            // LAUNCH-P6 fix order 5 (F-18) — a new pay of a tablet order whose
+            // points request is unanswered is refused (paying the full total
+            // would lose the points). Cash already taken under a claim (its
+            // charge facts exist: a live claim, the holder's late pay, an
+            // attended recovery) and the manager payment review are never refused.
+            if ($isTablet && ! isset($payload['payment_review_request_id'])
+                && $this->hasNoChargeFacts($order) && TabletOrder::hasOpenRedeemRequest((int) $order->id)) {
+                throw new SyncRefusal('redeem_pending', 'Answer the points request first.');
             }
 
             if ($device->isPaymentStation() && count($payments) !== 1) {
@@ -828,6 +839,17 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
      *
      * @param  array<string, mixed>  $payload
      */
+    private function hasNoChargeFacts(Order $order): bool
+    {
+        foreach (PresentQrPendingOrderAction::CHARGE_FIELDS as $field) {
+            if ($order->getRawOriginal($field) !== null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private function enforceGeofence(Device $device, array $payload, SyncEvent $event): void
     {
         $branch = Branch::find($device->branch_id);

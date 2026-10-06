@@ -67,6 +67,20 @@ final class TabletOrder extends Model
     }
 
     /**
+     * LAUNCH-P6 fix order 5 (F-18) — whether a tablet order on this order
+     * still waits for staff to answer its points request (a dine-in round
+     * staff rejected no longer counts: its request can never be answered).
+     */
+    public static function hasOpenRedeemRequest(int $orderId): bool
+    {
+        return self::query()->where('order_id', $orderId)->where('redeem_status', self::REDEEM_REQUESTED)
+            ->where(fn ($round) => $round->whereNull('round_id')->orWhereNotExists(fn ($rejected) => $rejected->selectRaw('1')
+                ->from('pos_qr_order_rounds as redeem_round')->whereColumn('redeem_round.id', 'pos_tablet_orders.round_id')
+                ->where('redeem_round.status', QrOrderRound::STATUS_REJECTED)))
+            ->exists();
+    }
+
+    /**
      * "Quick order" and "To go" show the number part of the order's temporary
      * reference, large (tester call 6): T-1006-027 → "27". Dine in has none.
      */

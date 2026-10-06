@@ -6,6 +6,8 @@ namespace App\Http\Controllers\Api\V1\Device;
 
 use App\Actions\Qr\ClaimQrSettlementAction;
 use App\Actions\Qr\QrChargeException;
+use App\Actions\Tablet\TabletOrderException;
+use App\Http\Middleware\RequireTabletStaff;
 use App\Http\Requests\Api\V1\Device\ClaimQrSettlementRequest;
 use App\Models\Device;
 use App\Support\QrApiResponse;
@@ -25,7 +27,9 @@ final class DeviceQrClaimSettlementController
         $device = $request->user();
 
         try {
-            $result = $this->claim->handle($device, $request->validated());
+            // LAUNCH-P6 fix order 5 (F-19) — the caller's X-Staff-Token; only a
+            // customer tablet's order needs it (the taker rule), QR is unchanged.
+            $result = $this->claim->handle($device, $request->validated(), RequireTabletStaff::verify($request));
         } catch (PDOException $exception) {
             report($exception);
 
@@ -36,6 +40,8 @@ final class DeviceQrClaimSettlementController
                 $exception->getMessage(),
                 $exception->httpStatus,
             );
+        } catch (TabletOrderException $exception) {
+            return $exception->response();
         }
 
         return QrApiResponse::success($result, ['money_unit' => 'baisas']);

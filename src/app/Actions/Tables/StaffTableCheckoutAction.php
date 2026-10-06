@@ -15,6 +15,7 @@ use App\Models\Order;
 use App\Models\QrOrderRound;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
+use App\Models\TabletOrder;
 use App\Support\Money;
 use Closure;
 use Illuminate\Support\Facades\DB;
@@ -93,6 +94,12 @@ final class StaffTableCheckoutAction
             }
             if (! $this->present->hasNoChargeProvenance($order)) {
                 throw new QrChargeException('qr_charge_recovery_required', 409, 'The bill has retained charge evidence.');
+            }
+            // LAUNCH-P6 fix order 5 (F-18) — a customer tablet round on this bill
+            // still waits for its points answer (read only: the tablet rows are
+            // never locked after the table graph).
+            if (TabletOrder::hasOpenRedeemRequest((int) $order->id)) {
+                throw new QrChargeException('redeem_pending', 409, 'Answer the points request first.');
             }
             // Another device cannot exclude an offline tender on the creator's
             // legacy copy. Exact recovery proves that copy is fenced/retired.

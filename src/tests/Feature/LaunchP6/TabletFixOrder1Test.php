@@ -99,7 +99,8 @@ final class TabletFixOrder1Test extends TestCase
         $this->assertSame([7000, 0, 1], [$z['expected_cash_baisas'], $z['variance_baisas'], $z['summary']['order_count']]);
     }
 
-    public function test_f1_a_paying_device_with_its_own_shift_keeps_the_cash_so_nothing_counts_twice(): void
+    /** Fix order 2 (F-9): the payer's own shared shift first, so the cash follows staff 7 to T, never twice. */
+    public function test_f1_a_payer_with_a_shared_shift_elsewhere_keeps_the_cash_so_nothing_counts_twice(): void
     {
         $tillShift = $this->openShift('mdev_p6_till', 7);
         $handheldShift = $this->openShift('mdev_p6_handheld', 9);
@@ -108,11 +109,11 @@ final class TabletFixOrder1Test extends TestCase
         $qr = $this->qrQuickOrder();
         $this->p6PayCash($this->handheld, $qr->uuid, 3000, 7)->assertOk()->assertJsonPath('data.results.0.status', 'processed');
 
-        $till = $this->closeShift('mdev_p6_till', $tillShift, 7, 5000);
-        $handheld = $this->closeShift('mdev_p6_handheld', $handheldShift, 9, 10000);
+        $till = $this->closeShift('mdev_p6_till', $tillShift, 7, 10000);
+        $handheld = $this->closeShift('mdev_p6_handheld', $handheldShift, 9, 5000);
 
-        $this->assertSame([5000, 0, 0], [$till['expected_cash_baisas'], $till['variance_baisas'], $till['summary']['order_count']]);
-        $this->assertSame([10000, 0, 2], [$handheld['expected_cash_baisas'], $handheld['variance_baisas'], $handheld['summary']['order_count']]);
+        $this->assertSame([10000, 0, 2], [$till['expected_cash_baisas'], $till['variance_baisas'], $till['summary']['order_count']]);
+        $this->assertSame([5000, 0, 0], [$handheld['expected_cash_baisas'], $handheld['variance_baisas'], $handheld['summary']['order_count']]);
     }
 
     // ---- F-2 — one points slot per bill; a cleared slot supersedes the approval ----

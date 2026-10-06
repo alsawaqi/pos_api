@@ -150,11 +150,15 @@ final class TabletRedeemTest extends TestCase
             $orderId = (int) DB::table('pos_orders')->insertGetId(['uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
                 'order_type' => 'quick', 'status' => 'held', 'source' => 'customer_tablet', 'subtotal' => 1, 'grand_total' => 1,
                 'opened_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+            // Fix order 2 (F-12) — each approval still holds its points slot.
+            $slot = (int) DB::table('pos_order_discounts')->insertGetId(['company_id' => 100, 'branch_id' => 10, 'order_id' => $orderId,
+                'name_snapshot' => 'Coffee points', 'amount_type_snapshot' => 'table_loyalty_redeem', 'amount' => '0.500',
+                'reason' => 'points × 100 — rule '.$this->rule, 'applied_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
             DB::table('pos_tablet_orders')->insert(['uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10,
                 'client_uuid' => (string) Str::uuid(), 'order_id' => $orderId, 'order_type' => 'quick', 'customer_id' => 900 + $i,
                 'subtotal_baisas' => 1000, 'tax_baisas' => 0, 'total_baisas' => 1000, 'redeem_status' => 'approved',
                 'redeem_rule_id' => $this->rule, 'redeem_blocks' => 1, 'redeem_resolved_by_staff_id' => 9, 'redeem_resolved_at' => now(),
-                'submitted_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+                'redeem_discount_row_id' => $slot, 'submitted_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
         }
         $fresh = $this->p6Customer('+96899000000', 'Fresh');
         $this->p6Account($fresh, $this->rule, 500);

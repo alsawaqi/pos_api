@@ -1145,18 +1145,14 @@ class CreateOrderHandler implements SyncEventHandler
      * reserved for rows written before this column existed, which
      * ConsumeInventoryAction still serves via the legacy live read.
      *
-     * @return list<array{product_id: int, qty: float}>
+     * LAUNCH packaging add-on — each line carries its "Used for" mask when
+     * it is not 15 ({@see RecipeCopy::productComponents()}).
+     *
+     * @return list<array<string, mixed>>
      */
     private function snapshotComponents(int $productId): array
     {
-        return DB::table('pos_product_components')
-            ->where('product_id', $productId)
-            ->get()
-            ->map(static fn ($c): array => [
-                'product_id' => (int) $c->component_product_id,
-                'qty' => (float) $c->quantity,
-            ])
-            ->all();
+        return RecipeCopy::productComponents($productId);
     }
 
     /**
@@ -1191,14 +1187,8 @@ class CreateOrderHandler implements SyncEventHandler
             // a side-fries product's box) now ride the freeze and leave
             // branch stock at pay. Frozen, unlike the parent line's live
             // component read — everything else in this snapshot already is.
-            'components' => DB::table('pos_product_components')
-                ->where('product_id', (int) $product->id)
-                ->get()
-                ->map(static fn ($c): array => [
-                    'product_id' => (int) $c->component_product_id,
-                    'qty' => (float) $c->quantity,
-                ])
-                ->all() ?: null,
+            // LAUNCH packaging add-on — with their "Used for" masks.
+            'components' => RecipeCopy::productComponents((int) $product->id) ?: null,
         ];
     }
 }

@@ -108,6 +108,9 @@ class Order extends Model
             'delivery_variance' => 'decimal:3',
             'delivery_punched_at' => 'datetime',
             'delivery_confirmed_at' => 'datetime',
+            // LAUNCH packaging add-on — the per-order packaging taken with the
+            // stock (stamped once with stock_order_type; read back on void).
+            'packaging_snapshot_json' => 'array',
         ];
     }
 

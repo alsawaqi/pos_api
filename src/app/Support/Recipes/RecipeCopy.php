@@ -147,12 +147,62 @@ final class RecipeCopy
             return null;
         }
 
-        return array_map(static fn (array $line): array => [
+        // LAUNCH packaging add-on — each top-level line's "Used for" mask is
+        // its merge group, so a To-go-only line never merges into an
+        // all-types line of the same raw ingredient, and a prep item's
+        // exploded raw lines inherit the mask of the line that uses it. The
+        // mask is copied only when it is not 15 (untagged copies unchanged).
+        $lines = array_map(static fn (array $line): array => $line + ['group' => self::maskGroup('', $line[OrderTypes::KEY] ?? null)], $lines);
+
+        return array_map(static fn (array $line): array => OrderTypes::tag([
             'ingredient_id' => $line['ingredient_id'],
             'qty' => (float) $line['quantity'],
             'unit' => $line['unit'],
             'unit_cost' => (float) $line['unit_cost'],
-        ], $this->exploder->explode($lines, 1, PrepExploder::PER_UNIT_SCALE));
+        ], self::groupMask($line['group'])), $this->exploder->explode($lines, 1, PrepExploder::PER_UNIT_SCALE));
+    }
+
+    /**
+     * LAUNCH packaging add-on — a physical-item copy ({product_id, qty} per
+     * ONE unit, + order_types when not 15) of a product's components: the
+     * line's component_snapshot_json and a product-as-add-on's `components`.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function productComponents(int $productId): array
+    {
+        return DB::table('pos_product_components')
+            ->where('product_id', $productId)
+            ->get()
+            ->map(static fn (object $c): array => OrderTypes::tag([
+                'product_id' => (int) $c->component_product_id,
+                'qty' => (float) $c->quantity,
+            ], $c->order_types ?? null))
+            ->all();
+    }
+
+    /** The exploder merge group of a line: $base, plus the mask when it is not 15. */
+    private static function maskGroup(string $base, mixed $mask): string
+    {
+        $mask = OrderTypes::normalize($mask);
+
+        return $mask === OrderTypes::ALL ? $base : $base.'#'.$mask;
+    }
+
+    /** The mask a merge group carries (15 when none). */
+    private static function groupMask(string $group): int
+    {
+        $at = strrpos($group, '#');
+
+        return $at === false ? OrderTypes::ALL : OrderTypes::normalize(substr($group, $at + 1));
+    }
+
+    /** The base of a merge group (the direction of an add-on line). */
+    private static function groupBase(string $group): string
+    {
+        $at = strrpos($group, '#');
+
+        return $at === false ? $group : substr($group, 0, $at);
     }
 
     /**
@@ -190,6 +240,9 @@ final class RecipeCopy
         }
 
         $ingredientId = (int) $addOn->ingredient_id;
+        // LAUNCH packaging add-on — the legacy trio's "Used for" mask
+        // (pos_addons.order_types) rides the copy when it is not 15.
+        $mask = $addOn->getAttribute(OrderTypes::KEY);
         if ($this->exploder->isPrep($ingredientId)) {
             $lines = $this->consumptionLines([(object) [
                 'ingredient_id' => $ingredientId,
@@ -197,18 +250,19 @@ final class RecipeCopy
                 'direction' => 'add',
                 'quantity' => $addOn->ingredient_qty,
                 'unit' => null,
+                'order_types' => $mask,
             ]]);
 
             return ['ingredient_snapshot_json' => null, 'consumption_snapshot_json' => $lines === [] ? null : $lines];
         }
 
         return [
-            'ingredient_snapshot_json' => [
+            'ingredient_snapshot_json' => OrderTypes::tag([
                 'ingredient_id' => $ingredientId,
                 'qty' => (float) $addOn->ingredient_qty,
                 'unit' => $addOn->ingredient_unit,
                 'unit_cost' => (float) StockDecimal::exact($this->exploder->ingredient($ingredientId)?->default_unit_cost ?? 0),
-            ],
+            ], $mask),
             'consumption_snapshot_json' => null,
         ];
     }
@@ -220,10 +274,16 @@ final class RecipeCopy
      * option's own line order. An option without prep lines copies exactly
      * as before.
      *
+     * LAUNCH packaging add-on — with $byOrderType (every order copy) a line's
+     * "Used for" mask joins its merge group and is copied when it is not 15,
+     * so lines of one ingredient with different ticks stay apart. The device
+     * config passes false: its lines merge per (ingredient, direction)
+     * exactly as before and carry no new key (devices read no masks).
+     *
      * @param  iterable<object>  $rows  pos_addon_consumptions rows, in display order
      * @return list<array<string, mixed>>
      */
-    public function consumptionLines(iterable $rows): array
+    public function consumptionLines(iterable $rows, bool $byOrderType = true): array
     {
         $rows = is_array($rows) ? array_values($rows) : iterator_to_array($rows, false);
 
@@ -236,7 +296,9 @@ final class RecipeCopy
                     'ingredient_id' => (int) $row->ingredient_id,
                     'quantity' => $row->quantity,
                     'unit' => $row->unit,
-                    'group' => (string) $row->direction,
+                    'group' => $byOrderType
+                        ? self::maskGroup((string) $row->direction, $row->order_types ?? null)
+                        : (string) $row->direction,
                 ];
             }
         }
@@ -249,25 +311,28 @@ final class RecipeCopy
         $out = [];
         foreach ($rows as $index => $row) {
             if ($row->ingredient_id === null) {
-                $out[] = [
+                $line = [
                     'type' => 'product',
                     'product_id' => (int) $row->component_product_id,
                     'direction' => (string) $row->direction,
                     'qty' => (float) $row->quantity,
                 ];
+                $out[] = $byOrderType ? OrderTypes::tag($line, $row->order_types ?? null) : $line;
 
                 continue;
             }
 
             foreach ($partsByLine[$ingredientIndexByRow[$index]] ?? [] as $part) {
-                $out[] = [
+                // The direction is the group's base (the group adds the mask).
+                $line = [
                     'type' => 'ingredient',
                     'ingredient_id' => $part['ingredient_id'],
-                    'direction' => $part['group'],
+                    'direction' => self::groupBase($part['group']),
                     'qty' => (float) $part['quantity'],
                     'unit' => $part['unit'],
                     'unit_cost' => (float) $part['unit_cost'],
                 ];
+                $out[] = $byOrderType ? OrderTypes::tag($line, self::groupMask($part['group'])) : $line;
             }
         }
 

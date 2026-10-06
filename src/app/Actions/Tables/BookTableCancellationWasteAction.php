@@ -20,7 +20,12 @@ final class BookTableCancellationWasteAction
 {
     public function __construct(private readonly ConsumeInventoryAction $inventory) {}
 
-    public function plan(array $cancelledItems, bool $prepared): array
+    /**
+     * LAUNCH packaging add-on — $orderType: the order's current type (an
+     * unpaid table bill is dine in, a QR quick order quick); only the lines
+     * used for it are wasted. null = every line (the pre-release rule).
+     */
+    public function plan(array $cancelledItems, bool $prepared, ?string $orderType = null): array
     {
         $rows = [];
         foreach ($prepared ? $cancelledItems : [] as [$item, $qty]) {
@@ -31,7 +36,7 @@ final class BookTableCancellationWasteAction
                 && Product::withTrashed()->whereKey($item->product_id)->value('stock_mode') !== 'ingredient') {
                 continue;
             }
-            foreach ($this->inventory->frozenIngredients($item) as $part) {
+            foreach ($this->inventory->frozenIngredients($item, $orderType) as $part) {
                 $amount = round($part['qty'] * $qty, StockDecimal::QUANTITY_SCALE);
                 if ($amount <= 0) {
                     continue;

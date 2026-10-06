@@ -6,9 +6,9 @@ namespace App\Actions\Qr;
 
 use App\Models\AddOn;
 use App\Models\Product;
+use App\Support\Recipes\OrderTypes;
 use App\Support\Recipes\RecipeCopy;
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Freezes the inventory facts a QR order needs at later pay/void time.
@@ -71,25 +71,20 @@ final class OrderLineSnapshotter
     {
         $lines = $copy->productRecipe($product, $removedIngredientIds);
 
-        return $lines === null ? null : array_map(static fn (array $line): array => [
+        // LAUNCH packaging add-on — the line's "Used for" mask is kept (it is
+        // present only when not 15), so pay filters QR and round copies too.
+        return $lines === null ? null : array_map(static fn (array $line): array => OrderTypes::tag([
             'ingredient_id' => $line['ingredient_id'],
             'qty' => $line['qty'],
             'unit' => (string) $line['unit'],
             'unit_cost' => $line['unit_cost'],
-        ], $lines);
+        ], $line[OrderTypes::KEY] ?? null), $lines);
     }
 
-    /** @return list<array{product_id: int, qty: float}> */
+    /** @return list<array<string, mixed>> {product_id, qty, order_types?} */
     private function components(int $productId): array
     {
-        return DB::table('pos_product_components')
-            ->where('product_id', $productId)
-            ->get()
-            ->map(static fn ($row): array => [
-                'product_id' => (int) $row->component_product_id,
-                'qty' => (float) $row->quantity,
-            ])
-            ->all();
+        return RecipeCopy::productComponents($productId);
     }
 
     /** @return array<string, mixed>|null */

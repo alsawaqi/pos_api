@@ -209,7 +209,7 @@ final class CancelStaffLineAction
                 'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => []];
         }
         $this->totals->handle($order);
-        $waste = $this->waste->plan($cancelledItems, (bool) $payload['prepared']);
+        $waste = $this->waste->plan($cancelledItems, (bool) $payload['prepared'], (string) $order->order_type);
         $afterPersist = $this->waste->book($order, $primary, $payload, $waste);
         $values = ['waste' => $waste, 'cancelled_qty' => $cancelled, 'unlinked_line_count' => $unlinked,
             'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => $changes];

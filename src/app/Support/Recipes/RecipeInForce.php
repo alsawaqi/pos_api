@@ -43,14 +43,20 @@ use Illuminate\Support\Facades\DB;
  * The floor never moves a moment that is already later.
  *
  * Lines come back as {ingredient_id, quantity (base unit, decimal string),
- * unit (the base unit set with the line, or null)}, in recipe order.
+ * unit (the base unit set with the line, or null), order_types}, in recipe
+ * order.
+ *
+ * LAUNCH packaging add-on — order_types is the line's "Used for" mask
+ * (pos_product_recipes.order_types; in a version's recipe_json the optional
+ * per-line `order_types`, absent = 15 = all four), so an offline sale synced
+ * after a tick change keeps the ticks in force when it was sold.
  */
 final class RecipeInForce
 {
     /** A first "[]" version this close to the product's creation is the creation save itself. */
     public const CREATION_SNAPSHOT_SECONDS = 60;
 
-    /** @var array<int, list<array{ingredient_id: int, quantity: string, unit: string|null}>> */
+    /** @var array<int, list<array{ingredient_id: int, quantity: string, unit: string|null, order_types: int}>> */
     private array $memo = [];
 
     private readonly ?string $at;
@@ -96,7 +102,7 @@ final class RecipeInForce
     }
 
     /**
-     * @return list<array{ingredient_id: int, quantity: string, unit: string|null}>
+     * @return list<array{ingredient_id: int, quantity: string, unit: string|null, order_types: int}>
      */
     public function lines(int $productId): array
     {
@@ -104,7 +110,7 @@ final class RecipeInForce
     }
 
     /**
-     * @return list<array{ingredient_id: int, quantity: string, unit: string|null}>
+     * @return list<array{ingredient_id: int, quantity: string, unit: string|null, order_types: int}>
      */
     private function resolve(int $productId): array
     {
@@ -140,6 +146,7 @@ final class RecipeInForce
                 'ingredient_id' => (int) $row->ingredient_id,
                 'quantity' => StockDecimal::exact($row->quantity),
                 'unit' => $row->unit_at_set !== null && $row->unit_at_set !== '' ? (string) $row->unit_at_set : null,
+                'order_types' => OrderTypes::normalize($row->order_types ?? null),
             ])
             ->values()
             ->all();
@@ -216,7 +223,7 @@ final class RecipeInForce
      * A version's recipe_json ([{ingredient_id, quantity, unit, ...}], in the
      * base unit; "[]" = there was no recipe). null = unreadable.
      *
-     * @return list<array{ingredient_id: int, quantity: string, unit: string|null}>|null
+     * @return list<array{ingredient_id: int, quantity: string, unit: string|null, order_types: int}>|null
      */
     private function decode(mixed $json): ?array
     {
@@ -237,6 +244,8 @@ final class RecipeInForce
                 'ingredient_id' => (int) $entry['ingredient_id'],
                 'quantity' => StockDecimal::exact($entry['quantity']),
                 'unit' => is_string($unit) && $unit !== '' ? $unit : null,
+                // LAUNCH packaging add-on — absent or invalid = all four types.
+                'order_types' => OrderTypes::normalize($entry['order_types'] ?? null),
             ];
         }
 

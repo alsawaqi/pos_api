@@ -1,0 +1,79 @@
+{
+  "about": "LAUNCH packaging add-on — the SAME fixture in pos_api (tests/Fixtures) and pos_admin (tests/Fixtures): what a void restores for a stamped order with tagged copies and frozen packaging, and for an order stocked before the release (no stamp, legacy live components). pos_api's ConsumeInventoryAction::reverse() and pos_admin's reversal copy must both restore exactly expected_restore. Masks: 1 dine in, 2 quick, 4 to go, 8 delivery; absent = all.",
+  "ingredients": {
+    "milk": {"unit": "ml", "cost": "0.000400"},
+    "sugar": {"unit": "g", "cost": "0.001000"},
+    "napkin": {"unit": "piece", "cost": "0.005000"}
+  },
+  "products": {
+    "latte": {"stock_mode": "ingredient"},
+    "cup": {"stock_mode": "unit"},
+    "lid": {"stock_mode": "unit"},
+    "large_cup": {"stock_mode": "unit"},
+    "napkin_item": {"stock_mode": "unit"},
+    "bag": {"stock_mode": "unit"}
+  },
+  "live_components": {
+    "latte": [
+      {"product": "cup", "qty": 1, "order_types": 14},
+      {"product": "lid", "qty": 1, "order_types": 14}
+    ]
+  },
+  "cases": {
+    "stamped_to_go": {
+      "order": {
+        "order_type": "to_go",
+        "stock_order_type": "to_go",
+        "packaging": {"order_type": "to_go", "lines": [
+          {"type": "ingredient", "ingredient": "napkin", "qty": 3, "unit": "piece", "unit_cost": 0.005},
+          {"type": "product", "product": "bag", "qty": 1}
+        ]}
+      },
+      "items": [
+        {
+          "product": "latte",
+          "qty": 2,
+          "recipe": [
+            {"ingredient": "milk", "qty": 200, "unit": "ml", "unit_cost": 0.0004},
+            {"ingredient": "sugar", "qty": 5, "unit": "g", "unit_cost": 0.001, "order_types": 1},
+            {"ingredient": "sugar", "qty": 10, "unit": "g", "unit_cost": 0.001, "order_types": 14}
+          ],
+          "components": [
+            {"product": "cup", "qty": 1, "order_types": 14},
+            {"product": "lid", "qty": 1, "order_types": 14},
+            {"product": "napkin_item", "qty": 1, "order_types": 1}
+          ],
+          "addons": [
+            {"consumption": [
+              {"type": "product", "product": "cup", "direction": "remove", "qty": 1, "order_types": 14},
+              {"type": "product", "product": "large_cup", "direction": "add", "qty": 1, "order_types": 14},
+              {"type": "ingredient", "ingredient": "milk", "direction": "add", "qty": 100, "unit": "ml", "unit_cost": 0.0004},
+              {"type": "ingredient", "ingredient": "milk", "direction": "remove", "qty": 50, "unit": "ml", "unit_cost": 0.0004, "order_types": 1}
+            ]},
+            {"trio": {"ingredient": "sugar", "qty": 2, "unit": "g", "unit_cost": 0.001, "order_types": 1}}
+          ]
+        }
+      ],
+      "expected_restore": {
+        "ingredients": {"milk": 600, "sugar": 20, "napkin": 3},
+        "products": {"cup": 0, "lid": 2, "large_cup": 2, "napkin_item": 0, "bag": 1}
+      }
+    },
+    "stocked_before_release": {
+      "order": {"order_type": "dine_in", "stock_order_type": null, "packaging": null},
+      "items": [
+        {
+          "product": "latte",
+          "qty": 1,
+          "recipe": [{"ingredient": "milk", "qty": 200, "unit": "ml", "unit_cost": 0.0004}],
+          "components": null,
+          "addons": []
+        }
+      ],
+      "expected_restore": {
+        "ingredients": {"milk": 200, "sugar": 0, "napkin": 0},
+        "products": {"cup": 1, "lid": 1, "large_cup": 0, "napkin_item": 0, "bag": 0}
+      }
+    }
+  }
+}

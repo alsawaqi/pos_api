@@ -1341,6 +1341,8 @@ class BuildDeviceConfigAction
             // qty in the ingredient's BASE unit). The device gates option
             // availability on the 'add' lines it can see. LAUNCH-P3: prep
             // ingredient lines are exploded into raw ones (same shape).
+            // LAUNCH packaging add-on — no "Used for" masks: devices never
+            // take stock from these lines, so they merge exactly as before.
             'consumption' => $consumptionLines === null ? [] : array_map(static fn (array $c): array => [
                 'type' => $c['type'],
                 'ingredient_id' => $c['type'] === 'ingredient' ? $c['ingredient_id'] : null,
@@ -1348,7 +1350,7 @@ class BuildDeviceConfigAction
                 'direction' => $c['direction'],
                 'qty' => $c['qty'],
                 'unit' => $c['type'] === 'ingredient' ? $c['unit'] : null,
-            ], ($recipeCopy ?? new RecipeCopy((int) $a->company_id))->consumptionLines($consumptionLines)),
+            ], ($recipeCopy ?? new RecipeCopy((int) $a->company_id))->consumptionLines($consumptionLines, byOrderType: false)),
             'display_order' => (int) $a->display_order,
             'status' => $a->status,
         ];

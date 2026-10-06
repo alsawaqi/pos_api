@@ -38,6 +38,7 @@ use App\Support\Catalogue\CookingTime;
 use App\Support\Catalogue\SaleDates;
 use App\Support\OrderNumbering;
 use App\Support\Pricing\CompanyTaxPolicy;
+use App\Support\Recipes\OrderTypes;
 use App\Support\Recipes\RecipeCopy;
 use App\Support\Staff\PositionPermissions;
 use App\Support\Staff\ShiftEndReminder;
@@ -194,8 +195,11 @@ class BuildDeviceConfigAction
         $recipeCopy = new RecipeCopy($companyId);
         $exploder = $recipeCopy->exploder();
         $exploder->preload($recipeRowsByProduct->flatten(1)->pluck('ingredient_id')->all());
+        // Fix order PK-A1 (M1) — the device uses a recipe only for kitchen
+        // production: one line per ingredient, never the sum of an item's
+        // lines with disjoint ticks (unchanged while every line is 15).
         $recipesByProduct = $recipeRowsByProduct->map(fn (Collection $rows): array => $exploder->explode(
-            $rows->map(static fn (object $row): array => [
+            collect(OrderTypes::widestLinePerItem($rows))->map(static fn (object $row): array => [
                 'ingredient_id' => (int) $row->ingredient_id,
                 'quantity' => $row->quantity,
                 'unit' => $row->unit_at_set,

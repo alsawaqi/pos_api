@@ -14,6 +14,7 @@ use App\Models\ProductStockMovement;
 use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSessionEvent;
+use App\Support\Recipes\OrderTypes;
 use App\Support\Recipes\PrepExploder;
 use App\Support\Recipes\RecipeInForce;
 use App\Support\StockDecimal;
@@ -307,7 +308,8 @@ class ProductWasteHandler implements SyncEventHandler
 
         // LAUNCH-P2 — a frozen per-piece (production) cost keeps 6 decimals.
         return (string) StockDecimal::unitCost(
-            (new PrepExploder((int) $product->company_id))->cost((new RecipeInForce)->lines((int) $product->id)),
+            // Fix order PK-A1 (M1) — a piece's recipe: one line per ingredient.
+            (new PrepExploder((int) $product->company_id))->cost(OrderTypes::widestLinePerItem((new RecipeInForce)->lines((int) $product->id))),
         );
     }
 }

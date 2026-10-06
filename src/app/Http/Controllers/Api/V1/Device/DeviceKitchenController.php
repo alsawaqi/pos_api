@@ -10,6 +10,7 @@ use App\Models\Product;
 use App\Models\Production;
 use App\Models\ProductionLine;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Recipes\OrderTypes;
 use App\Support\Recipes\PrepExploder;
 use App\Support\StockDecimal;
 use Brick\Math\BigRational;
@@ -76,7 +77,9 @@ class DeviceKitchenController
             ->whereIn('product_id', $products->pluck('id')->all() ?: [0])
             ->orderBy('sort_order')
             ->get()
-            ->groupBy('product_id');
+            ->groupBy('product_id')
+            // Fix order PK-A1 (M1) — the batch's lines: one per ingredient.
+            ->map(static fn ($rows) => collect(OrderTypes::widestLinePerItem($rows)));
 
         $ingredients = Ingredient::query()
             ->where('company_id', $companyId)

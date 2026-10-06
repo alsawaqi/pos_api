@@ -13,6 +13,7 @@ use App\Models\Production;
 use App\Models\ProductionLine;
 use App\Models\StockMovement;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Recipes\OrderTypes;
 use App\Support\Recipes\PrepExploder;
 use App\Support\StockDecimal;
 use Illuminate\Support\Facades\DB;
@@ -86,10 +87,13 @@ final readonly class StartProductionAction
             }
         }
 
-        $recipeRows = DB::table('pos_product_recipes')
+        // Fix order PK-A1 (M1) — a batch is made before any order type
+        // exists: one line per ingredient, never the SUM of an item's lines
+        // with disjoint "Used for" ticks ({@see OrderTypes::widestLinePerItem()}).
+        $recipeRows = collect(OrderTypes::widestLinePerItem(DB::table('pos_product_recipes')
             ->where('product_id', $productId)
             ->orderBy('sort_order')
-            ->get();
+            ->get()));
 
         // Std lines: recipe x quantity, locked. Extra lines: merged per
         // ingredient (the dialog may add the same one twice).

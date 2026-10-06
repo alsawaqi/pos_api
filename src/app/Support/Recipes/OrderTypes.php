@@ -81,6 +81,40 @@ final class OrderTypes
     }
 
     /**
+     * Fix order PK-A1 (M1) — ONE recipe line per item for kitchen production.
+     *
+     * A cooked product's recipe is made in batches, before any order type
+     * exists, so its "Used for" ticks mean nothing there — and an item on
+     * two lines with disjoint ticks (sugar 5 g dine in, 10 g to go) must
+     * never be SUMMED into a batch (15 g, an amount no order uses). Rule:
+     * per item keep the line ticked for the WIDEST set of order types (most
+     * bits); on a tie the line that includes dine in; then the first line in
+     * recipe order. Lines that are the only one of their item (every line
+     * today: the old unique) pass unchanged, in their original order.
+     *
+     * @template T of array|object
+     *
+     * @param  iterable<T>  $lines  rows or arrays carrying $itemKey and order_types
+     * @return list<T>
+     */
+    public static function widestLinePerItem(iterable $lines, string $itemKey = 'ingredient_id'): array
+    {
+        $lines = is_array($lines) ? array_values($lines) : iterator_to_array($lines, false);
+        $keep = [];
+        foreach ($lines as $index => $line) {
+            $item = (int) data_get($line, $itemKey);
+            $mask = self::normalize(data_get($line, self::KEY));
+            $rank = [substr_count(decbin($mask), '1'), $mask & self::DINE_IN];
+            if (! isset($keep[$item]) || $rank > $keep[$item]['rank']) {
+                $keep[$item] = ['index' => $index, 'rank' => $rank];
+            }
+        }
+        $indexes = array_flip(array_column($keep, 'index'));
+
+        return array_values(array_filter($lines, static fn (int $index): bool => isset($indexes[$index]), ARRAY_FILTER_USE_KEY));
+    }
+
+    /**
      * The copy of a line with its mask: the key is added only when the mask
      * is not 15 (omit-when-15 keeps untagged copies byte-identical).
      *

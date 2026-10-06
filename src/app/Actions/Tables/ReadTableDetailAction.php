@@ -167,6 +167,15 @@ final class ReadTableDetailAction
             if ($order !== null && StaffTableCheckoutAction::shape($order) && $primary !== null) {
                 $bill['checkout_policy'] = StaffTableCheckoutAction::POLICY;
             }
+            // LAUNCH-P6 fix order 6 (F-20) — for a `tablet-orders` build, the
+            // bill's round counts as on the board: a customer tablet's
+            // accepted / pending rounds are customer rounds (`tablet_rounds`).
+            if ($bill !== null && $this->tabletRows) {
+                $billRounds = $rounds->where('order_id', $order->id)->where('status', '!=', QrOrderRound::STATUS_REJECTED);
+                $customer = $billRounds->whereNotNull('qr_session_id')->count();
+                $bill += ListTableBoardAction::roundFields($customer, $billRounds->count() - $customer,
+                    (int) ListTableBoardAction::tabletRoundCounts($companyId, $branchId, [(int) $order->id])->get($order->id, 0));
+            }
 
             $detail = [
                 'table' => ['id' => (int) $table->id, 'label' => (string) $table->label,

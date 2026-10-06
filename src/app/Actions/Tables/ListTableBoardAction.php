@@ -15,6 +15,7 @@ use App\Models\TableSession;
 use App\Models\TabletOrder;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /** A pure projection: expired horizons do not themselves close a seating. */
@@ -121,6 +122,12 @@ final class ListTableBoardAction
             ->whereIn('order_id', $orders->modelKeys())
             ->where('status', '!=', QrOrderRound::STATUS_REJECTED)
             ->groupBy('order_id')->get()->keyBy('order_id');
+        // LAUNCH-P6 fix order 6 (F-20) — a customer tablet round has no QR
+        // session, so the counts above call it a staff round. For a
+        // `tablet-orders` build it is a customer round (the bill then goes to
+        // the server checkout, never a till's local cart): `tablet_rounds`
+        // counts the accepted and pending ones of this branch.
+        $tabletCounts = $tabletRows && $orders->isNotEmpty() ? self::tabletRoundCounts($companyId, $branchId, $orders->modelKeys()) : collect();
         $credentialStatuses = QrSession::query()
             ->where('company_id', $companyId)->where('branch_id', $branchId)
             ->whereIn('table_session_id', $seatings->whereNull('merged_into_id')->modelKeys())
@@ -128,7 +135,7 @@ final class ListTableBoardAction
             ->orderBy('id')->get(['table_session_id', 'status', 'origin', 'scan_geofence_verdict'])->keyBy('table_session_id');
 
         return $tables->map(function (Table $table) use (
-            $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims, $roundCounts, $credentialStatuses, $tabletRounds, $tabletRows,
+            $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims, $roundCounts, $credentialStatuses, $tabletRounds, $tabletRows, $tabletCounts,
         ): array {
             /** @var TableSession|null $seating */
             $seating = $seatingsByTable->get($table->id);
@@ -203,10 +210,43 @@ final class ListTableBoardAction
                     Order::STATUS_AWAITING_PAYMENT => $order->status === Order::STATUS_AWAITING_PAYMENT,
                     'charge_claim_live' => in_array($order->id, $liveClaims),
                     'source' => $order->source,
-                    'customer_rounds' => (int) ($roundCounts->get($order->id)?->customer_rounds ?? 0),
-                    'staff_rounds' => (int) ($roundCounts->get($order->id)?->staff_rounds ?? 0),
-                ],
+                ] + self::roundFields((int) ($roundCounts->get($order->id)?->customer_rounds ?? 0),
+                    (int) ($roundCounts->get($order->id)?->staff_rounds ?? 0), $tabletRows ? (int) $tabletCounts->get($order->id, 0) : null),
             ];
         })->all();
+    }
+
+    /**
+     * The bill's round counts. Fix order 6 (F-20) — for a `tablet-orders`
+     * build ($tablet not null) the tablet rounds move from the staff count to
+     * the customer count and are named in `tablet_rounds`; an old build keeps
+     * today's two fields unchanged.
+     *
+     * @return array<string, int>
+     */
+    public static function roundFields(int $customer, int $staff, ?int $tablet): array
+    {
+        if ($tablet === null) {
+            return ['customer_rounds' => $customer, 'staff_rounds' => $staff];
+        }
+
+        return ['customer_rounds' => $customer + $tablet, 'staff_rounds' => max(0, $staff - $tablet), 'tablet_rounds' => $tablet];
+    }
+
+    /**
+     * Accepted and pending rounds of these bills that a customer tablet of
+     * this branch wrote (their pos_tablet_orders row), per order id.
+     *
+     * @param  list<int>  $orderIds
+     * @return Collection<int, int>
+     */
+    public static function tabletRoundCounts(int $companyId, int $branchId, array $orderIds): Collection
+    {
+        return QrOrderRound::query()->selectRaw('order_id, COUNT(*) AS tablet_rounds')
+            ->whereIn('order_id', $orderIds)->whereNull('qr_session_id')
+            ->whereIn('status', [QrOrderRound::STATUS_ACCEPTED, QrOrderRound::STATUS_PENDING_CONFIRMATION])
+            ->whereIn('id', TabletOrder::query()->select('round_id')->where('company_id', $companyId)
+                ->where('branch_id', $branchId)->whereNotNull('round_id'))
+            ->groupBy('order_id')->pluck('tablet_rounds', 'order_id')->map(static fn ($count): int => (int) $count);
     }
 }

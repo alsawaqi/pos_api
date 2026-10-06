@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\ProductStockMovement;
 use App\Models\StockMovement;
 use App\Support\Recipes\OrderTypes;
+use App\Support\Recipes\PackagingSchema;
 use App\Support\StockDecimal;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -244,6 +245,12 @@ class ConsumeInventoryAction
      */
     private function stockBit(Order $order, int $sign): ?int
     {
+        // Fix order PK-A1 (L2) — without the add-on columns (pos_api deployed
+        // before the pos_admin migrations) stock is taken as before this
+        // release: every line, no stamp, no packaging. Never a failed sale.
+        if (! PackagingSchema::ready()) {
+            return null;
+        }
         if ($sign < 0 && $order->stock_order_type === null) {
             $bucket = OrderTypes::bucket($order->order_type !== null ? (string) $order->order_type : null);
             if ($bucket !== null) {
@@ -263,8 +270,9 @@ class ConsumeInventoryAction
      * qty, unit, unit_cost} | {type: product, product_id, qty}]}; null when
      * there is none, or when no top-level line is left (a fully cancelled
      * bill takes no packaging). Read by the ORDER's company; a line naming
-     * another company's item, or a prep item, is skipped and logged —
-     * never failing the sale. Ingredient costs are the live ones.
+     * another company's item, a prep item, or (fix order PK-A1, L5) a
+     * deleted or inactive item is skipped and logged — never failing the
+     * sale. Ingredient costs are the live ones.
      *
      * @return array{order_type: string, lines: list<array<string, mixed>>}|null
      */
@@ -294,15 +302,22 @@ class ConsumeInventoryAction
             ->keyBy('id');
         $products = DB::table('pos_products')
             ->whereIn('id', $rows->pluck('product_id')->filter()->all() ?: [0])
-            ->pluck('company_id', 'id');
+            ->get()
+            ->keyBy('id');
 
         $lines = [];
         $skipped = [];
         foreach ($rows as $row) {
             if ($row->ingredient_id !== null) {
                 $ingredient = $ingredients->get((int) $row->ingredient_id);
-                if ($ingredient === null || (int) $ingredient->company_id !== $companyId || (bool) ($ingredient->is_prep ?? false)) {
-                    $skipped[] = (int) $row->id;
+                $reason = match (true) {
+                    $ingredient === null || (int) $ingredient->company_id !== $companyId => 'other_company',
+                    (bool) ($ingredient->is_prep ?? false) => 'prep_item',
+                    self::dead($ingredient) => 'deleted_or_inactive',
+                    default => null,
+                };
+                if ($reason !== null) {
+                    $skipped[$reason][] = (int) $row->id;
 
                     continue;
                 }
@@ -314,8 +329,14 @@ class ConsumeInventoryAction
                     'unit_cost' => (float) StockDecimal::exact($ingredient->default_unit_cost ?? 0),
                 ];
             } elseif ($row->product_id !== null) {
-                if ((int) ($products[(int) $row->product_id] ?? 0) !== $companyId) {
-                    $skipped[] = (int) $row->id;
+                $product = $products->get((int) $row->product_id);
+                $reason = match (true) {
+                    $product === null || (int) $product->company_id !== $companyId => 'other_company',
+                    self::dead($product) => 'deleted_or_inactive',
+                    default => null,
+                };
+                if ($reason !== null) {
+                    $skipped[$reason][] = (int) $row->id;
 
                     continue;
                 }
@@ -324,8 +345,8 @@ class ConsumeInventoryAction
         }
         if ($skipped !== []) {
             try {
-                logger()->warning('Order packaging lines skipped: another company\'s item or a prep item', [
-                    'order_id' => (int) $order->id, 'company_id' => $companyId, 'packaging_line_ids' => $skipped,
+                logger()->warning('Order packaging lines skipped: another company\'s item, a prep item, or a deleted or inactive item', [
+                    'order_id' => (int) $order->id, 'company_id' => $companyId, 'packaging_line_ids_by_reason' => $skipped,
                 ]);
             } catch (\Throwable) {
                 // Best-effort; a sale never fails over logging.
@@ -333,6 +354,12 @@ class ConsumeInventoryAction
         }
 
         return $lines === [] ? null : ['order_type' => $bucket, 'lines' => $lines];
+    }
+
+    /** Fix order PK-A1 (L5) — a soft-deleted or inactive catalogue row (ingredient or product). */
+    private static function dead(object $row): bool
+    {
+        return ($row->deleted_at ?? null) !== null || (isset($row->status) && (string) $row->status !== 'active');
     }
 
     /**

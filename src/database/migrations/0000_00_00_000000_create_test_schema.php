@@ -1877,10 +1877,57 @@ return new class extends Migration
             $table->unsignedBigInteger('product_stock_movement_id')->nullable();
             $table->unique(['reversal_id', 'order_item_id'], 'pos_reversal_lines_item_unique');
         });
+
+        // LAUNCH packaging add-on (pos_admin 2026_10_06_110001..110004) —
+        // "Used for" masks (1 dine in, 2 quick, 4 to go, 8 delivery; 15 =
+        // all) on every stock line table; the same item on several lines
+        // only with disjoint masks (one partial unique per bit); the
+        // merchant's per-order packaging; the order's stock stamp. The
+        // Postgres CHECKs are rehearsal-verified (rehearse-pk.sh).
+        foreach (['pos_product_recipes', 'pos_product_components', 'pos_addon_consumptions', 'pos_addons'] as $name) {
+            Schema::table($name, function (Blueprint $table): void {
+                $table->unsignedSmallInteger('order_types')->default(15);
+            });
+        }
+        Schema::table('pos_product_components', function (Blueprint $table): void {
+            $table->dropUnique('pos_product_components_pair_unique');
+        });
+        Schema::table('pos_addon_consumptions', function (Blueprint $table): void {
+            $table->dropUnique('pos_addon_consumptions_ing_dir_unique');
+            $table->dropUnique('pos_addon_consumptions_prod_dir_unique');
+        });
+        foreach ([1, 2, 4, 8] as $bit) {
+            DB::statement("CREATE UNIQUE INDEX pos_product_recipes_ingredient_type{$bit}_unique ON pos_product_recipes (product_id, ingredient_id) WHERE (order_types & {$bit}) <> 0");
+            DB::statement("CREATE UNIQUE INDEX pos_product_components_pair_type{$bit}_unique ON pos_product_components (product_id, component_product_id) WHERE (order_types & {$bit}) <> 0");
+            DB::statement("CREATE UNIQUE INDEX pos_addon_consumptions_ing_dir_type{$bit}_unique ON pos_addon_consumptions (add_on_id, ingredient_id, direction) WHERE (order_types & {$bit}) <> 0");
+            DB::statement("CREATE UNIQUE INDEX pos_addon_consumptions_prod_dir_type{$bit}_unique ON pos_addon_consumptions (add_on_id, component_product_id, direction) WHERE (order_types & {$bit}) <> 0");
+        }
+        Schema::create('pos_order_packaging_lines', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->string('order_type', 16);
+            $table->unsignedBigInteger('ingredient_id')->nullable();
+            $table->unsignedBigInteger('product_id')->nullable();
+            $table->decimal('quantity', 14, 4);
+            $table->string('unit', 16)->nullable();
+            $table->string('entered_unit', 32)->nullable();
+            $table->decimal('entered_quantity', 14, 4)->nullable();
+            $table->unsignedSmallInteger('sort_order')->default(0);
+            $table->timestamps();
+            $table->softDeletes();
+            $table->index(['company_id', 'order_type', 'sort_order'], 'pos_order_packaging_lines_list_idx');
+        });
+        DB::statement('CREATE UNIQUE INDEX pos_order_packaging_lines_ingredient_unique ON pos_order_packaging_lines (company_id, order_type, ingredient_id) WHERE deleted_at IS NULL AND ingredient_id IS NOT NULL');
+        DB::statement('CREATE UNIQUE INDEX pos_order_packaging_lines_product_unique ON pos_order_packaging_lines (company_id, order_type, product_id) WHERE deleted_at IS NULL AND product_id IS NOT NULL');
+        Schema::table('pos_orders', function (Blueprint $table): void {
+            $table->string('stock_order_type', 16)->nullable();
+            $table->json('packaging_snapshot_json')->nullable();
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pos_order_packaging_lines');
         Schema::dropIfExists('pos_payment_reversal_results');
         Schema::dropIfExists('pos_payment_reversal_lines');
         Schema::dropIfExists('pos_payment_reversals');

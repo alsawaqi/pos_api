@@ -123,6 +123,11 @@ final class ReversalFixtureTest extends TestCase
                     'price_delta_snapshot' => '0.000',
                     'consumption_snapshot_json' => isset($addon['consumption']) ? json_encode($resolve($addon['consumption'])) : null,
                     'ingredient_snapshot_json' => isset($addon['trio']) ? json_encode($resolve([$addon['trio']])[0]) : null,
+                    // Fix order PK-A1 (L6) — a product-as-add-on with ticked recipe / components.
+                    'linked_product_id' => isset($addon['linked']) ? $products[$addon['linked']['product']] : null,
+                    'product_snapshot_json' => isset($addon['linked']) ? json_encode(['product_id' => $products[$addon['linked']['product']],
+                        'stock_mode' => $addon['linked']['stock_mode'], 'recipe' => $resolve($addon['linked']['recipe']),
+                        'components' => $resolve($addon['linked']['components'])]) : null,
                 ] + $t);
             }
         }

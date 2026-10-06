@@ -7,14 +7,19 @@ namespace Tests\Feature\LaunchPackaging;
 use App\Actions\Device\Sync\ConsumeInventoryAction;
 use App\Actions\Qr\BindQrTableSessionAction;
 use App\Actions\Qr\ConfirmDineInQrRoundAction;
+use App\Actions\Qr\ResolveQrAddOnAvailabilityAction;
+use App\Models\AddOn;
 use App\Models\Order;
 use App\Models\OrderItem;
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\Support\LaunchP3RecipeFixtures;
 use Tests\Support\LaunchP3SyncEvents;
@@ -302,6 +307,13 @@ final class StockByOrderTypeTest extends TestCase
     public function test_a_quick_order_turned_to_go_before_payment_takes_the_to_go_lines_and_packaging(): void
     {
         $this->packaging('quick', ['ingredient_id' => self::SUGAR, 'quantity' => '7', 'unit' => 'g']);
+        // Fix order PK-A1 (L6) — a Quick-only sleeve and a To-go-only straw tell
+        // consume-time filtering (by the final type) from a copy-time one (by
+        // the type at hold): the copy keeps both, the sale takes the straw.
+        $sleeve = $this->item('Sleeve');
+        $straw = $this->item('Straw');
+        $this->itemLine($this->latte, $sleeve, '1', 2);
+        $this->itemLine($this->latte, $straw, '1', 4);
         $order = $this->p4Order([$this->latteLine(1)], 0, null, ['order_type' => 'quick']);
         $this->pushProcessed(self::TOKEN, [$this->p4Event('order.hold', $order)]);
         $held = OrderItem::query()->sole();
@@ -314,8 +326,152 @@ final class StockByOrderTypeTest extends TestCase
                 'payments' => [['method' => 'cash', 'amount_baisas' => 1500, 'change_given_baisas' => 0]]]]]);
 
         $this->assertSame($held->component_snapshot_json, OrderItem::query()->sole()->component_snapshot_json);
+        $this->assertEquals([$this->cup, $this->lid, $sleeve, $straw], array_column($held->component_snapshot_json, 'product_id'));
         $this->assertSame('to_go', $this->order($order['uuid'])->stock_order_type);
         $this->assertTaken(['milk' => 200.0, 'beans' => 18.0, 'cup' => 1.0, 'lid' => 1.0, 'paper_bag' => 1.0]);
+        $this->assertSame([100.0, 99.0], [$this->shelf($sleeve), $this->shelf($straw)]);
+    }
+
+    public function test_a_remove_option_drops_every_line_of_its_ingredient_whatever_the_ticks(): void
+    {
+        DB::table('pos_product_recipes')->insert([
+            ['product_id' => $this->latte, 'ingredient_id' => self::SUGAR, 'quantity' => '5', 'unit_at_set' => 'g', 'sort_order' => 3, 'order_types' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['product_id' => $this->latte, 'ingredient_id' => self::SUGAR, 'quantity' => '10', 'unit_at_set' => 'g', 'sort_order' => 4, 'order_types' => 14, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        $noSugar = $this->p4Addons($this->latte, ['NO Sugar' => '0.000'], ['name' => 'Remove', 'kind' => 'remove'])['NO Sugar'];
+        DB::table('pos_addons')->where('id', $noSugar)->update(['removes_ingredient_id' => self::SUGAR]);
+
+        $dineIn = $this->sell('dine_in', [$this->latteLine(1, [$noSugar])]);
+        $this->sell('to_go', [$this->latteLine(1, [$noSugar])]);
+        $this->assertSame(10000.0, $this->branchBalance(self::SUGAR));
+        $this->assertNotContains(self::SUGAR, array_column(OrderItem::query()->where('order_id', $this->order($dineIn)->id)->sole()->recipe_snapshot_json, 'ingredient_id'));
+
+        // Without the Remove each type takes its own sugar line.
+        $this->sell('dine_in', [$this->latteLine(1)]);
+        $this->sell('to_go', [$this->latteLine(1)]);
+        $this->assertSame(9985.0, $this->branchBalance(self::SUGAR));
+    }
+
+    public function test_an_unstamped_order_with_frozen_packaging_keeps_it_when_stamped(): void
+    {
+        $order = $this->p4Order([$this->latteLine(1)], 0, null, ['order_type' => 'to_go']);
+        $this->pushProcessed(self::TOKEN, [$this->p4Event('order.create', $order)]);
+        DB::table('pos_orders')->update(['packaging_snapshot_json' => json_encode(['order_type' => 'to_go',
+            'lines' => [['type' => 'product', 'product_id' => $this->deliveryBag, 'qty' => 1]]])]);
+
+        DB::transaction(fn () => app(ConsumeInventoryAction::class)->consume($this->order($order['uuid'])));
+
+        $this->assertSame('to_go', $this->order($order['uuid'])->stock_order_type);
+        $this->assertTaken(['milk' => 200.0, 'beans' => 18.0, 'cup' => 1.0, 'lid' => 1.0, 'delivery_bag' => 1.0]);
+    }
+
+    public function test_qr_add_on_availability_counts_only_the_lines_of_the_sessions_order_type(): void
+    {
+        // The large cup (Quick / To go / Delivery only) is sold out at the branch.
+        DB::table('pos_product_sold_out')->insert(['company_id' => 100, 'branch_id' => 10, 'product_id' => $this->largeCup,
+            'set_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+        $resolve = fn (?string $type): bool => app(ResolveQrAddOnAvailabilityAction::class)
+            ->handle(100, 10, AddOn::query()->whereKey($this->large)->get(), now(), $type)->get($this->large)['available'];
+
+        $this->assertSame([true, false, false], [$resolve('dine_in'), $resolve('quick'), $resolve(null)]);
+
+        // A dine-in-only add is never netted against a to-go-only remove of the same item.
+        $option = $this->p4Addons($this->latte, ['Lid on the side' => '0.000'], ['name' => 'Lids'])['Lid on the side'];
+        $this->consumption($option, ['component_product_id' => $this->largeCup, 'direction' => 'add', 'quantity' => '1', 'order_types' => 1]);
+        $this->consumption($option, ['component_product_id' => $this->largeCup, 'direction' => 'remove', 'quantity' => '1', 'order_types' => 4]);
+        $this->assertFalse(app(ResolveQrAddOnAvailabilityAction::class)
+            ->handle(100, 10, AddOn::query()->whereKey($option)->get(), now(), 'dine_in')->get($option)['available']);
+
+        // The quick-order menu (a QR session without a table) greys Large.
+        $session = $this->p4QrSession();
+        $menu = $this->p4QrGet($session, '/api/v1/public/qr/menu')->assertOk()->json('data.addon_groups');
+        $large = collect($menu)->flatMap(fn (array $group): array => $group['addons'] ?? $group['options'] ?? [])->firstWhere('id', $this->large);
+        $this->assertFalse($large['available']);
+    }
+
+    public function test_packaging_lines_naming_a_deleted_or_inactive_item_are_skipped_and_the_sale_settles(): void
+    {
+        DB::table('pos_ingredients')->insert([
+            $this->ingredientRow(92, 'Old napkin', 'piece', '0.001000'),
+            $this->ingredientRow(93, 'Paused napkin', 'piece', '0.001000'),
+        ]);
+        DB::table('pos_ingredients')->where('id', 92)->update(['deleted_at' => now()]);
+        DB::table('pos_ingredients')->where('id', 93)->update(['status' => 'inactive']);
+        $oldBag = $this->item('Old bag');
+        DB::table('pos_products')->where('id', $oldBag)->update(['deleted_at' => now()]);
+        $pausedBag = $this->item('Paused bag');
+        DB::table('pos_products')->where('id', $pausedBag)->update(['status' => 'inactive']);
+        foreach ([['ingredient_id' => 92], ['ingredient_id' => 93], ['product_id' => $oldBag], ['product_id' => $pausedBag]] as $i => $ref) {
+            $this->packaging('to_go', $ref + ['quantity' => '1', 'sort_order' => $i + 1]);
+        }
+        Log::spy();
+
+        $uuid = $this->sell('to_go', [$this->latteLine(1)]);
+
+        $this->assertSame('paid', $this->order($uuid)->status);
+        $this->assertEquals([['type' => 'product', 'product_id' => $this->paperBag, 'qty' => 1]], $this->order($uuid)->packaging_snapshot_json['lines']);
+        $this->assertSame([100.0, 100.0], [$this->shelf($oldBag), $this->shelf($pausedBag)]);
+        $this->assertFalse(DB::table('pos_stock_movements')->whereIn('ingredient_id', [92, 93])->exists());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context = []): bool => str_contains($message, 'Order packaging lines skipped')
+            && count($context['packaging_line_ids_by_reason']['deleted_or_inactive'] ?? []) === 4)->once();
+    }
+
+    public function test_without_the_add_on_columns_a_paid_sale_still_settles_taking_every_line(): void
+    {
+        // pos_api deployed before the pos_admin 2026_10_06_1100* migrations.
+        Schema::table('pos_orders', function (Blueprint $table): void {
+            $table->dropColumn(['stock_order_type', 'packaging_snapshot_json']);
+        });
+        Schema::drop('pos_order_packaging_lines');
+        Log::spy();
+
+        $uuid = $this->sell('dine_in', [$this->latteLine(2)]);
+
+        $this->assertSame('paid', $this->order($uuid)->status);
+        // Today's behaviour: every line (cup and lid too), no packaging.
+        $this->assertTaken(['milk' => 400.0, 'beans' => 36.0, 'cup' => 2.0, 'lid' => 2.0]);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'not migrated'))->atLeast()->once();
+
+        $this->void($uuid);
+        $this->assertTaken([]);
+    }
+
+    public function test_two_concurrent_hand_offs_of_one_delivery_order_take_stock_and_packaging_once(): void
+    {
+        DB::table('pos_delivery_providers')->insert(['id' => 1, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'name' => 'Talabat',
+            'commission_percent' => 20.00, 'is_active' => true, 'sort_order' => 1, 'created_at' => now(), 'updated_at' => now()]);
+        $order = $this->p4Order([$this->latteLine(1)], 0, null, ['order_type' => 'delivery']);
+        $this->pushProcessed(self::TOKEN, [$this->p4Event('order.create', $order)]);
+        $deliver = fn (): array => ['client_event_id' => (string) Str::uuid(), 'event_type' => 'order.deliver',
+            'client_timestamp' => now()->toIso8601String(), 'payload' => ['order_uuid' => $order['uuid'], 'delivered_at' => now()->toIso8601String(),
+                'delivery' => ['provider_id' => 1, 'reference' => 'TLB-2', 'customer_phone' => '91234567', 'driver_phone' => '99887766']]];
+
+        // The other hand-off commits while this one is past its unlocked status check (it is reading the provider).
+        $raced = false;
+        DB::listen(function ($query) use (&$raced, $order): void {
+            if ($raced || ! str_contains($query->sql, 'pos_delivery_providers')) {
+                return;
+            }
+            $raced = true;
+            $other = $this->order($order['uuid']);
+            $other->update(['status' => Order::STATUS_PENDING_VERIFICATION, 'delivery_punched_at' => now()]);
+            app(ConsumeInventoryAction::class)->consume($other);
+        });
+        $result = $this->p4Push(self::TOKEN, [$deliver()])->json('data.results.0');
+
+        // The locked re-check refuses the second hand-off: it takes nothing. (In
+        // one SQLite connection the simulated first hand-off shares the
+        // refused event's transaction and is rolled back with it; without the
+        // lock the event was processed and the stock and packaging were taken
+        // twice.)
+        $this->assertTrue($raced);
+        $this->assertSame('failed', $result['status'], (string) json_encode($result));
+        $this->assertStringContainsString('already settled', (string) json_encode($result));
+        $this->assertTaken([]);
+
+        // A hand-off on its own takes everything once.
+        $this->pushProcessed(self::TOKEN, [$deliver()]);
+        $this->assertTaken(['milk' => 200.0, 'beans' => 18.0, 'cup' => 1.0, 'lid' => 1.0, 'delivery_bag' => 1.0, 'napkin' => 3.0]);
     }
 
     public function test_an_order_stocked_before_this_release_is_restored_in_full_on_void(): void
@@ -556,6 +712,59 @@ final class StockByOrderTypeTest extends TestCase
         DB::table('pos_product_recipes')->update(['order_types' => 1]);
         $this->assertSame($before, $config());
         $this->assertStringNotContainsString('order_types', (string) json_encode($before));
+
+        // Fix order PK-A1 (L1, M1) — an item on two lines with disjoint ticks:
+        // the device's add-on lines merge exactly as before (napkin 1 + 3 = 4,
+        // no mask in the merge), and its recipe (kitchen production) takes ONE
+        // line per ingredient, the one ticked for the widest set (sugar 10 g).
+        $this->consumption($this->large, ['ingredient_id' => self::NAPKIN, 'direction' => 'add', 'quantity' => '1', 'unit' => 'piece', 'order_types' => 1, 'display_order' => 5]);
+        $this->consumption($this->large, ['ingredient_id' => self::NAPKIN, 'direction' => 'add', 'quantity' => '3', 'unit' => 'piece', 'order_types' => 12, 'display_order' => 6]);
+        DB::table('pos_product_recipes')->insert([
+            ['product_id' => $this->latte, 'ingredient_id' => self::SUGAR, 'quantity' => '5', 'unit_at_set' => 'g', 'sort_order' => 3, 'order_types' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['product_id' => $this->latte, 'ingredient_id' => self::SUGAR, 'quantity' => '10', 'unit_at_set' => 'g', 'sort_order' => 4, 'order_types' => 14, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        $data = $config();
+        $large = collect($data['addon_groups'])->flatMap(fn (array $group): array => $group['addons'] ?? [])->firstWhere('id', $this->large);
+        $this->assertEquals([
+            ['type' => 'product', 'ingredient_id' => null, 'product_id' => $this->cup, 'direction' => 'remove', 'qty' => 1.0, 'unit' => null],
+            ['type' => 'product', 'ingredient_id' => null, 'product_id' => $this->largeCup, 'direction' => 'add', 'qty' => 1.0, 'unit' => null],
+            ['type' => 'ingredient', 'ingredient_id' => self::MILK, 'product_id' => null, 'direction' => 'add', 'qty' => 100.0, 'unit' => 'ml'],
+            ['type' => 'ingredient', 'ingredient_id' => self::NAPKIN, 'product_id' => null, 'direction' => 'add', 'qty' => 4.0, 'unit' => 'piece'],
+        ], $large['consumption']);
+        $latte = collect($data['products'])->firstWhere('id', $this->latte);
+        $this->assertEquals([
+            ['ingredient_id' => self::MILK, 'quantity' => 200.0, 'unit' => 'ml'],
+            ['ingredient_id' => self::BEANS, 'quantity' => 18.0, 'unit' => 'g'],
+            ['ingredient_id' => self::SUGAR, 'quantity' => 10.0, 'unit' => 'g'],
+        ], $latte['recipe']);
+    }
+
+    public function test_kitchen_production_of_a_cooked_product_takes_one_line_per_ingredient_never_the_sum(): void
+    {
+        // A made-to-order cake with sugar 5 g dine in and 10 g otherwise, switched to cooked.
+        $cake = $this->p4Product('Cake', '2.000', ['stock_mode' => 'cooked']);
+        DB::table('pos_branch_product')->insert(['branch_id' => 10, 'product_id' => $cake, 'is_available' => true,
+            'stock_qty' => '0.000', 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('pos_product_recipes')->insert([
+            ['product_id' => $cake, 'ingredient_id' => self::SUGAR, 'quantity' => '5', 'unit_at_set' => 'g', 'sort_order' => 1, 'order_types' => 1, 'created_at' => now(), 'updated_at' => now()],
+            ['product_id' => $cake, 'ingredient_id' => self::MILK, 'quantity' => '50', 'unit_at_set' => 'ml', 'sort_order' => 2, 'order_types' => 15, 'created_at' => now(), 'updated_at' => now()],
+            ['product_id' => $cake, 'ingredient_id' => self::SUGAR, 'quantity' => '10', 'unit_at_set' => 'g', 'sort_order' => 3, 'order_types' => 14, 'created_at' => now(), 'updated_at' => now()],
+            // A tie (two bits each): the line that includes dine in wins.
+            ['product_id' => $cake, 'ingredient_id' => self::BEANS, 'quantity' => '7', 'unit_at_set' => 'g', 'sort_order' => 4, 'order_types' => 12, 'created_at' => now(), 'updated_at' => now()],
+            ['product_id' => $cake, 'ingredient_id' => self::BEANS, 'quantity' => '3', 'unit_at_set' => 'g', 'sort_order' => 5, 'order_types' => 3, 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        DB::table('pos_staff')->insert(['id' => 70, 'uuid' => (string) Str::uuid(), 'company_id' => 100, 'branch_id' => 10, 'name' => 'Chef',
+            'pin_hash' => Hash::make('1111'), 'position' => 'kitchen', 'status' => 'active', 'created_at' => now(), 'updated_at' => now()]);
+
+        $screen = $this->withToken(self::TOKEN)->getJson('/api/v1/device/kitchen')->assertOk()->json('data.products');
+        $lines = collect(collect($screen)->firstWhere('id', $cake)['recipe'])
+            ->mapWithKeys(fn (array $line): array => [(int) $line['ingredient_id'] => (float) $line['quantity']])->all();
+        $this->assertEquals([self::SUGAR => 10.0, self::MILK => 50.0, self::BEANS => 3.0], $lines);
+
+        $this->withToken(self::TOKEN)->postJson('/api/v1/device/productions', ['product_id' => $cake, 'quantity' => 2, 'staff_id' => 70,
+            'extras' => []])->assertSuccessful();
+        $this->assertTaken(['sugar' => 20.0, 'milk' => 100.0, 'beans' => 6.0]);
     }
 
     public function test_a_stamped_order_reuses_its_packaging_and_a_fully_cancelled_bill_takes_none(): void

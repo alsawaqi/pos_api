@@ -13,6 +13,7 @@ use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TableSessionEvent;
+use App\Models\TabletOrder;
 use Closure;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -105,17 +106,22 @@ final class ClaimKitchenTicketAction
                         ->whereIn('floor_id', DB::table('pos_floors')->select('id')
                             ->where('company_id', $holder->company_id)->where('branch_id', $holder->branch_id))
                         ->orderBy('id')->lockForUpdate()->get();
+                    // LAUNCH-P6 (tester call 13) — a customer tablet's dine-in
+                    // bill, and the kitchen round of a sent Quick / To go
+                    // tablet order, are admitted like the QR ones.
+                    $admitted = static fn ($query) => $query->where(fn ($kinds) => $kinds
+                        ->where(fn ($dineIn) => $dineIn->where('order_type', 'dine_in')
+                            ->whereIn('source', ['main_pos', 'handheld', Order::SOURCE_QR_WEB, 'customer_tablet']))
+                        ->orWhere(fn ($counter) => $counter->where('source', 'customer_tablet')->whereIn('order_type', ['quick', 'to_go'])));
                     $snapshot = QrOrderRound::query()->whereKey($roundId)
-                        ->whereHas('order', fn ($query) => $query->where('company_id', $holder->company_id)
-                            ->where('branch_id', $holder->branch_id)->where('order_type', 'dine_in')
-                            ->whereIn('source', ['main_pos', 'handheld', Order::SOURCE_QR_WEB]))->first();
+                        ->whereHas('order', fn ($query) => $admitted($query->where('company_id', $holder->company_id)
+                            ->where('branch_id', $holder->branch_id)))->first();
                     if ($snapshot === null) {
                         throw $this->notFound();
                     }
-                    $order = Order::query()->whereKey($snapshot->order_id)
-                        ->where('company_id', $holder->company_id)->where('branch_id', $holder->branch_id)
-                        ->where('order_type', 'dine_in')
-                        ->whereIn('source', ['main_pos', 'handheld', Order::SOURCE_QR_WEB])->lockForUpdate()->first();
+                    $order = $admitted(Order::query()->whereKey($snapshot->order_id)
+                        ->where('company_id', $holder->company_id)->where('branch_id', $holder->branch_id))
+                        ->lockForUpdate()->first();
                     if ($order === null) {
                         throw $this->notFound();
                     }
@@ -130,9 +136,15 @@ final class ClaimKitchenTicketAction
                     $seating = $snapshot->table_session_id === null ? null : TableSession::query()
                         ->whereKey($snapshot->table_session_id)->where('company_id', $holder->company_id)
                         ->where('branch_id', $holder->branch_id)->lockForUpdate()->first();
+                    $tabletKitchen = $order->order_type !== 'dine_in' && $snapshot->qr_session_id === null
+                        && $snapshot->table_session_id === null && TabletOrder::query()->where('round_id', $snapshot->id)
+                            ->where('order_id', $order->id)->whereNotNull('sent_to_kitchen_at')->exists();
+                    if ($order->order_type !== 'dine_in' && ! $tabletKitchen) {
+                        throw $this->notFound();
+                    }
                     if (($snapshot->table_session_id !== null && ($seating === null
                         || (int) $seating->order_id !== (int) $order->id))
-                        || ($seating === null && $session === null)) {
+                        || ($seating === null && $session === null && ! $tabletKitchen)) {
                         throw $this->notFound();
                     }
                     $round = QrOrderRound::query()->whereKey($roundId)->lockForUpdate()->first();

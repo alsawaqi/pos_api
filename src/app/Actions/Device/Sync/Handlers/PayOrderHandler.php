@@ -295,7 +295,8 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 $orderUpdate['charge_outcome'] = Order::CHARGE_OUTCOME_APPROVED;
             }
             if (trim((string) $order->receipt_number) === ''
-                && ($order->source === Order::SOURCE_QR_WEB || $order->table_session_id !== null)) {
+                && ($order->source === Order::SOURCE_QR_WEB || $order->source === 'customer_tablet' || $order->table_session_id !== null)) {
+                // LAUNCH-P6 — a customer tablet order's receipt number is the server's too.
                 $allocation = $this->orderNumbers->handle($device);
                 if ($allocation !== null) {
                     $orderUpdate['receipt_number'] = $allocation['formatted'];
@@ -370,7 +371,9 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             $redeemTxn = null;
             $redeemAdjustment = null;
             $redeemWarning = null;
-            if ($order->table_session_id !== null) {
+            // LAUNCH-P6 — a customer tablet order (Quick / To go too) redeems only
+            // what staff approved on it (its slot), never an event's own block.
+            if ($order->table_session_id !== null || $order->source === 'customer_tablet') {
                 $loyaltyRedeem = TableLoyaltyDiscount::current($order);
             }
             if ($loyaltyRedeem !== null && isset($loyaltyRedeem['rule_id'])) {
@@ -699,10 +702,13 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
      */
     private function earnRuleIds(Order $order, array $payload): array
     {
-        if ($order->table_session_id !== null && $order->customer_id === null) {
+        // LAUNCH-P6 — a customer tablet order earns like a QR one when a phone
+        // linked a customer (every active rule), and nothing without one.
+        $tablet = $order->source === 'customer_tablet';
+        if (($order->table_session_id !== null || $tablet) && $order->customer_id === null) {
             return [];
         }
-        if ($order->qr_session_id !== null || $order->table_session_id !== null) {
+        if ($order->qr_session_id !== null || $order->table_session_id !== null || $tablet) {
             return LoyaltyRule::query()
                 ->where('company_id', (int) $order->company_id)
                 ->where('status', 'active')

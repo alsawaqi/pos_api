@@ -104,12 +104,21 @@ final class TableLoyaltyDiscount
             ->where('o.company_id', $order->company_id)->whereIn('d.id', $customerRows)->where('o.status', '!=', Order::STATUS_VOID)
             ->where('d.amount_type_snapshot', 'table_loyalty_redeem')->where('d.amount', '>', 0)
             ->where('d.applied_at', '>=', $day)->where('d.applied_at', '<', $end)->count();
+        // LAUNCH-P6 — a staff-approved customer tablet redeem on a Quick / To go
+        // order (no table journal) counts from its tablet row; its later
+        // redeem transaction at pay is not counted a second time.
+        $tabletCount = DB::table('pos_tablet_orders as tr')->join('pos_orders as o', 'o.id', '=', 'tr.order_id')
+            ->where('tr.company_id', $order->company_id)->where('tr.customer_id', $customer->id)
+            ->where('tr.redeem_status', 'approved')->whereNull('o.table_session_id')->where('o.status', '!=', Order::STATUS_VOID)
+            ->where('tr.redeem_resolved_at', '>=', $day)->where('tr.redeem_resolved_at', '<', $end)->count();
         $counterCount = DB::table('pos_loyalty_transactions as t')->join('pos_loyalty_accounts as a', 'a.id', '=', 't.loyalty_account_id')
             ->join('pos_orders as o', 'o.id', '=', 't.order_id')->where('t.company_id', $order->company_id)
             ->where('a.customer_id', $customer->id)->where('a.company_id', $order->company_id)
             ->whereNull('o.table_session_id')->where('o.status', '!=', Order::STATUS_VOID)->where('t.type', 'redeem')
+            ->whereNotExists(fn ($q) => $q->selectRaw('1')->from('pos_tablet_orders as tx')
+                ->whereColumn('tx.order_id', 'o.id')->where('tx.redeem_status', 'approved'))
             ->where('t.occurred_at', '>=', $day)->where('t.occurred_at', '<', $end)->count();
-        if ($tableCount + $counterCount >= 3) {
+        if ($tableCount + $tabletCount + $counterCount >= 3) {
             throw AdjustTableBillAction::refusal('loyalty_customer_limit', 'This customer has reached the daily redemption limit.');
         }
         $shift = Shift::query()->where('company_id', $order->company_id)->where('staff_id', $staffId)
@@ -117,6 +126,13 @@ final class TableLoyaltyDiscount
         $staffCount = TableSessionEvent::query()->where('company_id', $order->company_id)->where('event_type', 'adjusted')
             ->where('payload->kind', 'loyalty')->where('payload->mode', 'redeem')->where('payload->approved_by_staff_id', (int) $staffId)
             ->where('created_at', '>=', $shift?->opened_at ?? $day)->when($shift === null, fn ($q) => $q->where('created_at', '<', $end))->count();
+        // LAUNCH-P6 — the same staff member's tablet redeem approvals on Quick /
+        // To go orders (a dine-in one is journalled as a table adjustment).
+        $staffCount += DB::table('pos_tablet_orders as tr')->join('pos_orders as o', 'o.id', '=', 'tr.order_id')
+            ->where('tr.company_id', $order->company_id)->where('tr.redeem_status', 'approved')
+            ->where('tr.redeem_resolved_by_staff_id', (int) $staffId)->whereNull('o.table_session_id')
+            ->where('tr.redeem_resolved_at', '>=', $shift?->opened_at ?? $day)
+            ->when($shift === null, fn ($q) => $q->where('tr.redeem_resolved_at', '<', $end))->count();
         if ($staffCount >= 10) {
             throw AdjustTableBillAction::refusal('loyalty_staff_limit', 'This staff member has reached the redemption approval limit for this shift.');
         }
@@ -137,8 +153,11 @@ final class TableLoyaltyDiscount
         // Include this bill too: replacement retains the existing availability rule.
         // Do not lock other bills here; their table-graph locks precede the customer
         // lock. Reading committed slots avoids reversing that lock order.
+        // LAUNCH-P6 — an unpaid Quick / To go tablet order carrying an approved
+        // points slot reserves its units exactly like a table bill.
         $bills = Order::query()->where('company_id', $companyId)
-            ->where('customer_id', $customerId)->whereNotNull('table_session_id')
+            ->where('customer_id', $customerId)
+            ->where(fn ($q) => $q->whereNotNull('table_session_id')->orWhere('source', 'customer_tablet'))
             ->whereNotIn('status', [Order::STATUS_PAID, Order::STATUS_VOID])
             ->whereIn('id', OrderDiscount::query()->select('order_id')
                 ->whereIn('amount_type_snapshot', self::TYPES)

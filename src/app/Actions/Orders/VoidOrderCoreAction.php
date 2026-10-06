@@ -9,6 +9,7 @@ use App\Actions\Pos\Loyalty\WriteLoyaltyTransactionAction;
 use App\Actions\Qr\CloseDineInQrSessionAction;
 use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
+use App\Actions\Qr\QuickOrderCancellationWasteAction;
 use App\Actions\Tables\TableLoyaltyDiscount;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
@@ -20,9 +21,11 @@ use App\Models\QrOrderRound;
 use App\Models\RoundupDonation;
 use App\Models\SaleCommission;
 use App\Models\TableSession;
+use App\Models\TabletOrder;
 use App\Models\VoidReason;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /** Shared order void effects. Caller-specific sync validation stays in the handler. */
@@ -131,6 +134,13 @@ final class VoidOrderCoreAction
                     'updated_at' => $voidedAt,
                 ]);
 
+            // LAUNCH-P6 (tester call 12) — a Quick / To go customer tablet order
+            // that staff already sent to the kitchen, cancelled before payment
+            // with a reason saying the food was made: its sent lines are
+            // booked as waste (the cancel-with-wastage rule; it never fails
+            // the void). Not sent yet = an ordinary unpaid void.
+            $tabletWaste = ! $wasPaid && $keepInventoryConsumed ? $this->tabletWaste($order, $device, $voidedByStaffId) : null;
+
             OrderItem::query()->where('order_id', $order->id)->update(['status' => OrderItem::STATUS_VOID]);
 
             // Only a PAID sale has settled side effects to unwind. An open
@@ -150,8 +160,33 @@ final class VoidOrderCoreAction
                 'loyalty_reversed' => $loyaltyReversed,
                 'roundup_voided' => $roundupVoided,
                 'commission_removed' => $commissionRemoved,
-            ];
+            ] + ($tabletWaste === null ? [] : ['tablet_waste' => $tabletWaste]);
         });
+    }
+
+    /** @return array<string, mixed>|null */
+    private function tabletWaste(Order $order, Device $device, ?int $staffId): ?array
+    {
+        if ($order->source !== 'customer_tablet' || ! in_array($order->order_type, ['quick', 'to_go'], true)) {
+            return null;
+        }
+        $tablet = TabletOrder::query()->where('order_id', $order->id)->where('company_id', $order->company_id)
+            ->whereNotNull('sent_to_kitchen_at')->first();
+        if ($tablet === null) {
+            return null;
+        }
+        $order->load('items');
+        $prepared = $order->items->filter(static fn (OrderItem $item): bool => $item->status !== OrderItem::STATUS_VOID)
+            ->pluck('id')->map(static fn ($id): int => (int) $id)->sort()->values()->all();
+        try {
+            return DB::transaction(fn (): array => app(QuickOrderCancellationWasteAction::class)->handle($device, $order, $prepared,
+                $staffId, 'tablet:'.$tablet->uuid, 'cancelled customer tablet order '.$order->uuid.' after it was sent to the kitchen'));
+        } catch (\Throwable $exception) {
+            Log::warning('tablet order waste not booked on void', ['order_id' => (int) $order->id, 'error' => $exception->getMessage()]);
+            $device->syncIntegrityFlags[] = 'tablet_waste_review:'.$order->uuid;
+
+            return ['booked' => false];
+        }
     }
 
     /**

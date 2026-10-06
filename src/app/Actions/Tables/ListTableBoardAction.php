@@ -12,6 +12,7 @@ use App\Models\QrOrderRound;
 use App\Models\QrSession;
 use App\Models\Table;
 use App\Models\TableSession;
+use App\Models\TabletOrder;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -35,8 +36,16 @@ final class ListTableBoardAction
         }
     }
 
-    /** @return list<array<string, mixed>> */
-    public function handle(Device $device): array
+    /**
+     * LAUNCH-P6 (tester call 15) — a customer tablet's pending dine-in round is
+     * on the board only for a device that declares `tablet-orders`
+     * ($tabletRows), labelled `origin: customer_tablet` with its tablet order;
+     * an old build sees the board exactly as before (the table's seating
+     * itself always shows, so nobody seats the table twice).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function handle(Device $device, bool $tabletRows = false): array
     {
         $this->assertReader($device);
         $companyId = (int) $device->company_id;
@@ -100,6 +109,11 @@ final class ListTableBoardAction
                         $legacy->whereNull('table_session_id')->whereIn('order_id', $orders->modelKeys());
                     });
             })->get();
+        $tabletRounds = $rounds->isEmpty() ? collect() : TabletOrder::query()->where('company_id', $companyId)
+            ->where('branch_id', $branchId)->whereIn('round_id', $rounds->modelKeys())->pluck('uuid', 'round_id');
+        if (! $tabletRows) {
+            $rounds = $rounds->reject(static fn (QrOrderRound $round): bool => $tabletRounds->has($round->id))->values();
+        }
         $liveClaims = Order::query()->where('company_id', $companyId)->where('branch_id', $branchId)
             ->whereIn('id', $orders->modelKeys())->withLiveClaim()->pluck('id')->all();
         $roundCounts = QrOrderRound::query()
@@ -114,7 +128,7 @@ final class ListTableBoardAction
             ->orderBy('id')->get(['table_session_id', 'status', 'origin', 'scan_geofence_verdict'])->keyBy('table_session_id');
 
         return $tables->map(function (Table $table) use (
-            $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims, $roundCounts, $credentialStatuses,
+            $seatingsByTable, $seatingsById, $seatings, $orders, $ordersById, $pivots, $rounds, $liveClaims, $roundCounts, $credentialStatuses, $tabletRounds, $tabletRows,
         ): array {
             /** @var TableSession|null $seating */
             $seating = $seatingsByTable->get($table->id);
@@ -149,7 +163,7 @@ final class ListTableBoardAction
                     'needs_review' => $needsReviewCount > 0,
                     'needs_review_count' => $needsReviewCount,
                     'joined_table_ids' => $family->where('id', '!=', $primary?->id)->pluck('table_id')->map(static fn ($id): int => (int) $id)->values()->all(),
-                    'pending_rounds' => $pending->map(static function (QrOrderRound $round): array {
+                    'pending_rounds' => $pending->map(static function (QrOrderRound $round) use ($tabletRounds, $tabletRows): array {
                         $held = [];
                         foreach ($round->priced_lines ?? [] as $index => $line) {
                             if (isset($line['held_reason'])) {
@@ -170,7 +184,10 @@ final class ListTableBoardAction
                             'priced_lines' => $round->priced_lines,
                             'review_reasons' => array_merge($round->origin_table_session_id !== null ? ['merged'] : [], $held !== [] ? ['catalogue'] : []),
                             'held_lines' => $held,
-                        ];
+                        ] + ($tabletRows ? [
+                            'origin' => $tabletRounds->has($round->id) ? 'customer_tablet' : null,
+                            'tablet_order_uuid' => $tabletRounds->get($round->id),
+                        ] : []);
                     })->values()->all(),
                     'credential_status' => $credentialStatuses->get($primary?->id)?->status,
                     'credential_origin' => $credentialStatuses->get($primary?->id)?->origin,

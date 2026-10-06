@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Actions\Tables\ListTableBoardAction;
+use App\Actions\Tablet\TabletOrderStaffAction;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
@@ -15,10 +16,18 @@ final class ListOrderAttentionAction
     public function __construct(
         private readonly PresentQrPendingOrderAction $pending,
         private readonly ListTableBoardAction $board,
+        private readonly TabletOrderStaffAction $tablet,
     ) {}
 
-    /** @return array{version: int, quick_order_keys: list<string>, table_round_keys: list<string>} */
-    public function handle(Device $device): array
+    /**
+     * LAUNCH-P6 (tester call 15) — `tablet_order_keys` (`tablet:<uuid>`, Quick
+     * / To go orders and dine-in rounds alike, until someone takes them) is
+     * added only for a device that declares `tablet-orders`; an old build's
+     * snapshot stays exactly as before.
+     *
+     * @return array{version: int, quick_order_keys: list<string>, table_round_keys: list<string>, tablet_order_keys?: list<string>}
+     */
+    public function handle(Device $device, bool $tabletRows = false): array
     {
         $this->pending->assertAttended($device);
         $quick = Order::query()
@@ -57,6 +66,7 @@ final class ListOrderAttentionAction
             ->map(static fn (QrOrderRound $round): string => 'round:'.$round->id.':'.$round->client_request_id)
             ->all();
 
-        return ['version' => 1, 'quick_order_keys' => $quickKeys, 'table_round_keys' => $roundKeys];
+        return ['version' => 1, 'quick_order_keys' => $quickKeys, 'table_round_keys' => $roundKeys]
+            + ($tabletRows ? ['tablet_order_keys' => $this->tablet->attentionKeys($device)] : []);
     }
 }

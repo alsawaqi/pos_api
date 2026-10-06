@@ -62,6 +62,15 @@ class CloseShiftHandler implements SyncEventHandler
     /** How many order uuids one close may list (a long shift on a busy till). */
     public const MAX_ORDER_UUIDS = 5000;
 
+    /**
+     * Sources whose money belongs to the drawer of the device that SETTLED
+     * them (the successful payment's device and time), not the order's own
+     * device or staff: QR orders (opened by a station), and LAUNCH-P6
+     * customer tablet orders (opened by the tablet, paid at a till or
+     * handheld).
+     */
+    private const SETTLED_BY_PAYMENT_DEVICE = [Order::SOURCE_QR_WEB, 'customer_tablet'];
+
     public function __construct(private readonly AuthorizationGate $gate) {}
 
     /**
@@ -454,7 +463,7 @@ class CloseShiftHandler implements SyncEventHandler
                     // rows. Deleted-device shifts have no drawer identity.
                     if ($shift->device_id !== null) {
                         $scope->where(function ($qr) use ($shift, $paymentDeviceColumn): void {
-                            $qr->where('pos_orders.source', Order::SOURCE_QR_WEB)
+                            $qr->whereIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
                                 ->where($paymentDeviceColumn, $shift->device_id);
                         });
                     } else {
@@ -463,7 +472,7 @@ class CloseShiftHandler implements SyncEventHandler
 
                     $scope->orWhere(function ($legacy) use ($shift, $activityAtColumn): void {
                         $legacy
-                            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
+                            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
                             ->where(function ($identity) use ($shift, $activityAtColumn): void {
                                 $this->applyLegacyOrderIdentity(
                                     $identity,
@@ -536,7 +545,7 @@ class CloseShiftHandler implements SyncEventHandler
             $orders
                 ->where('pos_orders.company_id', $shift->company_id)
                 ->where('pos_orders.branch_id', $shift->branch_id)
-                ->where('pos_orders.source', Order::SOURCE_QR_WEB);
+                ->whereIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE);
 
             if ($shift->device_id === null) {
                 $orders->whereRaw('0 = 1');
@@ -582,7 +591,7 @@ class CloseShiftHandler implements SyncEventHandler
         $window = [$shift->opened_at, $closedAt];
 
         $legacyOrders = DB::table('pos_orders')
-            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
+            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
             ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_PAID)
             // P-G7 — confirmed delivery-provider orders never put money in
@@ -636,7 +645,7 @@ class CloseShiftHandler implements SyncEventHandler
             ->get();
 
         $legacyVoids = DB::table('pos_orders')
-            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
+            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
             ->where($this->orderBelongsToShift($shift))
             ->where('status', Order::STATUS_VOID)
             ->whereBetween('opened_at', $window)
@@ -653,7 +662,7 @@ class CloseShiftHandler implements SyncEventHandler
 
         $legacyRoundUp = DB::table('pos_roundup_donations')
             ->join('pos_orders', 'pos_roundup_donations.order_id', '=', 'pos_orders.id')
-            ->where('pos_orders.source', '!=', Order::SOURCE_QR_WEB)
+            ->whereNotIn('pos_orders.source', self::SETTLED_BY_PAYMENT_DEVICE)
             ->where($this->orderBelongsToShift($shift, 'pos_roundup_donations.created_at'))
             ->whereBetween('pos_roundup_donations.created_at', $window)
             ->sum('pos_roundup_donations.amount');

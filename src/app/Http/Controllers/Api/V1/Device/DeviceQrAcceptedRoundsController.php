@@ -8,6 +8,7 @@ use App\Actions\Qr\ListAcceptedDineInQrRoundsAction;
 use App\Actions\Qr\QrDineInException;
 use App\Http\Requests\Api\V1\Device\ListAcceptedQrRoundsRequest;
 use App\Models\Device;
+use App\Support\DeviceCapabilities;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
 
@@ -26,6 +27,7 @@ final class DeviceQrAcceptedRoundsController
                 $device,
                 isset($validated['after']) ? (string) $validated['after'] : null,
                 isset($validated['limit']) ? (int) $validated['limit'] : 25,
+                DeviceCapabilities::tabletOrders($request),
             );
         } catch (QrDineInException $exception) {
             return QrApiResponse::failure(

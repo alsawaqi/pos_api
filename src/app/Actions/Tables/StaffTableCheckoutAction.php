@@ -38,7 +38,8 @@ final class StaffTableCheckoutAction
 
     public static function shape(Order $order): bool
     {
-        return in_array($order->source, ['main_pos', 'handheld'], true)
+        // LAUNCH-P6 — a bill a customer tablet opened is a staff-served table bill too.
+        return in_array($order->source, ['main_pos', 'handheld', 'customer_tablet'], true)
             && $order->order_type === 'dine_in' && $order->qr_session_id === null
             && $order->table_id !== null && $order->table_session_id !== null;
     }

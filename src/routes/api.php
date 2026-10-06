@@ -57,6 +57,8 @@ use App\Http\Controllers\Api\V1\Device\DeviceTableFeedController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableReleaseCredentialController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSearchController;
 use App\Http\Controllers\Api\V1\Device\DeviceTableSessionController;
+use App\Http\Controllers\Api\V1\Device\DeviceTabletController;
+use App\Http\Controllers\Api\V1\Device\DeviceTabletOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
 use App\Http\Controllers\Api\V1\Device\PaymentReversalsController;
@@ -73,9 +75,12 @@ use App\Http\Controllers\Api\V1\PublicQr\QrTableFinishController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableMenuController;
 use App\Http\Controllers\Api\V1\PublicQr\QrTableRoundController;
 use App\Http\Middleware\EnsureAttendedDevice;
+use App\Http\Middleware\EnsureCustomerTablet;
 use App\Http\Middleware\MarkP5Device;
 use App\Http\Middleware\RefuseTrainingMode;
 use App\Http\Middleware\RequireStaffToken;
+use App\Http\Middleware\RequireTabletStaff;
+use App\Http\Middleware\RestrictCustomerTablet;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -147,7 +152,33 @@ Route::prefix('v1')->group(function (): void {
 
     // Everything below requires a valid device token, throttled per-device.
     // LAUNCH-P5 (A8) — any device call carrying training: true is refused.
-    Route::middleware(['auth:pos_device', 'throttle:device-api', RefuseTrainingMode::class, MarkP5Device::class])->group(function (): void {
+    // LAUNCH-P6 (tester call 1) — a customer tablet's token reaches only the
+    // device/tablet/* routes and the heartbeat / identity (RestrictCustomerTablet).
+    Route::middleware(['auth:pos_device', RestrictCustomerTablet::class, 'throttle:device-api', RefuseTrainingMode::class, MarkP5Device::class])->group(function (): void {
+        // LAUNCH-P6 — the customer tablet's own routes (its token only).
+        Route::middleware(EnsureCustomerTablet::class)->group(function (): void {
+            Route::get('device/tablet/bootstrap', [DeviceTabletController::class, 'bootstrap'])->name('device.tablet.bootstrap');
+            Route::get('device/tablet/menu', [DeviceTabletController::class, 'menu'])->name('device.tablet.menu');
+            Route::post('device/tablet/quote', [DeviceTabletController::class, 'quote'])->name('device.tablet.quote');
+            Route::post('device/tablet/loyalty/lookup', [DeviceTabletController::class, 'lookup'])
+                ->middleware('throttle:tablet-loyalty-lookup')->name('device.tablet.loyalty.lookup');
+            Route::post('device/tablet/orders', [DeviceTabletController::class, 'store'])->name('device.tablet.orders.store');
+        });
+        // LAUNCH-P6 — the staff side of tablet orders (a till or a handheld
+        // with a logged-in staff member's X-Staff-Token).
+        Route::middleware([EnsureAttendedDevice::class, RequireTabletStaff::class])->group(function (): void {
+            Route::get('device/tablet-orders', [DeviceTabletOrdersController::class, 'index'])
+                ->middleware('throttle:qr-table-device-read')->name('device.tablet-orders.index');
+            Route::post('device/tablet-orders/{uuid}/take', [DeviceTabletOrdersController::class, 'take'])
+                ->middleware('throttle:qr-table-device-write')->name('device.tablet-orders.take');
+            Route::post('device/tablet-orders/{uuid}/send-to-kitchen', [DeviceTabletOrdersController::class, 'send'])
+                ->middleware('throttle:qr-table-device-write')->name('device.tablet-orders.send');
+            Route::post('device/tablet-orders/{uuid}/redeem/approve', [DeviceTabletOrdersController::class, 'approve'])
+                ->middleware(['throttle:qr-table-device-write', 'throttle:manager-pin'])->name('device.tablet-orders.redeem.approve');
+            Route::post('device/tablet-orders/{uuid}/redeem/reject', [DeviceTabletOrdersController::class, 'reject'])
+                ->middleware('throttle:qr-table-device-write')->name('device.tablet-orders.redeem.reject');
+        });
+
         Route::post('device/payments/{paymentUuid}/reversals', [PaymentReversalsController::class, 'reserve'])->middleware('throttle:manager-pin');
         Route::post('device/payments/reversals/{uuid}/result', [PaymentReversalsController::class, 'result']);
         Route::get('device/payments/reversals', [PaymentReversalsController::class, 'index']);

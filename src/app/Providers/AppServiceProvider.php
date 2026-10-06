@@ -214,6 +214,11 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('qr-table-device-write', fn (Request $request) => Limit::perMinute(30)
             ->by('qr-table-device-write:'.(string) $request->user()?->getAuthIdentifier())
             ->response($qrRateLimited));
+        // LAUNCH-P6 (tester call 8) — the customer tablet's phone lookup:
+        // 10 per minute per tablet.
+        RateLimiter::for('tablet-loyalty-lookup', fn (Request $request) => Limit::perMinute(10)
+            ->by('tablet-loyalty-lookup:'.(string) $request->user()?->getAuthIdentifier())
+            ->response($qrRateLimited));
         RateLimiter::for('qr-settlement-claim', fn (Request $request) => Limit::perMinute(30)
             ->by('qr-settlement-claim:'.(string) $request->user()?->getAuthIdentifier())
             ->response($qrRateLimited));

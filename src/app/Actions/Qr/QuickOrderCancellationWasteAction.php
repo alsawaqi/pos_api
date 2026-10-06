@@ -46,13 +46,13 @@ final class QuickOrderCancellationWasteAction
         return $ids;
     }
 
-    public function handle(Device $device, Order $order, array $preparedIds, int $staff, string $request): array
+    public function handle(Device $device, Order $order, array $preparedIds, ?int $staff, string $request, ?string $note = null): array
     {
         $items = $order->items->filter(fn ($item): bool => in_array((int) $item->id, $preparedIds, true)
             && $item->status !== 'void' && (float) $item->qty > 0);
         // LAUNCH packaging add-on — only the lines used for the order's type.
         $plan = $this->ingredients->plan($items->map(fn ($item): array => [$item, (float) $item->qty])->all(), true, (string) $order->order_type);
-        $note = 'cancelled expired QR order '.$order->uuid.' — '.$request;
+        $note ??= 'cancelled expired QR order '.$order->uuid.' — '.$request;
         $records = [];
         foreach ($plan['ingredients'] as $row) {
             $at = now();

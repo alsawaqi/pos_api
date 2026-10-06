@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\OrderComp;
 use App\Models\OrderItem;
 use App\Models\QrOrderRound;
+use App\Support\DeviceCapabilities;
 use App\Support\Money;
 use App\Support\Orders\DeviceOrderItems;
 use Illuminate\Http\JsonResponse;
@@ -61,6 +62,9 @@ class DeviceOrdersController
             ->where('company_id', $device->company_id)
             ->where('branch_id', $device->branch_id)
             ->whereIn('status', self::ACTIVE)
+            // LAUNCH-P6 (tester call 15) — customer tablet orders only for a
+            // device that declares `tablet-orders`.
+            ->when(! DeviceCapabilities::tabletOrders($request), fn ($q) => $q->where('source', '!=', 'customer_tablet'))
             ->with([
                 'items' => fn ($q) => $q->orderBy('id'),
                 'items.addons',

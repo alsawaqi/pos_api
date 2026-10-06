@@ -7,8 +7,10 @@ namespace App\Actions\Qr;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrOrderRound;
+use App\Models\TabletOrder;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -21,6 +23,14 @@ final class ListAcceptedDineInQrRoundsAction
     private const DEFAULT_LIMIT = 25;
 
     private const MAX_LIMIT = 50;
+
+    /**
+     * LAUNCH-P6 (tester calls 13 and 15) — a device declaring `tablet-orders`
+     * also gets customer tablet rounds: a dine-in tablet round once staff sent
+     * it (confirmed it), and the kitchen round of a sent Quick / To go tablet
+     * order. An old build's feed is exactly as before: no tablet round.
+     */
+    private bool $tabletRows = false;
 
     public function __construct(private readonly QrChargeRecoveryGuard $recovery) {}
 
@@ -36,7 +46,9 @@ final class ListAcceptedDineInQrRoundsAction
         Device $device,
         ?string $after = null,
         int $limit = self::DEFAULT_LIMIT,
+        bool $tabletRows = false,
     ): array {
+        $this->tabletRows = $tabletRows;
         if (! $this->recovery->isAttendedDevice($device)) {
             throw new QrDineInException(
                 'device_not_attended',
@@ -80,6 +92,9 @@ final class ListAcceptedDineInQrRoundsAction
             ->where('branch_id', (int) $device->branch_id)
             ->whereIn('round_id', $rounds->modelKeys())
             ->get()->keyBy('ticket_key');
+        $tabletUuids = $this->tabletRows && $rounds->isNotEmpty() ? TabletOrder::query()
+            ->where('company_id', (int) $device->company_id)->where('branch_id', (int) $device->branch_id)
+            ->whereIn('round_id', $rounds->modelKeys())->pluck('uuid', 'round_id') : collect();
 
         // Even a branch with no accepted rounds needs a durable high-water
         // mark. Without this scoped sequence-zero cursor, a till first enabled
@@ -98,7 +113,7 @@ final class ListAcceptedDineInQrRoundsAction
             : null;
 
         return [
-            'rounds' => $rounds->map(fn (QrOrderRound $round): array => $this->present($round, $tickets->get('round:'.$round->id)))->all(),
+            'rounds' => $rounds->map(fn (QrOrderRound $round): array => $this->present($round, $tickets->get('round:'.$round->id), $tabletUuids))->all(),
             'next_cursor' => $nextCursor,
             'latest_cursor' => $latestCursor,
             'skipped_expired_count' => $skippedExpiredCount,
@@ -124,6 +139,7 @@ final class ListAcceptedDineInQrRoundsAction
                 'pos_qr_order_rounds.kitchen_printed_at',
                 'pos_orders.id as feed_order_id',
                 'pos_orders.source as feed_source',
+                'pos_orders.order_type as feed_order_type',
                 'pos_orders.uuid as feed_order_uuid',
                 'pos_orders.receipt_number as feed_receipt_number',
                 'pos_orders.temp_reference as feed_temp_reference',
@@ -140,12 +156,31 @@ final class ListAcceptedDineInQrRoundsAction
             ->whereNotNull('pos_qr_order_rounds.accepted_seq')
             ->where('pos_orders.company_id', (int) $device->company_id)
             ->where('pos_orders.branch_id', (int) $device->branch_id)
-            ->whereIn('pos_orders.source', [Order::SOURCE_QR_WEB, 'main_pos', 'handheld'])
-            ->where('pos_orders.order_type', 'dine_in')
             ->where(function (Builder $query): void {
-                $query->whereNotNull('pos_qr_order_rounds.qr_session_id')
-                    ->orWhereNotNull('pos_qr_order_rounds.table_session_id');
+                $query->where(function (Builder $dineIn): void {
+                    $dineIn->whereIn('pos_orders.source', [Order::SOURCE_QR_WEB, 'main_pos', 'handheld', 'customer_tablet'])
+                        ->where('pos_orders.order_type', 'dine_in')
+                        ->where(function (Builder $query): void {
+                            $query->whereNotNull('pos_qr_order_rounds.qr_session_id')
+                                ->orWhereNotNull('pos_qr_order_rounds.table_session_id');
+                        });
+                });
+                if ($this->tabletRows) {
+                    // A sent Quick / To go tablet order's kitchen round.
+                    $query->orWhere(function (Builder $counter): void {
+                        $counter->where('pos_orders.source', 'customer_tablet')
+                            ->whereIn('pos_orders.order_type', ['quick', 'to_go'])
+                            ->whereNull('pos_qr_order_rounds.qr_session_id')
+                            ->whereNull('pos_qr_order_rounds.table_session_id')
+                            ->whereExists(fn ($tablet) => $tablet->selectRaw('1')->from('pos_tablet_orders as feed_tablet')
+                                ->whereColumn('feed_tablet.round_id', 'pos_qr_order_rounds.id')
+                                ->whereColumn('feed_tablet.order_id', 'pos_orders.id')
+                                ->whereNotNull('feed_tablet.sent_to_kitchen_at'));
+                    });
+                }
             })
+            ->when(! $this->tabletRows, fn (Builder $query) => $query->whereNotExists(fn ($tablet) => $tablet->selectRaw('1')
+                ->from('pos_tablet_orders as feed_tablet')->whereColumn('feed_tablet.round_id', 'pos_qr_order_rounds.id')))
             ->where(function (Builder $query) use ($device): void {
                 $query->whereNull('pos_qr_order_rounds.qr_session_id')
                     ->orWhere(function (Builder $credential) use ($device): void {
@@ -163,7 +198,7 @@ final class ListAcceptedDineInQrRoundsAction
     }
 
     /** @return array<string, mixed> */
-    private function present(QrOrderRound $round, ?object $ticket): array
+    private function present(QrOrderRound $round, ?object $ticket, ?Collection $tabletUuids = null): array
     {
         if ($ticket !== null && ((int) $ticket->round_id !== (int) $round->id
             || (int) $ticket->order_id !== (int) $round->feed_order_id)) {
@@ -198,7 +233,14 @@ final class ListAcceptedDineInQrRoundsAction
             'printed_at' => $printedAt?->toIso8601String(),
             'needs_review' => (bool) $round->needs_review,
             'source' => (string) $round->feed_source,
-        ];
+        ] + ($this->tabletRows ? [
+            // LAUNCH-P6 — only for a `tablet-orders` device.
+            'order_type' => (string) $round->feed_order_type,
+            'origin' => $tabletUuids?->has($round->id) ? 'customer_tablet' : null,
+            'tablet_order_uuid' => $tabletUuids?->get($round->id),
+            'order_number' => $round->feed_order_type !== 'dine_in' && $tabletUuids?->has($round->id)
+                ? TabletOrder::orderNumber(is_string($round->feed_temp_reference) ? $round->feed_temp_reference : null) : null,
+        ] : []);
     }
 
     private function encodeCursor(int $acceptedSequence, Device $device): string

@@ -31,7 +31,7 @@ final class ReadQrCheckoutAction
                 ->where('branch_id', (int) $device->branch_id)
                 ->where(function ($query): void {
                     $query->where('source', Order::SOURCE_QR_WEB)->orWhere(fn ($staff) => $staff
-                        ->whereIn('source', ['main_pos', 'handheld'])->where('order_type', 'dine_in')
+                        ->whereIn('source', ['main_pos', 'handheld', 'customer_tablet'])->where('order_type', 'dine_in')
                         ->whereNull('qr_session_id')->whereNotNull('table_id')->whereNotNull('table_session_id'));
                 })
                 ->where(function ($query): void {

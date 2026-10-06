@@ -137,6 +137,12 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             $roundupBaisas = $device->isPaymentStation() && $claimHeldByDevice
                 ? (int) ($order->charge_roundup_amount_baisas ?? 0)
                 : 0;
+            // LAUNCH-P6 fix order 3 (F-13) — the cash a cashier took under a
+            // claim that lapsed while the holder was offline: accepted once,
+            // from the holder only, at the frozen amount; its charge facts stay.
+            $tabletLateHolderPay = ! $claimIsLive
+                && $this->qrChargeRecovery->isTabletLateHolderPay($order, $device, $claimAt);
+            $claimedTenders = $claimIsLive || $tabletLateHolderPay;
 
             if ($device->isPaymentStation() && ! $claimHeldByDevice) {
                 $evidence = $this->softPosEvidence($payments);
@@ -189,7 +195,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             if ($device->isPaymentStation() && ! $claimHeldByDevice) {
                 throw new RuntimeException('payment station must hold a live charge claim: '.$orderUuid);
             }
-            if ($order->status === Order::STATUS_AWAITING_PAYMENT && ! $claimIsLive) {
+            if ($order->status === Order::STATUS_AWAITING_PAYMENT && ! $claimIsLive && ! $tabletLateHolderPay) {
                 throw new RuntimeException('awaiting-payment order has no live charge claim: '.$orderUuid);
             }
 
@@ -200,7 +206,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                 if (! is_array($tender)) {
                     throw new RuntimeException('invalid payment tender in order.pay');
                 }
-                if ($claimIsLive
+                if ($claimedTenders
                     && (! array_key_exists('amount_baisas', $tender)
                         || ! is_int($tender['amount_baisas']))) {
                     throw new RuntimeException('claimed charge requires an integer tender amount');
@@ -209,7 +215,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
                     && ($tender['method'] ?? null) !== Payment::METHOD_CARD) {
                     throw new RuntimeException('payment station accepts card tenders only');
                 }
-                if ($claimIsLive
+                if ($claimedTenders
                     && ($tender['status'] ?? Payment::STATUS_SUCCESS) !== Payment::STATUS_SUCCESS) {
                     throw new RuntimeException('claimed charge requires a successful tender');
                 }
@@ -290,7 +296,7 @@ class PayOrderHandler implements AfterSyncEventCommitHandler
             }
 
             $grandBaisas = Money::toBaisas($order->grand_total);
-            if ($claimIsLive) {
+            if ($claimedTenders) {
                 $frozenBaisas = (int) $order->charge_amount_baisas;
                 if ($tenderedBaisas !== $frozenBaisas) {
                     throw new RuntimeException('payment total mismatch: tendered '.$tenderedBaisas.' baisas vs charge_amount_baisas '.$frozenBaisas);

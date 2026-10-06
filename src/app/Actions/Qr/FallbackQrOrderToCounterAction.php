@@ -272,7 +272,10 @@ final class FallbackQrOrderToCounterAction
     private function lockSessionForAttendedRecovery(Order $order, Device $device): ?QrSession
     {
         if ($order->qr_session_id === null) {
-            if ($this->isDineInOrder($order)
+            // LAUNCH-P6 fix order 3 (F-13) — a customer tablet's Quick / To go
+            // order never has a QR session; the same-branch attended device
+            // recovers it, keeping every charge fact.
+            if (($this->isDineInOrder($order) || ClaimQrSettlementAction::isTabletCounterOrder($order))
                 && (int) $order->company_id === (int) $device->company_id
                 && (int) $order->branch_id === (int) $device->branch_id) {
                 return null;

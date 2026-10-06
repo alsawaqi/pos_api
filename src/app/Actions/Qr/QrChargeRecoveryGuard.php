@@ -41,7 +41,10 @@ final class QrChargeRecoveryGuard
         $hasQrProvenance = StaffTableCheckoutAction::shape($order) || $order->qr_session_id !== null
             || ($order->source === Order::SOURCE_QR_WEB
                 && $order->order_type === 'dine_in'
-                && $order->table_id !== null);
+                && $order->table_id !== null)
+            // LAUNCH-P6 fix order 3 (F-13) — a customer tablet's Quick / To go
+            // order claimed through the same attended path recovers the same way.
+            || ClaimQrSettlementAction::isTabletCounterOrder($order);
 
         return $hasQrProvenance
             && in_array($order->status, [
@@ -50,6 +53,28 @@ final class QrChargeRecoveryGuard
                 Order::STATUS_KITCHEN,
             ], true)
             && $this->isAmbiguousCharge($order, $at);
+    }
+
+    /**
+     * LAUNCH-P6 fix order 3 (F-13) — the late cash pay of a customer tablet's
+     * Quick / To go order from the attended device that held its claim, after
+     * the claim lapsed by time (or was stamped lapsed by the sweeper) while the
+     * device was offline. Nothing else is recorded on it yet, so the one pay
+     * records the cash once; any other device goes through the counter
+     * fallback or the manager payment review. An uncertain (card) outcome is
+     * never settled this way.
+     */
+    public function isTabletLateHolderPay(Order $order, Device $device, CarbonInterface $at): bool
+    {
+        return $order->status === Order::STATUS_AWAITING_PAYMENT
+            && $order->charge_claimed_at !== null
+            && $order->charge_device_id !== null
+            && (int) $order->charge_device_id === (int) $device->getKey()
+            && $this->isAttendedDevice($device)
+            && $order->charge_outcome !== Order::CHARGE_OUTCOME_UNCERTAIN
+            && $this->isAmbiguousCharge($order, $at)
+            && ClaimQrSettlementAction::isTabletCounterOrder($order)
+            && ! $order->payments()->exists();
     }
 
     public function isAttendedDevice(Device $device): bool

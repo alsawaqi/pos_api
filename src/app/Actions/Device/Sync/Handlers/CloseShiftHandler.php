@@ -127,6 +127,9 @@ class CloseShiftHandler implements SyncEventHandler
         return $query->selectRaw('1')->from('pos_shifts as payer_shift')
             ->whereColumn('payer_shift.staff_id', $payment.'.staff_id')
             ->where('payer_shift.is_shared', true)
+            // Fix order 3 (F-14) — a shift whose device was deleted matches no
+            // payment, so it cannot take one from the paying device's shift.
+            ->whereNotNull('payer_shift.device_id')
             ->whereColumn('payer_shift.company_id', 'pos_orders.company_id')
             ->whereColumn('payer_shift.branch_id', 'pos_orders.branch_id')
             ->whereColumn('payer_shift.opened_at', '<=', $payment.'.captured_at')

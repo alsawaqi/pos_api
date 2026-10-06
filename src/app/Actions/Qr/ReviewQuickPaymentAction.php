@@ -11,6 +11,7 @@ use App\Models\Device;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\SyncEvent;
+use App\Models\TabletOrder;
 use App\Support\Money;
 use App\Support\Staff\AuthorizationGate;
 use Illuminate\Support\Facades\DB;
@@ -67,8 +68,12 @@ final class ReviewQuickPaymentAction
             }
 
             $order = Order::query()->where('uuid', $uuid)->where('company_id', $device->company_id)
-                ->where('branch_id', $device->branch_id)->where('source', Order::SOURCE_QR_WEB)
-                ->where('order_type', 'quick')->whereNull('table_id')->lockForUpdate()->first();
+                ->where('branch_id', $device->branch_id)->whereNull('table_id')
+                ->where(fn ($kinds) => $kinds->where(fn ($qr) => $qr->where('source', Order::SOURCE_QR_WEB)->where('order_type', 'quick'))
+                    // LAUNCH-P6 fix order 3 (F-13) — a customer tablet's Quick / To go order (its tablet row).
+                    ->orWhere(fn ($tablet) => $tablet->whereIn('order_type', ['quick', 'to_go'])->whereNull('qr_session_id')
+                        ->whereIn('id', TabletOrder::query()->select('order_id')->where('company_id', (int) $device->company_id))))
+                ->lockForUpdate()->first();
             if ($order === null) {
                 throw new QrChargeException('order_not_found', 404, 'The order was not found in this branch.');
             }

@@ -106,7 +106,20 @@ class DeliverOrderHandler implements SyncEventHandler
         $customerPhone = $this->optionalString($delivery, 'customer_phone', 32);
         $driverPhone = $this->optionalString($delivery, 'driver_phone', 32);
 
-        return DB::transaction(function () use ($order, $provider, $reference, $customerPhone, $driverPhone, $commissionPercent, $expectedBaisas, $punchedAt): array {
+        return DB::transaction(function () use ($order, $orderUuid, $provider, $reference, $customerPhone, $driverPhone, $commissionPercent, $expectedBaisas, $punchedAt): array {
+            // Fix order PK-A1 — re-read and lock the order INSIDE the
+            // transaction (as pay and void do) and re-check it: two
+            // concurrent hand-offs of one order (different client_event_ids)
+            // both pass the unlocked check above; only the first may take the
+            // stock and the per-order packaging.
+            $order = Order::query()->whereKey($order->getKey())->lockForUpdate()->first();
+            if ($order === null) {
+                throw new RuntimeException('order not found for delivery: '.$orderUuid);
+            }
+            if (in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION, Order::STATUS_VOID, Order::STATUS_REFUNDED], true)) {
+                throw new RuntimeException('order already settled: '.$orderUuid);
+            }
+
             $order->update([
                 'status' => Order::STATUS_PENDING_VERIFICATION,
                 // NOT closed: closed_at is the revenue stamp and is written

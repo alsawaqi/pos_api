@@ -40,7 +40,7 @@ final class TabletFixOrder3Test extends TestCase
     private function lapsedClaim(bool $sweep, ?Device $holder = null): array
     {
         $order = $this->p6Submit()->assertCreated()->json('data');
-        $claim = $this->p6As($holder ?? $this->handheld, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid']])
+        $claim = $this->p6Staff($holder ?? $this->handheld, 7, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid']])
             ->assertOk()->json('data');
         // The holder goes offline past the 300 s claim (and the sweeper's grace).
         $this->travel(6)->minutes();

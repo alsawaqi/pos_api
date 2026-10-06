@@ -60,7 +60,7 @@ final class TabletFixOrder4Test extends TestCase
 
         $this->assertSame(['none', null, false, false, false], $this->charge($this->row($uuid)));
 
-        $claim = $this->p6As($this->handheld, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid']])
+        $claim = $this->p6Staff($this->handheld, 9, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid']])
             ->assertOk()->json('data');
         $this->assertSame(['claimed', $handheld, true, false, false], $this->charge($this->row($uuid)));
         $this->assertSame(['claimed', $handheld, true, true, false], $this->charge($this->row($uuid, $this->handheld)));
@@ -85,7 +85,7 @@ final class TabletFixOrder4Test extends TestCase
     public function test_f15_an_uncertain_card_result_and_the_staff_action_answers_carry_the_charge_state(): void
     {
         $order = $this->p6Submit()->assertCreated()->json('data');
-        $this->p6As($this->handheld, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid']])->assertOk();
+        $this->p6Staff($this->handheld, 9, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid']])->assertOk();
         $this->p6Order($order['order_uuid'])->update(['charge_outcome' => Order::CHARGE_OUTCOME_UNCERTAIN]);
 
         $this->assertSame(['uncertain', (int) $this->handheld->id, true, false, true], $this->charge($this->row($order['tablet_order_uuid'])));
@@ -138,7 +138,7 @@ final class TabletFixOrder4Test extends TestCase
             (string) $this->p6PayCash($this->handheld, $plain['order_uuid'], 2000)->json('data.results.0.result.error'));
 
         $order = $this->p6Submit()->assertCreated()->json('data');
-        $this->p6As($this->handheld, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid'], 'gps' => $inside])
+        $this->p6Staff($this->handheld, 9, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $order['order_uuid'], 'gps' => $inside])
             ->assertOk();
         $this->travel(6)->minutes();
         Artisan::call('qr:sweep-stale-charges');

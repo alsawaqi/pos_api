@@ -154,7 +154,7 @@ final class TabletFixOrder2Test extends TestCase
 
     private function claim(string $orderUuid, ?Device $device = null): TestResponse
     {
-        return $this->p6As($device ?? $this->till, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $orderUuid]);
+        return $this->p6Staff($device ?? $this->till, 7, 'POST', '/api/v1/device/qr/claim-settlement', ['order_uuid' => $orderUuid]);
     }
 
     public function test_f10_a_claimed_tablet_order_cannot_be_edited_until_the_claim_is_released_then_it_pays(): void

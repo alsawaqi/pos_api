@@ -1431,6 +1431,8 @@ class BuildDeviceConfigAction
                     // LAUNCH costs & allergens add-on — what the option adds
                     // ("Extra cheese" → milk); [] for Remove / instructions.
                     'allergens' => $allergens?->addon((int) $a->id) ?? [],
+                    // Fix order 1 (K-6) — and what it may contain (a linked product's traces).
+                    'may_contain' => $allergens?->addonMayContain((int) $a->id) ?? [],
                 ])->values()->all()
                 : [],
         ];

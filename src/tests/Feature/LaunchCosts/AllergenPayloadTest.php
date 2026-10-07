@@ -199,6 +199,25 @@ final class AllergenPayloadTest extends TestCase
         }
     }
 
+    /** Fix order 1 (K-6) — an option also carries what it MAY contain (a linked product's traces), in every payload. */
+    public function test_options_carry_what_a_linked_product_may_contain_in_every_payload(): void
+    {
+        $config = $this->p6As($this->till, 'GET', '/api/v1/device/config')->assertOk()->json('data');
+        $qr = $this->p4QrGet($this->p4QrSession(), '/api/v1/public/qr/menu')->assertOk()->json('data');
+        $tablet = $this->p6As($this->tablet, 'GET', '/api/v1/device/tablet/menu?order_type=quick')->assertOk()->json('data');
+        foreach (['config' => $config, 'qr' => $qr, 'tablet' => $tablet] as $label => $payload) {
+            $options = collect($payload['addon_groups'])->flatMap(static fn (array $g): array => $g['addons'])->keyBy('id');
+            // The cookie contains gluten + milk and may contain peanuts.
+            $this->assertSame([['gluten', 'milk'], ['peanuts']], [$options[$this->options['Add a cookie']]['allergens'], $options[$this->options['Add a cookie']]['may_contain']], $label);
+            $this->assertSame([], $options[$this->options['Extra cheese']]['may_contain'], $label);
+            $this->assertSame([], $options[$this->options['No bread']]['may_contain'], $label);
+        }
+        // Never repeating what the option contains: the cookie's "may contain milk" is dropped.
+        DB::table('pos_product_allergens')->insert(['company_id' => 100, 'product_id' => $this->cookie, 'allergen' => 'milk', 'kind' => 'may_contain', 'created_at' => now(), 'updated_at' => now()]);
+        $options = collect($this->p6As($this->till, 'GET', '/api/v1/device/config')->json('data.addon_groups'))->flatMap(static fn (array $g): array => $g['addons'])->keyBy('id');
+        $this->assertSame(['peanuts'], $options[$this->options['Add a cookie']]['may_contain']);
+    }
+
     public function test_allergen_codes_are_the_fixed_fourteen_in_order_and_unknown_codes_are_dropped(): void
     {
         $this->assertSame(['gluten', 'milk', 'molluscs'], Allergens::normalise(['molluscs', 'milk', 'gluten', 'milk', 'nuts', 7, null]));

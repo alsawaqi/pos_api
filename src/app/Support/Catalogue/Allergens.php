@@ -280,6 +280,28 @@ final class Allergens
         return $this->union($this->mealItems[$mealId] ?? [], [], []);
     }
 
+    /**
+     * Fix order 1 (K-6) — what an add-on option MAY contain: the "may contain"
+     * of the products it adds (linked product, 'add' product stock-usage
+     * lines), never repeating what it contains; none for a Remove or
+     * quick-instruction option.
+     *
+     * @return list<string>
+     */
+    public function addonMayContain(int $addonId): array
+    {
+        $addon = $this->addons[$addonId] ?? null;
+        if ($addon === null || in_array($addon['kind'], ['remove', 'instructions'], true)) {
+            return [];
+        }
+        $set = [];
+        foreach ($addon['products'] as $productId) {
+            $set = array_merge($set, $this->product($productId)['may_contain']);
+        }
+
+        return array_values(array_diff(self::normalise($set), $this->addon($addonId)));
+    }
+
     /** @return list<string> what an add-on option adds (none for a Remove or quick-instruction option) */
     public function addon(int $addonId): array
     {

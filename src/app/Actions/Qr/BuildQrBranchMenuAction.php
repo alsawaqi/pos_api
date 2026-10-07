@@ -342,6 +342,8 @@ final class BuildQrBranchMenuAction
                             'display_order' => (int) $addon->display_order,
                             // What the option adds ("Extra cheese" → milk).
                             'allergens' => $allergens->addon((int) $addon->id),
+                            // Fix order 1 (K-6) — a linked product's "may contain".
+                            'may_contain' => $allergens->addonMayContain((int) $addon->id),
                         ];
                     })->values()->all(),
                 ];

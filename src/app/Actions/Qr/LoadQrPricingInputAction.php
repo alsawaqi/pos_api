@@ -16,6 +16,7 @@ use App\Support\Catalogue\ComboLines;
 use App\Support\Catalogue\SaleDates;
 use App\Support\Money;
 use App\Support\Orders\OneLineNote;
+use App\Support\Pricing\ComboPricing;
 use App\Support\Pricing\CompanyTaxPolicy;
 use App\Support\Pricing\DiscountRule;
 use App\Support\Pricing\Discounts;
@@ -237,8 +238,10 @@ final class LoadQrPricingInputAction
         $query = $staff ? $this->products->forStaff($companyId, $branchId) : $this->products->forBranch($companyId, $branchId);
         $products = $query->whereIn('pos_products.id', $lineProductIds === [] ? [0] : $lineProductIds)->get()->keyBy('id');
         $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->keys()->map(static fn ($id): int => (int) $id)->all();
-        $meals = ComboLines::meals($companyId, null, $mealIds);
-        $comboLines = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
+        // Fix order 1 (C-3) — every active meal on sale today: a main's meal
+        // is decided among all of them, never by the id the client sent.
+        $meals = ComboLines::meals($companyId, SaleDates::day($now));
+        $comboLines = ComboLines::load($comboIds, array_values(array_intersect($meals->keys()->map(static fn ($id): int => (int) $id)->all(), $mealIds)));
         $references = ComboLines::references($comboLines['combos']->flatten(1)->merge($comboLines['meals']->flatten(1)));
         $componentProductIds = array_values(array_unique(array_merge($componentProductIds, $references['products'])));
         $choices = $this->products->soldByBranch($companyId, $branchId)->where('is_internal', false)
@@ -300,12 +303,13 @@ final class LoadQrPricingInputAction
         $meal = null;
         $mealPriceBaisas = 0;
         if ($line['meal_id'] !== null) {
-            // LAUNCH combo add-on — "Make it a meal?": an active meal on sale
-            // today whose mains include this product.
+            // LAUNCH combo add-on — "Make it a meal?": fix order 1 (C-3) — the
+            // meal this main belongs to among the ACTIVE meals on sale today
+            // (one at most; when two slipped in, the first by sort / id), and
+            // only that one.
             $row = $context['meals']->get($line['meal_id']);
             if ($row === null || $product->isCombo()
-                || ! SaleDates::covers($row->on_sale_from, $row->on_sale_until, SaleDates::day($context['now']))
-                || ! ComboLines::isMainOf($row, $product)) {
+                || ComboLines::mealFor($context['meals'], $product)?->id !== $row->id) {
                 return ['reason' => QrCatalogueException::COMBO_INVALID, 'addon_id' => null];
             }
             $meal = new QrResolvedMeal((int) $row->id, (string) $row->name, $row->name_ar, Money::toBaisas($row->meal_price));
@@ -321,10 +325,15 @@ final class LoadQrPricingInputAction
         }
 
         $basePriceBaisas = Money::toBaisas($product->base_price);
-        // Owner decision 7 — a line never goes below 0 (a Remove option may).
-        $unitPriceBaisas = max(0, $basePriceBaisas + $mealPriceBaisas
-            + array_sum(array_map(static fn (QrResolvedAddOn $resolved): int => $resolved->priceDeltaBaisas, $addons))
-            + array_sum(array_map(static fn (QrResolvedComponent $component): int => $component->priceBaisas(), $components)));
+        // Owner decision 7 / fix order 1 (tester call 4) — every item and the
+        // line never go below 0 (a Remove option may): {@see ComboPricing}.
+        $unitPriceBaisas = ComboPricing::unit(
+            $meal !== null ? 'meal' : ($product->isCombo() ? 'combo' : 'standard'),
+            $basePriceBaisas,
+            array_map(static fn (QrResolvedAddOn $resolved): int => $resolved->priceDeltaBaisas, $addons),
+            $mealPriceBaisas,
+            array_map(static fn (QrResolvedComponent $component): int => $component->priceBaisas(), $components),
+        );
 
         return new QrResolvedLine(
             product: $product,

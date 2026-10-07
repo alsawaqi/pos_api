@@ -144,15 +144,30 @@ final class AppendQuickQrOrderItemsAction
                 'addon_ids' => $addons, 'notes' => $line['notes'] ?? '',
                 // LAUNCH combo add-on — the meal and the combo / meal items are part of the request.
                 'meal_id' => isset($line['meal_id']) ? (int) $line['meal_id'] : null,
-                'combo' => array_map(static function (array $component): array {
+                'combo' => self::sortedItems(array_map(static function (array $component): array {
                     $ids = array_map(intval(...), $component['addon_ids'] ?? array_column($component['addons'] ?? [], 'add_on_id'));
                     sort($ids);
 
                     return ['line_id' => (int) ($component['line_id'] ?? 0), 'product_id' => (int) $component['product_id'],
                         'qty' => (int) ($component['qty'] ?? 1), 'addon_ids' => $ids, 'notes' => $component['notes'] ?? ''];
-                }, is_array($line['combo'] ?? null) ? $line['combo'] : []),
+                }, is_array($line['combo'] ?? null) ? $line['combo'] : [])),
             ];
         }, $lines);
+    }
+
+    /**
+     * Fix order 1 (C-10) — the items of a combo or meal in a stable order
+     * (the server writes them line by line, a client may send any order), so
+     * a replay is not refused as a conflict.
+     *
+     * @param  list<array<string, mixed>>  $items
+     * @return list<array<string, mixed>>
+     */
+    private static function sortedItems(array $items): array
+    {
+        usort($items, static fn (array $a, array $b): int => strcmp((string) json_encode($a), (string) json_encode($b)));
+
+        return $items;
     }
 
     /** @return array<string, mixed> */

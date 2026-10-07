@@ -308,7 +308,7 @@ class CreateOrderHandler implements SyncEventHandler
                 // recipe, component and add-on copies. Never refused for an
                 // invalid combo or meal — the pricing check flags it.
                 $childMinutes = [];
-                $shares = $this->revenueShares($line, $plan);
+                $shares = $this->revenueShares($line, $plan, (string) $order['order_type']);
                 foreach ($plan['children'] as $position => $component) {
                     $childId = (int) $component['product_id'];
                     $child = Product::withTrashed()->where('company_id', $device->company_id)->find($childId);
@@ -1105,21 +1105,27 @@ class CreateOrderHandler implements SyncEventHandler
      * @param  array<string, mixed>  $plan
      * @return list<int>
      */
-    private function revenueShares(array $line, array $plan): array
+    private function revenueShares(array $line, array $plan, string $orderType = ''): array
     {
         $children = $plan['children'];
         if ($children === []) {
             return [];
         }
-        $total = (int) $line['line_total_baisas'];
+        // Fix order 1 (tester call 3) — the base is what the line paid after
+        // its own line discount.
+        $total = max(0, (int) $line['line_total_baisas'] - (int) ($line['line_discount_baisas'] ?? 0));
         $sent = array_map(static fn (array $child): mixed => $child['allocated_revenue_baisas'] ?? null, $children);
         if (! in_array(null, $sent, true)
             && array_filter($sent, static fn (mixed $value): bool => ! is_int($value) || $value < 0) === []
             && array_sum($sent) === $total) {
             return array_values($sent);
         }
+        // Fix order 1 (tester call 2) — the weights are the items' prices for
+        // the order's type: the delivery price on a delivery order (else the
+        // in-store price), the in-store price otherwise.
         $prices = Product::withTrashed()->whereIn('id', array_map(static fn (array $child): int => (int) $child['product_id'], $children) ?: [0])
-            ->pluck('base_price', 'id');
+            ->get(['id', 'base_price', 'delivery_price'])
+            ->mapWithKeys(static fn (Product $p): array => [(int) $p->id => $orderType === 'delivery' && $p->delivery_price !== null ? $p->delivery_price : $p->base_price]);
 
         return ComboAllocation::forLine(
             (int) $line['unit_price_baisas'],

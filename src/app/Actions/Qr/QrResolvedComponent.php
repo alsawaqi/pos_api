@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Qr;
 
 use App\Models\Product;
+use App\Support\Pricing\ComboPricing;
 
 /**
  * LAUNCH combo add-on — one item inside a combo or meal line, per ONE combo /
@@ -32,13 +33,17 @@ final readonly class QrResolvedComponent
         public bool $filled = false,
     ) {}
 
-    /** What this item adds to ONE combo / meal: qty × (its extra or upgrade price + its add-on prices). */
+    /**
+     * What this item adds to ONE combo / meal: qty × max(0, its extra or
+     * upgrade price + its add-on prices) — fix order 1 (tester call 4): an
+     * item never goes below 0 ({@see ComboPricing::item()}).
+     */
     public function priceBaisas(): int
     {
-        return $this->qty * ($this->extraPriceBaisas + array_sum(array_map(
+        return ComboPricing::item($this->qty, $this->extraPriceBaisas, array_map(
             static fn (QrResolvedAddOn $addon): int => $addon->priceDeltaBaisas,
             $this->addons,
-        )));
+        ));
     }
 
     /** @return list<int> */

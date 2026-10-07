@@ -18,9 +18,13 @@ namespace App\Support\Pricing;
  *             but the last;
  *   last    = price − Σ the others (it takes the rounding remainder).
  *
- * A child's share is the sum of its units' shares; for a line of qty Q it is
- * that × Q (so the children add up to unit price × Q = the line total). All
- * weights 0 → equal weights. In the rare case the remainder would go below
+ * Fix order 1 — the amount split is what the line PAID: line total − line
+ * discount (tester call 3); the weights are the items' prices for the order's
+ * type (the delivery price on a delivery order; tester call 2). For a line of
+ * whole quantity Q the units of all Q combos / meals are split at once (Q
+ * copies of the unit weights, in order) and a child's share is the sum of its
+ * units'. A fractional quantity splits the amount by the per-one shares of
+ * the unit price. All weights 0 → equal weights. In the rare case the remainder would go below
  * 0 (tiny weights next to big ones), the cumulative split is used instead
  * (share_k = round(P·W_k/W) − round(P·W_{k−1}/W), never negative).
  *
@@ -86,14 +90,28 @@ final class ComboAllocation
                 $owner[] = $index;
             }
         }
+        $qty = (float) $lineQty;
+        if ($qty >= 1 && $qty == floor($qty)) {
+            // Every unit of every combo / meal on the line, in order: the
+            // paid total (after the line discount) split once over all of them.
+            $copies = (int) $qty;
+            $weights = [];
+            $owners = [];
+            for ($copy = 0; $copy < $copies; $copy++) {
+                array_push($weights, ...$unitWeights);
+                array_push($owners, ...$owner);
+            }
+            $shares = array_fill(0, count($children), 0);
+            foreach (self::split($lineTotalBaisas, $weights) as $unit => $share) {
+                $shares[$owners[$unit]] += $share;
+            }
+
+            return $shares;
+        }
+
         $perOne = array_fill(0, count($children), 0);
         foreach (self::split($unitPriceBaisas, $unitWeights) as $unit => $share) {
             $perOne[$owner[$unit]] += $share;
-        }
-
-        $qty = (float) $lineQty;
-        if ($qty == floor($qty) && $unitPriceBaisas * (int) $qty === $lineTotalBaisas) {
-            return array_map(static fn (int $share): int => $share * (int) $qty, $perOne);
         }
 
         return self::split($lineTotalBaisas, $perOne);

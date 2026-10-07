@@ -48,7 +48,7 @@ final class AppendQrPricedLinesAction
                 $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
             );
             // LAUNCH combo add-on — a combo or meal: one parent, its items as children.
-            $childrenPayload = $this->children->payload($resolved, (int) $session->company_id, $recipeAt);
+            $childrenPayload = $this->children->payload($resolved, (int) $session->company_id, $recipeAt, $this->lineDiscountBaisas($price, $index));
             $item = OrderItem::query()->create([
                 'order_id' => $order->id,
                 'qty' => $resolved->qty,
@@ -108,7 +108,7 @@ final class AppendQrPricedLinesAction
                 $recipeAt,
                 $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
             );
-            $childrenPayload = $this->children->payload($resolved, (int) $session->company_id, $recipeAt);
+            $childrenPayload = $this->children->payload($resolved, (int) $session->company_id, $recipeAt, $this->lineDiscountBaisas($price, $index));
             $addons = [];
             foreach (QrComboChildren::parentAddons($resolved) as $resolvedAddon) {
                 $addons[] = [

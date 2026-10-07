@@ -7,6 +7,7 @@ namespace App\Support\Pricing;
 use App\Models\Product;
 use App\Models\Tax;
 use App\Support\Catalogue\ComboLines;
+use App\Support\Catalogue\SaleDates;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -200,7 +201,7 @@ final class WireValidator
         }
 
         // LAUNCH combo add-on — combo and meal lines: flagged, never refused.
-        $this->checkCombos($lines, $companyId, $failures);
+        $this->checkCombos($order, $lines, $companyId, $failures);
 
         $delivery = ($order['order_type'] ?? null) === 'delivery';
         if ($delivery) {
@@ -534,7 +535,7 @@ final class WireValidator
      * @param  list<mixed>  $lines
      * @param  list<array{code: string, expected: mixed, actual: mixed}>  $failures
      */
-    private function checkCombos(array $lines, int $companyId, array &$failures): void
+    private function checkCombos(array $order, array $lines, int $companyId, array &$failures): void
     {
         $productIds = [];
         $mealIds = [];
@@ -550,8 +551,11 @@ final class WireValidator
         }
         $products = Product::withTrashed()->where('company_id', $companyId)->whereIn('id', $productIds ?: [0])->get()->keyBy('id');
         $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->keys()->map(static fn ($id): int => (int) $id)->all();
-        $meals = ComboLines::meals($companyId, null, array_values(array_unique($mealIds)), false);
-        $owners = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
+        // Fix order 1 (C-3) — a meal line names the meal its main belongs to
+        // among the ACTIVE meals on sale on the order's day.
+        $openedAt = (string) ($order['opened_at'] ?? '');
+        $meals = ComboLines::meals($companyId, SaleDates::day($openedAt !== '' ? Carbon::parse($openedAt) : null));
+        $owners = ComboLines::load($comboIds, array_values(array_intersect($meals->keys()->map(static fn ($id): int => (int) $id)->all(), $mealIds)));
 
         foreach ($lines as $index => $rawLine) {
             $line = (array) $rawLine;
@@ -560,7 +564,7 @@ final class WireValidator
             $mealId = isset($line['meal_id']) ? (int) $line['meal_id'] : null;
             if ($mealId !== null) {
                 $meal = $meals->get($mealId);
-                if ($meal === null || $product === null || ! ComboLines::isMainOf($meal, $product)) {
+                if ($meal === null || $product === null || ComboLines::mealFor($meals, $product)?->id !== $meal->id) {
                     $this->failOnce($failures, 'combo', ['line_index' => $index, 'meal_main' => $mealId], ['line_index' => $index, 'product_id' => (int) ($line['product_id'] ?? 0)]);
 
                     return;
@@ -622,8 +626,10 @@ final class WireValidator
                 $shares[] = $line['main_allocated_revenue_baisas'] ?? null;
             }
             $sent = array_filter($shares, static fn (mixed $share): bool => $share !== null);
-            if ($sent !== [] && (count($sent) !== count($shares) || array_sum($sent) !== (int) ($line['line_total_baisas'] ?? 0))) {
-                $this->failOnce($failures, 'combo', ['line_index' => $index, 'allocated_revenue_baisas' => (int) ($line['line_total_baisas'] ?? 0)],
+            // Fix order 1 (tester call 3) — the shares add up to what the line paid after its line discount.
+            $paid = max(0, (int) ($line['line_total_baisas'] ?? 0) - (int) ($line['line_discount_baisas'] ?? 0));
+            if ($sent !== [] && (count($sent) !== count($shares) || array_sum($sent) !== $paid)) {
+                $this->failOnce($failures, 'combo', ['line_index' => $index, 'allocated_revenue_baisas' => $paid],
                     ['line_index' => $index, 'allocated_revenue_baisas' => array_sum($sent)]);
 
                 return;

@@ -43,7 +43,7 @@ final class QrComboChildren
     /**
      * @return list<array{attributes: array<string, mixed>, addons: list<array<string, mixed>>}>
      */
-    public function payload(QrResolvedLine $line, int $companyId, ?CarbonInterface $recipeAt = null): array
+    public function payload(QrResolvedLine $line, int $companyId, ?CarbonInterface $recipeAt = null, int $lineDiscountBaisas = 0): array
     {
         if (! $line->hasChildren()) {
             return [];
@@ -57,10 +57,13 @@ final class QrComboChildren
             $items[] = ['kind' => $component->kind, 'line_id' => $component->lineId, 'product' => $component->product,
                 'qty' => $component->qty, 'extra' => $component->extraPriceBaisas, 'notes' => $component->notes, 'addons' => $component->addons];
         }
+        // Fix order 1 (tester call 3) — the split base is what the line paid
+        // after its own line discount; the weights are the in-store prices
+        // (QR, tablet and table rounds are never delivery orders).
         $shares = ComboAllocation::forLine(
             $line->unitPriceBaisas,
             $line->qty,
-            $line->unitPriceBaisas * $line->qty,
+            max(0, $line->unitPriceBaisas * $line->qty - $lineDiscountBaisas),
             array_map(static fn (array $item): array => ['weight' => Money::toBaisas($item['product']->base_price), 'qty' => $item['qty']], $items),
         );
 

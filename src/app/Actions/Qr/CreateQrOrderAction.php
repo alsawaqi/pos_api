@@ -160,7 +160,7 @@ final class CreateQrOrderAction
                     $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
                 );
                 // LAUNCH combo add-on — a combo or meal: one parent, its items as children.
-                $childrenPayload = $this->children->payload($resolved, (int) $session->company_id);
+                $childrenPayload = $this->children->payload($resolved, (int) $session->company_id, null, $this->lineDiscountBaisas($price, $index));
                 $item = OrderItem::query()->create([
                     'order_id' => $order->id,
                     'qty' => $resolved->qty,

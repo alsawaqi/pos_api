@@ -471,36 +471,81 @@ return new class extends Migration
             $table->unique(['product_id', 'component_product_id'], 'pos_product_components_pair_unique');
         });
 
-        // LAUNCH-P4 data contract — combo slots and their options (pos_admin
-        // 2026_10_03_100003 / _100004) and the per-branch sold-out switch
+        // LAUNCH combo add-on (pos_admin 2026_10_07_100001 / _100002): combos
+        // and meals are lists of lines; the LAUNCH-P4 choice slots are
+        // retired. The per-branch sold-out switch is LAUNCH-P4
         // (2026_10_03_100005). The Postgres CHECKs are rehearsal-verified.
-        Schema::create('pos_combo_slots', function (Blueprint $table): void {
+        Schema::create('pos_meals', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();
             $table->unsignedBigInteger('company_id');
-            $table->unsignedBigInteger('combo_product_id');
             $table->string('name', 64);
             $table->string('name_ar', 64)->nullable();
-            $table->integer('min_choices')->default(1);
-            $table->integer('max_choices')->default(1);
+            $table->decimal('meal_price', 12, 3)->default(0);
+            $table->string('status', 16)->default('active');
+            $table->date('on_sale_from')->nullable();
+            $table->date('on_sale_until')->nullable();
             $table->integer('sort_order')->default(0);
-            // LAUNCH review add-on (pos_admin 2026_10_06_100009): the main slot
-            // ("Make it a meal?"), at most one per combo.
-            $table->boolean('is_main')->default(false);
             $table->timestamps();
-            $table->index(['combo_product_id', 'sort_order'], 'pos_combo_slots_combo_sort_idx');
+            $table->softDeletes();
         });
 
-        Schema::create('pos_combo_slot_options', function (Blueprint $table): void {
+        Schema::create('pos_meal_categories', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('company_id');
-            $table->unsignedBigInteger('slot_id');
+            $table->unsignedBigInteger('meal_id');
+            $table->unsignedBigInteger('category_id');
+            $table->timestamps();
+            $table->unique(['meal_id', 'category_id'], 'pos_meal_categories_meal_category_unique');
+        });
+
+        Schema::create('pos_meal_excluded_products', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('meal_id');
             $table->unsignedBigInteger('product_id');
-            $table->decimal('extra_price', 12, 3)->default(0);
-            $table->boolean('is_default')->default(false);
+            $table->timestamps();
+            $table->unique(['meal_id', 'product_id'], 'pos_meal_excluded_products_meal_product_unique');
+        });
+
+        Schema::create('pos_combo_lines', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('combo_product_id')->nullable();
+            $table->unsignedBigInteger('meal_id')->nullable();
+            $table->string('kind', 16);
+            $table->unsignedBigInteger('product_id')->nullable();
+            $table->integer('quantity')->nullable();
+            $table->unsignedBigInteger('category_id')->nullable();
+            $table->integer('pick_count')->nullable();
+            $table->string('name', 64)->nullable();
+            $table->string('name_ar', 64)->nullable();
             $table->integer('sort_order')->default(0);
             $table->timestamps();
-            $table->unique(['slot_id', 'product_id'], 'pos_combo_slot_options_slot_product_unique');
+            $table->index(['combo_product_id', 'sort_order'], 'pos_combo_lines_combo_sort_idx');
+            $table->index(['meal_id', 'sort_order'], 'pos_combo_lines_meal_sort_idx');
+        });
+
+        Schema::create('pos_combo_line_upgrades', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('line_id');
+            $table->unsignedBigInteger('product_id');
+            $table->decimal('upgrade_price', 12, 3)->default(0);
+            $table->integer('sort_order')->default(0);
+            $table->timestamps();
+            $table->unique(['line_id', 'product_id'], 'pos_combo_line_upgrades_line_product_unique');
+        });
+
+        Schema::create('pos_combo_line_items', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('line_id');
+            $table->unsignedBigInteger('product_id');
+            $table->boolean('excluded')->default(false);
+            $table->decimal('extra_price', 12, 3)->default(0);
+            $table->timestamps();
+            $table->unique(['line_id', 'product_id'], 'pos_combo_line_items_line_product_unique');
         });
 
         Schema::create('pos_product_sold_out', function (Blueprint $table): void {
@@ -1068,6 +1113,13 @@ return new class extends Migration
             // LAUNCH review add-on (pos_admin 2026_10_06_100009): the server's
             // cooking-time snapshot (a combo parent = its longest child).
             $table->smallInteger('cooking_minutes')->nullable();
+            // LAUNCH combo add-on (pos_admin 2026_10_07_100003): a meal parent's
+            // meal, a child's combo / meal line, its kind (fixed | upgrade |
+            // choice | main) and its share of the parent's line total.
+            $table->unsignedBigInteger('meal_id')->nullable();
+            $table->unsignedBigInteger('combo_line_id')->nullable();
+            $table->string('combo_child_kind', 16)->nullable();
+            $table->bigInteger('allocated_revenue_baisas')->nullable();
             $table->timestamps();
 
             // prepared | not_prepared (T11); no wastage arithmetic in T2.
@@ -2059,8 +2111,12 @@ return new class extends Migration
         Schema::dropIfExists('pos_ingredient_units');
         Schema::dropIfExists('pos_ingredients');
         Schema::dropIfExists('pos_product_sold_out');
-        Schema::dropIfExists('pos_combo_slot_options');
-        Schema::dropIfExists('pos_combo_slots');
+        Schema::dropIfExists('pos_combo_line_items');
+        Schema::dropIfExists('pos_combo_line_upgrades');
+        Schema::dropIfExists('pos_combo_lines');
+        Schema::dropIfExists('pos_meal_excluded_products');
+        Schema::dropIfExists('pos_meal_categories');
+        Schema::dropIfExists('pos_meals');
         Schema::dropIfExists('pos_addon_group_products');
         Schema::dropIfExists('pos_addons');
         Schema::dropIfExists('pos_addon_groups');

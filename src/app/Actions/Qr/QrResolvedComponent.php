@@ -27,6 +27,9 @@ final readonly class QrResolvedComponent
         public int $extraPriceBaisas,
         public string $notes,
         public array $addons,
+        // true = a fixed line the client left out, served as is (not part of
+        // the request, so an idempotent replay compares without it).
+        public bool $filled = false,
     ) {}
 
     /** What this item adds to ONE combo / meal: qty × (its extra or upgrade price + its add-on prices). */

@@ -408,7 +408,7 @@ final class LoadQrPricingInputAction
         foreach ($lines as $line) {
             $picks = $grouped[$line->id] ?? [];
             if ($line->kind === ComboLines::FIXED && $picks === []) {
-                $picks = [['line_id' => $line->id, 'product_id' => $line->product_id, 'qty' => $line->quantity, 'addon_ids' => [], 'notes' => '']];
+                $picks = [['line_id' => $line->id, 'product_id' => $line->product_id, 'qty' => $line->quantity, 'addon_ids' => [], 'notes' => '', 'filled' => true]];
             }
             $wanted = $line->kind === ComboLines::FIXED ? $line->quantity : $line->pick_count;
             if (array_sum(array_column($picks, 'qty')) !== $wanted) {
@@ -452,6 +452,7 @@ final class LoadQrPricingInputAction
                     extraPriceBaisas: $extra,
                     notes: $pick['notes'],
                     addons: $addons,
+                    filled: (bool) ($pick['filled'] ?? false),
                 );
             }
         }

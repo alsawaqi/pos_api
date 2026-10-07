@@ -61,7 +61,7 @@ final class AppendQuickQrOrderItemsAction
                     'combo' => array_map(static fn (array $component): array => [
                         'line_id' => $component['line_id'] ?? null, 'product_id' => $component['product_id'], 'qty' => $component['qty'],
                         'addon_ids' => array_column($component['addons'], 'add_on_id'), 'notes' => $component['notes'],
-                    ], $line['components'] ?? []),
+                    ], array_values(array_filter($line['components'] ?? [], static fn (array $component): bool => empty($component['filled'])))),
                 ], $existing->priced_lines);
                 if ($this->requestLines($original) !== $this->requestLines($payload['lines'])) {
                     throw new QrChargeException('idempotency_conflict', 409, 'This request already added different items.');

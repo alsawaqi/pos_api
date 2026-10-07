@@ -502,6 +502,8 @@ final class ComboServerTest extends TestCase
         $box = $round->priced_lines[0];
         $this->assertSame([['fixed', 'Beef burger', 2, 0, null], ['upgrade', 'Loaded fries', 1, 800, null], ['choice', 'Juice', 1, 300, 'Drink']],
             array_map(static fn (array $c): array => [$c['kind'], $c['name'], $c['qty'], $c['extra_price_baisas'], $c['line_name']], $box['components']));
+        // The beef was left out of the request (served as is): marked, so an idempotent replay compares without it.
+        $this->assertSame([true, false, false], array_column($box['components'], 'filled'));
         $meal = $round->priced_lines[1];
         $this->assertSame(['Chicken burger meal', $this->meal, 1200, 3000], [$meal['display_name'], $meal['meal_id'], $meal['meal_price_baisas'], $meal['unit_price_baisas']]);
         $this->assertSame(['Fries', 'Cola'], array_column($meal['components'], 'name'));

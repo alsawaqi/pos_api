@@ -80,6 +80,8 @@ final class FreezeQrRoundLinesAction
             'extra_price_baisas' => $component->extraPriceBaisas,
             'notes' => $component->notes,
             'addons' => self::addons($component->addons),
+            // A fixed line the client left out (served as is).
+            'filled' => $component->filled,
         ], $line->components);
     }
 

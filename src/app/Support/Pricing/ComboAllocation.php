@@ -28,6 +28,15 @@ namespace App\Support\Pricing;
  * 0 (tiny weights next to big ones), the cumulative split is used instead
  * (share_k = round(P·W_k/W) − round(P·W_{k−1}/W), never negative).
  *
+ * Fix order 2 (C-18) — never one entry per unit: every unit but the last
+ * gets the same rounded share for its weight, so a child's share is its
+ * unit count × that share (the last child takes the remainder); the
+ * cumulative fallback telescopes over each child's run of units, per combo.
+ * The same shares as listing every unit, at any quantity. A line of more
+ * than {@see MAX_COPIES} combos (the pricing check flags it) that needs the
+ * fallback splits by the per-one shares instead, so no request loops over
+ * an absurd quantity.
+ *
  * Golden example (work order §3 Part A item 6): a Family box paid 5.000 with
  * 2 × Burger 2.000, Fries 1.000, Cola 1.000 → 1.667 + 1.667 + 0.833 + 0.833.
  * The same algorithm is in mithqal_pricing (Part B); the shared vectors are
@@ -35,6 +44,9 @@ namespace App\Support\Pricing;
  */
 final class ComboAllocation
 {
+    /** The largest line quantity a device may send (more is flagged, never refused). */
+    public const MAX_COPIES = 9999;
+
     /**
      * @param  list<int>  $weights  one per unit, >= 0
      * @return list<int>
@@ -76,45 +88,81 @@ final class ComboAllocation
         if ($children === []) {
             return [];
         }
-        $unitWeights = [];
-        $owner = [];
-        foreach (array_values($children) as $index => $child) {
+        // Each child is a run of units of one weight: a whole item quantity
+        // is that many units, a fractional one is one unit of weight × qty.
+        $runs = [];
+        foreach (array_values($children) as $child) {
             $qty = (float) $child['qty'];
-            if ($qty >= 1 && $qty == floor($qty)) {
-                for ($k = 0; $k < (int) $qty; $k++) {
-                    $unitWeights[] = (int) $child['weight'];
-                    $owner[] = $index;
-                }
-            } else {
-                $unitWeights[] = (int) round($child['weight'] * $qty);
-                $owner[] = $index;
-            }
+            $runs[] = $qty >= 1 && $qty == floor($qty)
+                ? [(int) $qty, (int) $child['weight']]
+                : [1, (int) round($child['weight'] * $qty)];
         }
         $qty = (float) $lineQty;
         if ($qty >= 1 && $qty == floor($qty)) {
             // Every unit of every combo / meal on the line, in order: the
             // paid total (after the line discount) split once over all of them.
-            $copies = (int) $qty;
-            $weights = [];
-            $owners = [];
-            for ($copy = 0; $copy < $copies; $copy++) {
-                array_push($weights, ...$unitWeights);
-                array_push($owners, ...$owner);
+            $shares = self::splitRuns($lineTotalBaisas, $runs, (int) $qty, self::MAX_COPIES);
+            if ($shares !== null) {
+                return $shares;
             }
-            $shares = array_fill(0, count($children), 0);
-            foreach (self::split($lineTotalBaisas, $weights) as $unit => $share) {
-                $shares[$owners[$unit]] += $share;
-            }
+        }
 
+        return self::split($lineTotalBaisas, self::splitRuns($unitPriceBaisas, $runs, 1, 1) ?? []);
+    }
+
+    /**
+     * {@see split()} over $copies copies of these runs of units ([count,
+     * weight] each), one total per run — without listing the units. Null
+     * when the cumulative fallback is needed for more than $maxLoopCopies
+     * copies.
+     *
+     * @param  list<array{0: int, 1: int}>  $runs
+     * @return list<int>|null
+     */
+    private static function splitRuns(int $amount, array $runs, int $copies, int $maxLoopCopies): ?array
+    {
+        $runs = array_map(static fn (array $run): array => [$run[0], max(0, $run[1])], $runs);
+        $perCopy = 0;
+        foreach ($runs as [$count, $weight]) {
+            $perCopy += $count * $weight;
+        }
+        if ($perCopy <= 0) {
+            $runs = array_map(static fn (array $run): array => [$run[0], 1], $runs);
+            $perCopy = array_sum(array_column($runs, 0));
+        }
+        $total = $copies * $perCopy;
+        $last = count($runs) - 1;
+        $shares = [];
+        $given = 0;
+        foreach ($runs as $i => [$count, $weight]) {
+            if ($i === $last) {
+                break;
+            }
+            $shares[$i] = $copies * $count * self::roundedShare($amount, $weight, $total);
+            $given += $shares[$i];
+        }
+        $lastUnits = $copies * $runs[$last][0];
+        $lastUnit = $amount - $given - ($lastUnits - 1) * self::roundedShare($amount, $runs[$last][1], $total);
+        $shares[$last] = $amount - $given;
+        if ($amount < 0 || $lastUnit >= 0) {
             return $shares;
         }
-
-        $perOne = array_fill(0, count($children), 0);
-        foreach (self::split($unitPriceBaisas, $unitWeights) as $unit => $share) {
-            $perOne[$owner[$unit]] += $share;
+        if ($copies > $maxLoopCopies) {
+            return null;
+        }
+        // The cumulative split: a run's units take round(P·C_end/W) −
+        // round(P·C_start/W) between them (the units in between cancel).
+        $shares = array_fill(0, count($runs), 0);
+        for ($copy = 0; $copy < $copies; $copy++) {
+            $start = $copy * $perCopy;
+            foreach ($runs as $i => [$count, $weight]) {
+                $end = $start + $count * $weight;
+                $shares[$i] += self::roundedShare($amount, $end, $total) - self::roundedShare($amount, $start, $total);
+                $start = $end;
+            }
         }
 
-        return self::split($lineTotalBaisas, $perOne);
+        return $shares;
     }
 
     private static function roundedShare(int $amount, int $weight, int $total): int

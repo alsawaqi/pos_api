@@ -111,6 +111,11 @@ final class WireValidator
         foreach ($lines as $index => $line) {
             $line = (array) $line;
             $qty = (float) ($line['qty'] ?? 0);
+            // Combo fix order 2 (C-18) — a sane maximum: flagged, never refused.
+            if ($qty > ComboAllocation::MAX_COPIES) {
+                $this->failOnce($failures, 'line_qty', ['line_index' => $index, 'qty_at_most' => ComboAllocation::MAX_COPIES],
+                    ['line_index' => $index, 'qty' => $line['qty']]);
+            }
             if ($qty != floor($qty)) {
                 $fractionalLines[$index] = true;
                 if (! in_array('line_qty_non_integer', $informational, true)) {

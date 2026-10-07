@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Tables;
 
 use App\Actions\Qr\PresentQrPendingOrderAction;
+use App\Actions\Qr\QrDineInException;
 use App\Actions\Qr\RefreshQrOrderTotalsAction;
 use App\Models\Device;
 use App\Models\Order;
@@ -94,6 +95,7 @@ final class CancelStaffLineAction
         $rounds = QrOrderRound::query()->where('order_id', $order->id)
             ->where('status', QrOrderRound::STATUS_ACCEPTED)->orderByDesc('round_no')->orderByDesc('id')
             ->lockForUpdate()->get();
+        $this->refuseMealWithoutItsId($rounds, $payload);
         $remaining = (int) $payload['qty'];
         $unlinked = 0;
         $changes = [];
@@ -220,17 +222,140 @@ final class CancelStaffLineAction
             'prepared' => (bool) $payload['prepared'], 'reason' => $payload['reason'] ?? null,
             'authorized_by' => $payload['authorized_by'] ?? null, 'order_uuid' => $order->uuid,
             'staff_id' => $payload['staff_id'] ?? null, 'whole_bill' => $payload['whole_bill'] ?? false,
-        ] + (isset($payload['approved_by_staff_id']) ? ['approved_by_staff_id' => (int) $payload['approved_by_staff_id']] : []),
+        ] + (isset($payload['meal_id']) ? ['meal_id' => (int) $payload['meal_id']] : [])
+            + (isset($payload['combo']) && is_array($payload['combo']) ? ['combo_picks' => $this->requestPicks($payload['combo'], [])] : [])
+            + (isset($payload['approved_by_staff_id']) ? ['approved_by_staff_id' => (int) $payload['approved_by_staff_id']] : []),
             (int) $device->id, afterPersist: $afterPersist);
 
         return ['outcome' => 'cancelled'] + $values;
     }
 
+    /**
+     * Combo fix order 2 (C-21) — the line a cancel means: product + meal +
+     * add-ons + notes, and, when the request sends them, the combo / meal
+     * picks. A plain main and a meal main never match each other. The whole
+     * bill (cancel_bill) takes every line of the product, meal or not.
+     */
     private function matches(array $line, array $payload): bool
+    {
+        if (! $this->sameItem($line, $payload)) {
+            return false;
+        }
+        if (($payload['whole_bill'] ?? false) === true) {
+            return true;
+        }
+        $lineMeal = isset($line['meal_id']) ? (int) $line['meal_id'] : null;
+        $askedMeal = isset($payload['meal_id']) ? (int) $payload['meal_id'] : null;
+        if ($lineMeal !== $askedMeal) {
+            return false;
+        }
+        if (isset($payload['combo']) && is_array($payload['combo'])) {
+            $components = is_array($line['components'] ?? null) ? $line['components'] : [];
+
+            return $this->requestPicks($payload['combo'], $components) === $this->linePicks($components);
+        }
+
+        return true;
+    }
+
+    private function sameItem(array $line, array $payload): bool
     {
         return (int) $line['product_id'] === (int) $payload['product_id']
             && $this->addonSet(array_column($line['addons'] ?? [], 'add_on_id')) === $this->addonSet($payload['addon_ids'] ?? [])
             && $this->notes($line['notes'] ?? null) === $this->notes($payload['notes'] ?? null);
+    }
+
+    /**
+     * Fix order 2 (C-21) — an old build (no meal_id) asking for a product
+     * whose only lines left are meals: refused, never a meal cancelled by a
+     * request that did not name it.
+     *
+     * @param  iterable<QrOrderRound>  $rounds
+     */
+    private function refuseMealWithoutItsId(iterable $rounds, array $payload): void
+    {
+        if (isset($payload['meal_id']) || ($payload['whole_bill'] ?? false) === true) {
+            return;
+        }
+        $plain = false;
+        $meal = null;
+        foreach ($rounds as $round) {
+            foreach ($round->priced_lines ?? [] as $line) {
+                if (isset($line['held_reason']) || (int) $line['qty'] - (int) ($line['cancelled_qty'] ?? 0) <= 0 || ! $this->sameItem($line, $payload)) {
+                    continue;
+                }
+                if (isset($line['meal_id'])) {
+                    $meal ??= $line;
+                } elseif ($this->matches($line, $payload)) {
+                    $plain = true;
+                }
+            }
+        }
+        if (! $plain && $meal !== null) {
+            $name = (string) ($meal['display_name'] ?? $meal['product_name'] ?? 'This item');
+            throw new QrDineInException('meal_id_required', 409,
+                sprintf('"%s" is a meal. Cancel it from an updated app, which sends the meal with the request; nothing was cancelled.', $name),
+                details: ['meal_id' => (int) $meal['meal_id'], 'product_id' => (int) $meal['product_id']]);
+        }
+    }
+
+    /**
+     * A frozen combo / meal line's picks per ONE: its choices and upgrades
+     * (the fixed items are the same on every such line), as sorted
+     * [line_id, product_id, qty, add-ons, notes].
+     *
+     * @param  list<array<string, mixed>>  $components
+     * @return list<string>
+     */
+    private function linePicks(array $components): array
+    {
+        $picks = [];
+        foreach ($components as $component) {
+            if (($component['kind'] ?? null) === 'fixed') {
+                continue;
+            }
+            $picks[] = $this->pick((int) $component['line_id'], (int) $component['product_id'], $component['qty'] ?? 1,
+                array_column($component['addons'] ?? [], 'add_on_id'), $component['notes'] ?? null);
+        }
+        sort($picks);
+
+        return $picks;
+    }
+
+    /**
+     * The request's picks in the same form; an item the frozen line has as a
+     * plain fixed item (sent or not by the device) is left out.
+     *
+     * @param  list<mixed>  $combo
+     * @param  list<array<string, mixed>>  $components
+     * @return list<string>
+     */
+    private function requestPicks(array $combo, array $components): array
+    {
+        $fixed = [];
+        foreach ($components as $component) {
+            if (($component['kind'] ?? null) === 'fixed') {
+                $fixed[(int) $component['line_id'].':'.(int) $component['product_id']] = true;
+            }
+        }
+        $picks = [];
+        foreach ($combo as $entry) {
+            $entry = (array) $entry;
+            if (isset($fixed[(int) ($entry['line_id'] ?? 0).':'.(int) ($entry['product_id'] ?? 0)])) {
+                continue;
+            }
+            $addons = $entry['addon_ids'] ?? array_column((array) ($entry['addons'] ?? []), 'add_on_id');
+            $picks[] = $this->pick((int) ($entry['line_id'] ?? 0), (int) ($entry['product_id'] ?? 0), $entry['qty'] ?? 1,
+                (array) $addons, $entry['notes'] ?? null);
+        }
+        sort($picks);
+
+        return $picks;
+    }
+
+    private function pick(int $lineId, int $productId, mixed $qty, array $addons, ?string $notes): string
+    {
+        return json_encode([$lineId, $productId, round((float) $qty, 3), $this->addonSet($addons), $this->notes($notes)], JSON_THROW_ON_ERROR);
     }
 
     public function addonSet(array $ids): array

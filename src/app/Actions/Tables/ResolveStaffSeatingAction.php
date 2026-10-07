@@ -109,6 +109,18 @@ final class ResolveStaffSeatingAction
             'cancel_line' => [
                 'client_request_id' => ['required', 'string', 'max:64'],
                 'product_id' => ['required', 'integer', 'min:1'],
+                // Combo fix order 2 (C-21) — the line meant: its meal, and a
+                // combo / meal line's picks (per ONE, as the round sent them).
+                'meal_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+                'combo' => ['sometimes', 'nullable', 'array', 'max:50'],
+                'combo.*.line_id' => ['required', 'integer', 'min:1'],
+                'combo.*.product_id' => ['required', 'integer', 'min:1'],
+                'combo.*.qty' => ['sometimes', 'integer', 'min:1', 'max:99'],
+                'combo.*.addon_ids' => ['sometimes', 'array', 'max:50'],
+                'combo.*.addon_ids.*' => ['integer', 'min:1'],
+                'combo.*.addons' => ['sometimes', 'array', 'max:50'],
+                'combo.*.addons.*.add_on_id' => ['required', 'integer', 'min:1'],
+                'combo.*.notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
                 'addon_ids' => ['sometimes', 'array', 'max:50'],
                 'addon_ids.*' => ['integer', 'distinct'],
                 'notes' => ['sometimes', 'nullable', 'string', 'max:1000'],

@@ -145,4 +145,30 @@ final class ComboAllocation
 
         return $shares;
     }
+
+    /**
+     * Fix order 1 (C-13) — what a device-sent line PAID, the base of its
+     * split: the line total less ALL its line-level discounts. A till sends a
+     * line discount as a discount ROW aimed at the line (`line_index`, a
+     * manual / rule / offer row alike) rather than in `line_discount_baisas`;
+     * the rows are the money (discount_total = their sum). A device that also
+     * fills the field describes the same money, so the line's discount is the
+     * larger of the two, never their sum. Order-level rows (no line_index)
+     * and comps are not spread. Never below 0.
+     *
+     * @param  array<string, mixed>  $line
+     * @param  list<mixed>  $discounts  the order's discount rows
+     */
+    public static function paidOnWire(array $line, array $discounts, int $lineIndex): int
+    {
+        $rows = 0;
+        foreach ($discounts as $rawRow) {
+            $row = (array) $rawRow;
+            if (isset($row['line_index']) && is_numeric($row['line_index']) && (int) $row['line_index'] === $lineIndex) {
+                $rows += (int) ($row['amount_baisas'] ?? 0);
+            }
+        }
+
+        return max(0, (int) ($line['line_total_baisas'] ?? 0) - max($rows, (int) ($line['line_discount_baisas'] ?? 0)));
+    }
 }

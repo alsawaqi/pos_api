@@ -626,8 +626,8 @@ final class WireValidator
                 $shares[] = $line['main_allocated_revenue_baisas'] ?? null;
             }
             $sent = array_filter($shares, static fn (mixed $share): bool => $share !== null);
-            // Fix order 1 (tester call 3) — the shares add up to what the line paid after its line discount.
-            $paid = max(0, (int) ($line['line_total_baisas'] ?? 0) - (int) ($line['line_discount_baisas'] ?? 0));
+            // Fix order 1 (tester call 3, C-13) — the shares add up to what the line paid after ALL its line-level discounts.
+            $paid = ComboAllocation::paidOnWire($line, is_array($order['discounts'] ?? null) ? array_values($order['discounts']) : [], (int) $index);
             if ($sent !== [] && (count($sent) !== count($shares) || array_sum($sent) !== $paid)) {
                 $this->failOnce($failures, 'combo', ['line_index' => $index, 'allocated_revenue_baisas' => $paid],
                     ['line_index' => $index, 'allocated_revenue_baisas' => array_sum($sent)]);

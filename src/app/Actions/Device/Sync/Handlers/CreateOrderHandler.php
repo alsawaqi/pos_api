@@ -308,7 +308,7 @@ class CreateOrderHandler implements SyncEventHandler
                 // recipe, component and add-on copies. Never refused for an
                 // invalid combo or meal — the pricing check flags it.
                 $childMinutes = [];
-                $shares = $this->revenueShares($line, $plan, (string) $order['order_type']);
+                $shares = $this->revenueShares($line, $plan, (string) $order['order_type'], ComboAllocation::paidOnWire($line, array_values((array) ($order['discounts'] ?? [])), (int) $index));
                 foreach ($plan['children'] as $position => $component) {
                     $childId = (int) $component['product_id'];
                     $child = Product::withTrashed()->where('company_id', $device->company_id)->find($childId);
@@ -1105,15 +1105,15 @@ class CreateOrderHandler implements SyncEventHandler
      * @param  array<string, mixed>  $plan
      * @return list<int>
      */
-    private function revenueShares(array $line, array $plan, string $orderType = ''): array
+    private function revenueShares(array $line, array $plan, string $orderType, int $paid): array
     {
         $children = $plan['children'];
         if ($children === []) {
             return [];
         }
-        // Fix order 1 (tester call 3) — the base is what the line paid after
-        // its own line discount.
-        $total = max(0, (int) $line['line_total_baisas'] - (int) ($line['line_discount_baisas'] ?? 0));
+        // Fix order 1 (tester call 3, C-13) — the base is what the line paid
+        // after ALL its line-level discounts (the rows aimed at it included).
+        $total = $paid;
         $sent = array_map(static fn (array $child): mixed => $child['allocated_revenue_baisas'] ?? null, $children);
         if (! in_array(null, $sent, true)
             && array_filter($sent, static fn (mixed $value): bool => ! is_int($value) || $value < 0) === []

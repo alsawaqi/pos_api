@@ -28,6 +28,8 @@ use Tests\TestCase;
  *   C-8  the split base is the line total after the line discount
  *   C-9  every item inside a combo / meal stays at 0 or more
  *   C-10 a replayed quick-order addition compares its items in a stable order
+ *   C-13 a till-style line discount ROW (line_index, no line_discount field)
+ *        lowers the split base; an order-level row does not
  *
  *   Family box 5.000: Beef burger × 2, Fries, Drinks pick 1. Meal "meal"
  *   +1.200 on Burgers: Fries, Drinks pick 1. Party drinks 6.000: pick 4.
@@ -248,5 +250,33 @@ final class ComboFixOrder1Test extends TestCase
         $sent = [['product_id' => $this->party, 'qty' => 1, 'addon_ids' => [], 'notes' => '', 'combo' => [$item($this->cola, 3), $item($this->fries, 1)]]];
         $frozen = [['product_id' => $this->party, 'qty' => 1, 'addon_ids' => [], 'notes' => '', 'combo' => [$item($this->fries, 1), $item($this->cola, 3)]]];
         $this->assertSame($method->invoke($action, $sent), $method->invoke($action, $frozen));
+    }
+
+    public function test_c13_a_till_style_line_discount_row_lowers_the_split_base(): void
+    {
+        // The till sends the 10% line discount as a discount ROW aimed at the
+        // line (line_index), not in line_discount_baisas; an order-level row
+        // (no line_index) is not spread.
+        $this->p4Device('mdev_fix1_c13');
+        $rows = [
+            ['discount_id' => null, 'name' => 'Ten off the box', 'amount_type' => 'percent', 'amount_baisas' => 500, 'line_index' => 0],
+            ['discount_id' => null, 'name' => 'Order 0.200 off', 'amount_type' => 'fixed', 'amount_baisas' => 200],
+        ];
+        $money = ['discount_total_baisas' => 700, 'grand_total_baisas' => 4300, 'discounts' => $rows];
+        $order = $this->p4Order([$this->boxWire()], 0, null, $money);
+        $result = $this->p4Push('mdev_fix1_c13', [$this->p4Event('order.create', $order)])->json('data.results.0');
+        $this->assertSame('processed', $result['status'], (string) json_encode($result));
+        $this->assertSame([3000, 750, 750], $this->shares($order['uuid']));
+
+        // Shares the till worked out itself (adding up to 4.500) are kept, and
+        // the pricing check does not flag the combo.
+        $wire = $this->boxWire();
+        foreach ([3000, 750, 750] as $i => $share) {
+            $wire['combo'][$i]['allocated_revenue_baisas'] = $share;
+        }
+        $sent = $this->p4Order([$wire], 0, null, $money);
+        $check = $this->p4Push('mdev_fix1_c13', [$this->p4Event('order.create', $sent)])->json('data.results.0.result.pricing_check');
+        $this->assertSame([3000, 750, 750], $this->shares($sent['uuid']));
+        $this->assertNotContains('combo', array_column($check['failures'] ?? [], 'code'), (string) json_encode($check));
     }
 }

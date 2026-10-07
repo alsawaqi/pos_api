@@ -24,10 +24,13 @@ use Tests\TestCase;
  *   0.800 (4 min), Cola 0.500 (0 min), Juice 0.900 (no time).
  *   Pumpkin latte: on sale 1–31 Oct. Winter soup: from 1 Nov. Summer
  *   juice: until 5 Oct (ended yesterday). Autumn pie: from today.
- *   "Burger meal" 2.500: Main (is_main: Burger +0, Chicken burger +0.300),
- *   Side (Fries), Drink (Cola, Juice +0.300, Summer juice). No own time.
- *   "Chicken box" 3.000 (its own time 20): Main (is_main: Chicken burger),
- *   Drink (Cola +0.100) — sold out at the branch.
+ *   "Burger meal" 2.500: Main (pick 1 of the Main category: Burger +0,
+ *   Chicken burger +0.300), Side (fixed: Fries), Drink (pick 1: Cola,
+ *   Juice +0.300, Summer juice). No own time.
+ *   "Chicken box" 3.000 (its own time 20): Main (fixed: Chicken burger),
+ *   Drink (fixed: Cola) — sold out at the branch.
+ *   LAUNCH combo add-on: the old "main slot" meals became a MEAL "meal"
+ *   (+1.200) on the Main category ("Make it a meal?" for both burgers).
  *   Burger's own "Remove" group (kind remove: NO Ketchup → ketchup) and an
  *   "Instructions" group (kind instructions: Well done).
  */
@@ -63,6 +66,8 @@ final class MenuReviewTest extends TestCase
 
     private int $noKetchup;
 
+    private int $mealId;
+
     private int $removeGroup;
 
     protected function setUp(): void
@@ -91,12 +96,10 @@ final class MenuReviewTest extends TestCase
             ['Side', 1, 1, [$this->fries => '0.000']],
             ['Drink', 1, 1, [$this->cola => '0.000', $this->juice => '0.300', $this->summer => '0.000']],
         ]);
-        DB::table('pos_combo_slots')->where('id', $this->meal['slots'][0])->update(['is_main' => true]);
         $this->box = $this->p4Combo('Chicken box', '3.000', [
             ['Main', 1, 1, [$this->chicken => '0.000']],
             ['Drink', 1, 1, [$this->cola => '0.100']],
         ], ['cooking_minutes' => 20]);
-        DB::table('pos_combo_slots')->where('id', $this->box['slots'][0])->update(['is_main' => true]);
         DB::table('pos_product_sold_out')->insert(['company_id' => 100, 'branch_id' => 10, 'product_id' => $this->box['id'],
             'set_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
 
@@ -106,7 +109,8 @@ final class MenuReviewTest extends TestCase
         $this->p4Addons($this->burger, ['Well done' => '0.000'], ['name' => 'Instructions', 'kind' => 'instructions']);
         $this->p4Addons($this->fries, ['Salt' => '0.000']);
         // Every catalogue row was last edited on 1 Sep: a delta moves only by dates.
-        foreach (['pos_products', 'pos_combo_slots', 'pos_combo_slot_options', 'pos_addon_groups', 'pos_addons', 'pos_addon_group_products', 'pos_product_sold_out'] as $table) {
+        $this->mealId = $this->p4Meal('meal', '1.200', [(int) DB::table('pos_products')->where('id', $this->burger)->value('category_id')]);
+        foreach (['pos_products', 'pos_combo_lines', 'pos_combo_line_items', 'pos_meals', 'pos_addon_groups', 'pos_addons', 'pos_addon_group_products', 'pos_product_sold_out'] as $table) {
             DB::table($table)->update(['updated_at' => '2026-09-01 08:00:00']);
         }
     }
@@ -132,7 +136,12 @@ final class MenuReviewTest extends TestCase
         $this->assertSame(0, $products[$this->cola]['cooking_minutes']);
         $this->assertSame(20, $products[$this->box['id']]['cooking_minutes']);
 
-        $this->assertSame([true, false, false], array_column($products[$this->meal['id']]['combo']['slots'], 'is_main'));
+        // LAUNCH combo add-on — combos are lines; meals ride on their own.
+        $this->assertSame(['choice', 'fixed', 'choice'], array_column($products[$this->meal['id']]['combo']['lines'], 'kind'));
+        $this->assertSame([[$this->burger, $this->chicken], [], [$this->cola, $this->juice]],
+            array_map(static fn (array $line): array => array_column($line['items'], 'product_id'), $products[$this->meal['id']]['combo']['lines']));
+        $this->assertSame([$this->mealId], array_column($config['meals'], 'id'));
+        $this->assertSame([$this->burger, $this->chicken], $config['meals'][0]['mains']);
 
         $groups = collect($config['addon_groups'])->keyBy('name');
         $this->assertSame(['remove', 'instructions', 'extras'], [$groups['Remove']['kind'], $groups['Instructions']['kind'], $groups['Extras '.$this->fries]['kind']]);
@@ -160,10 +169,11 @@ final class MenuReviewTest extends TestCase
         $this->assertIsArray($burger['recipe']);
         $this->assertIsBool($burger['sold_out']);
         $this->assertSame('standard', $burger['product_type']);
-        $this->assertIsArray($meal['combo']['slots']);
-        foreach ($meal['combo']['slots'] as $slot) {
-            $this->assertSame(['int', 'string', 'int', 'int', 'int', 'array'], [get_debug_type($slot['id']), get_debug_type($slot['name']),
-                get_debug_type($slot['min']), get_debug_type($slot['max']), get_debug_type($slot['sort_order']), get_debug_type($slot['options'])]);
+        // LAUNCH combo add-on — the combo payload is `combo.lines` (all clients move together).
+        $this->assertIsArray($meal['combo']['lines']);
+        foreach ($meal['combo']['lines'] as $line) {
+            $this->assertSame(['int', 'string', 'int', 'array', 'array'], [get_debug_type($line['id']), get_debug_type($line['kind']),
+                get_debug_type($line['sort_order']), get_debug_type($line['upgrades']), get_debug_type($line['items'])]);
         }
         $this->assertSame('bottle', $ketchup['piece_unit_label']);
         $this->assertIsFloat($ketchup['units_per_piece']);
@@ -179,7 +189,7 @@ final class MenuReviewTest extends TestCase
         $this->assertArrayHasKey('on_sale_from', $burger);
         $this->assertArrayHasKey('on_sale_until', $burger);
         $this->assertIsInt($burger['cooking_minutes']);
-        $this->assertIsBool($meal['combo']['slots'][0]['is_main']);
+        $this->assertIsInt($meal['combo']['lines'][0]['pick_count']);
         $this->assertIsString($group['kind']);
         $this->assertIsInt($group['addons'][0]['removes_ingredient_id']);
     }
@@ -193,7 +203,10 @@ final class MenuReviewTest extends TestCase
             ->assertOk()->json('data');
 
         $this->assertContains($this->summer, $delta['deleted']['products']);
-        $this->assertSame([$this->pie], array_column($delta['products'], 'id'));
+        // LAUNCH combo add-on — every combo is re-sent on every pull (its choice items follow its categories).
+        $standard = static fn (array $products): array => array_column(array_filter($products, static fn (array $p): bool => $p['product_type'] === 'standard'), 'id');
+        $this->assertSame([$this->pie], $standard($delta['products']));
+        $this->assertEqualsCanonicalizing([$this->meal['id'], $this->box['id']], array_column(array_filter($delta['products'], static fn (array $p): bool => $p['product_type'] === 'combo'), 'id'));
         $this->assertNotContains($this->soup, $delta['deleted']['products']);
         $this->assertNotContains($this->latte, $delta['deleted']['products']);
 
@@ -201,7 +214,7 @@ final class MenuReviewTest extends TestCase
         $today = $this->withToken('mdev_rv_delta')
             ->getJson('/api/v1/device/config/delta?since='.urlencode(Carbon::parse('2026-10-06 08:00:00', 'UTC')->toIso8601String()))
             ->assertOk()->json('data');
-        $this->assertSame([], $today['products']);
+        $this->assertSame([], $standard($today['products']));
         $this->assertSame([], $today['deleted']['products']);
     }
 
@@ -234,51 +247,56 @@ final class MenuReviewTest extends TestCase
         $this->assertTrue($products->has($this->pie));
 
         $meal = $products[$this->meal['id']];
-        [$main, $side, $drink] = $meal['combo']['slots'];
-        $this->assertSame([true, false, false], [$main['is_main'], $side['is_main'], $drink['is_main']]);
-        // The ended Summer juice is dropped from the Drink slot.
-        $this->assertSame([$this->cola, $this->juice], array_column($drink['options'], 'product_id'));
-        $this->assertSame([12, 15], array_column($main['options'], 'cooking_minutes'));
-        $this->assertSame([0, null], array_column($drink['options'], 'cooking_minutes'));
+        [$main, $side, $drink] = $meal['combo']['lines'];
+        $this->assertSame(['choice', 'fixed', 'choice'], [$main['kind'], $side['kind'], $drink['kind']]);
+        $this->assertSame($this->fries, $side['product']['product_id']);
+        // The ended Summer juice is dropped from the Drink line.
+        $this->assertSame([$this->cola, $this->juice], array_column($drink['items'], 'product_id'));
+        $this->assertSame([0, 300], array_column($drink['items'], 'extra_price_baisas'));
+        $this->assertSame([12, 15], array_column($main['items'], 'cooking_minutes'));
+        $this->assertSame([0, null], array_column($drink['items'], 'cooking_minutes'));
         // A combo without its own time shows its longest option; with one, its own.
         $this->assertSame(15, $meal['cooking_minutes']);
         $this->assertSame(20, $products[$this->box['id']]['cooking_minutes']);
         $this->assertSame(12, $products[$this->burger]['cooking_minutes']);
 
-        // "Make it a meal?": the Burger meal for both mains (the sold-out Chicken box is not offered).
-        $this->assertSame([[
-            'combo_product_id' => $this->meal['id'], 'slot_id' => $main['id'], 'name' => 'Burger meal', 'name_ar' => null,
-            'image_url' => null, 'price_from_baisas' => 2500,
-        ]], $products[$this->burger]['meals']);
-        $this->assertSame([2800], array_column($products[$this->chicken]['meals'], 'price_from_baisas'));
-        $this->assertSame([], $products[$this->fries]['meals']);
-        $this->assertSame([], $meal['meals']);
+        // "Make it a meal? +1.200" on both burgers (the meal's category), never on fries or a combo.
+        $this->assertSame([$this->mealId, $this->mealId, null, null], [$products[$this->burger]['meal_id'], $products[$this->chicken]['meal_id'],
+            $products[$this->fries]['meal_id'], $meal['meal_id']]);
+        $this->assertSame([['id' => $this->mealId, 'meal_price_baisas' => 1200, 'available' => true]],
+            array_map(static fn (array $row): array => array_intersect_key($row, array_flip(['id', 'meal_price_baisas', 'available'])), $menu['meals']));
 
         $groups = collect($menu['addon_groups'])->keyBy('name');
         $this->assertSame(['remove', 'instructions'], [$groups['Remove']['kind'], $groups['Instructions']['kind']]);
     }
 
-    public function test_meals_list_a_combo_only_while_it_is_on_the_menu_and_available(): void
+    public function test_meals_are_offered_only_while_active_on_sale_and_complete(): void
     {
         $session = $this->p4QrSession();
-        $mealsOf = fn (): array => array_column(collect($this->p4QrGet($session, '/api/v1/public/qr/menu')->assertOk()->json('data.products'))
-            ->firstWhere('id', $this->chicken)['meals'], 'combo_product_id');
-        $this->assertSame([$this->meal['id']], $mealsOf());
+        $mealOf = fn (): mixed => collect($this->p4QrGet($session, '/api/v1/public/qr/menu')->assertOk()->json('data.products'))
+            ->firstWhere('id', $this->chicken)['meal_id'];
+        $this->assertSame($this->mealId, $mealOf());
 
-        // Back in stock: the Chicken box is offered too, from 3.100 (its drink costs 0.100).
-        DB::table('pos_product_sold_out')->delete();
-        $this->assertSame([$this->meal['id'], $this->box['id']], $mealsOf());
-        $box = collect(collect($this->p4QrGet($session, '/api/v1/public/qr/menu')->json('data.products'))->firstWhere('id', $this->chicken)['meals'])
-            ->firstWhere('combo_product_id', $this->box['id']);
-        $this->assertSame(3100, $box['price_from_baisas']);
+        // LAUNCH combo add-on — a fixed item of the meal sold out: no offer.
+        $this->p4FixedLine(['meal_id' => $this->mealId], $this->fries);
+        DB::table('pos_product_sold_out')->insert(['company_id' => 100, 'branch_id' => 10, 'product_id' => $this->fries,
+            'set_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+        $this->assertNull($mealOf());
+        DB::table('pos_product_sold_out')->where('product_id', $this->fries)->delete();
+        $this->assertSame($this->mealId, $mealOf());
 
-        // A combo outside its dates or its daily hours is not offered; nor one without a main slot.
-        DB::table('pos_products')->where('id', $this->box['id'])->update(['on_sale_until' => '2026-10-05']);
-        DB::table('pos_products')->where('id', $this->meal['id'])->update(['available_from' => '18:00:00', 'available_until' => '22:00:00']);
-        $this->assertSame([], $mealsOf());
-        DB::table('pos_products')->where('id', $this->meal['id'])->update(['available_from' => null, 'available_until' => null]);
-        DB::table('pos_combo_slots')->where('id', $this->meal['slots'][0])->update(['is_main' => false]);
-        $this->assertSame([], $mealsOf());
+        // Outside its dates, switched off, unticked or deleted: no offer.
+        DB::table('pos_meals')->where('id', $this->mealId)->update(['on_sale_until' => '2026-10-05']);
+        $this->assertNull($mealOf());
+        DB::table('pos_meals')->where('id', $this->mealId)->update(['on_sale_until' => null, 'status' => 'inactive']);
+        $this->assertNull($mealOf());
+        DB::table('pos_meals')->where('id', $this->mealId)->update(['status' => 'active']);
+        DB::table('pos_meal_excluded_products')->insert(['company_id' => 100, 'meal_id' => $this->mealId, 'product_id' => $this->chicken,
+            'created_at' => now(), 'updated_at' => now()]);
+        $this->assertNull($mealOf());
+        DB::table('pos_meal_excluded_products')->delete();
+        DB::table('pos_meals')->where('id', $this->mealId)->update(['deleted_at' => now()]);
+        $this->assertNull($mealOf());
     }
 
     public function test_the_qr_pricer_refuses_an_off_dates_product_and_a_staff_round_holds_it_as_outside_dates(): void
@@ -293,9 +311,9 @@ final class MenuReviewTest extends TestCase
         // An ended combo option inside an always-on combo is refused too.
         [$main, $side, $drink] = $this->meal['slots'];
         $meal = ['product_id' => $this->meal['id'], 'qty' => 1, 'addon_ids' => [], 'notes' => '', 'combo' => [
-            ['slot_id' => $main, 'product_id' => $this->burger, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
-            ['slot_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
-            ['slot_id' => $drink, 'product_id' => $this->summer, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
+            ['line_id' => $main, 'product_id' => $this->burger, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
+            ['line_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
+            ['line_id' => $drink, 'product_id' => $this->summer, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
         ]];
         $this->p4QrPost($session, '/api/v1/public/qr/quote', ['lines' => [$meal]])->assertStatus(422)
             ->assertJsonPath('errors.0.code', 'product_unavailable');
@@ -313,8 +331,8 @@ final class MenuReviewTest extends TestCase
         $cheese = $this->p4Addons($chicken, ['Cheese' => '0.200'])['Cheese'];
         $combo = $this->p4Combo('Burgers, pick 4', '2.500', [['Burgers', 4, 4, [$chicken => '0.300', $beef => '0.000']]]);
         $line = ['product_id' => $combo['id'], 'qty' => 1, 'addon_ids' => [], 'notes' => '', 'combo' => [
-            ['slot_id' => $combo['slots'][0], 'product_id' => $chicken, 'qty' => 2, 'addon_ids' => [$cheese], 'notes' => ''],
-            ['slot_id' => $combo['slots'][0], 'product_id' => $beef, 'qty' => 2, 'addon_ids' => [], 'notes' => ''],
+            ['line_id' => $combo['slots'][0], 'product_id' => $chicken, 'qty' => 2, 'addon_ids' => [$cheese], 'notes' => ''],
+            ['line_id' => $combo['slots'][0], 'product_id' => $beef, 'qty' => 2, 'addon_ids' => [], 'notes' => ''],
         ]];
 
         $this->p4QrPost($this->p4QrSession(), '/api/v1/public/qr/quote', ['lines' => [$line]])->assertOk()
@@ -323,9 +341,9 @@ final class MenuReviewTest extends TestCase
         // The device wire of the same line passes the server's price check.
         $this->p4Device('mdev_rv_fixture');
         $wire = ['product_id' => $combo['id'], 'qty' => 1, 'unit_price_baisas' => 3500, 'line_total_baisas' => 3500, 'combo' => [
-            ['slot_id' => $combo['slots'][0], 'product_id' => $chicken, 'qty' => 2, 'extra_price_baisas' => 300,
+            ['line_id' => $combo['slots'][0], 'product_id' => $chicken, 'qty' => 2, 'extra_price_baisas' => 300,
                 'addons' => [['add_on_id' => $cheese, 'price_delta_baisas' => 200]]],
-            ['slot_id' => $combo['slots'][0], 'product_id' => $beef, 'qty' => 2, 'extra_price_baisas' => 0],
+            ['line_id' => $combo['slots'][0], 'product_id' => $beef, 'qty' => 2, 'extra_price_baisas' => 0],
         ]];
         $result = $this->p4Push('mdev_rv_fixture', [$this->p4Event('order.create', $this->p4Order([$wire]))])->json('data.results.0');
         $this->assertSame('processed', $result['status'], (string) json_encode($result));

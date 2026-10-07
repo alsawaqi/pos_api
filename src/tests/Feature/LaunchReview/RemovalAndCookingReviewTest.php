@@ -67,7 +67,6 @@ final class RemovalAndCookingReviewTest extends TestCase
             ['Main', 1, 1, [self::SHAWARMA => '0.000']],
             ['Side', 1, 1, [$this->fries => '0.000']],
         ]);
-        DB::table('pos_combo_slots')->where('id', $this->meal['slots'][0])->update(['is_main' => true]);
     }
 
     /** @return array<int, float> per-unit recipe copy, ingredient id => qty */
@@ -95,9 +94,9 @@ final class RemovalAndCookingReviewTest extends TestCase
         [$main, $side] = $this->meal['slots'];
 
         return ['product_id' => $this->meal['id'], 'qty' => 1, 'unit_price_baisas' => 2500, 'line_total_baisas' => 2500, 'combo' => [
-            ['slot_id' => $main, 'product_id' => self::SHAWARMA, 'qty' => 1, 'extra_price_baisas' => 0,
+            ['line_id' => $main, 'product_id' => self::SHAWARMA, 'qty' => 1, 'extra_price_baisas' => 0,
                 'addons' => array_map(static fn (int $id): array => ['add_on_id' => $id, 'price_delta_baisas' => 0], $mainAddonIds)],
-            ['slot_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'extra_price_baisas' => 0],
+            ['line_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'extra_price_baisas' => 0],
         ]];
     }
 
@@ -209,8 +208,8 @@ final class RemovalAndCookingReviewTest extends TestCase
         $lines = [
             ['product_id' => self::SHAWARMA, 'qty' => 1, 'addon_ids' => [$this->noSauce], 'notes' => ''],
             ['product_id' => $this->meal['id'], 'qty' => 1, 'addon_ids' => [], 'notes' => '', 'combo' => [
-                ['slot_id' => $main, 'product_id' => self::SHAWARMA, 'qty' => 1, 'addon_ids' => [$this->noGarlic], 'notes' => ''],
-                ['slot_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
+                ['line_id' => $main, 'product_id' => self::SHAWARMA, 'qty' => 1, 'addon_ids' => [$this->noGarlic], 'notes' => ''],
+                ['line_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'addon_ids' => [], 'notes' => ''],
             ]],
         ];
         $this->p4QrPost($session, '/api/v1/public/qr/checkout', $this->p4QrCheckout($lines))->assertStatus(201)
@@ -280,8 +279,8 @@ final class RemovalAndCookingReviewTest extends TestCase
             'lines' => [
                 ['product_id' => self::SHAWARMA, 'qty' => 1, 'addon_ids' => [$this->noSauce], 'notes' => null],
                 ['product_id' => $this->meal['id'], 'qty' => 1, 'addon_ids' => [], 'notes' => null, 'combo' => [
-                    ['slot_id' => $main, 'product_id' => self::SHAWARMA, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
-                    ['slot_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
+                    ['line_id' => $main, 'product_id' => self::SHAWARMA, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
+                    ['line_id' => $side, 'product_id' => $this->fries, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
                 ]],
             ],
         ])->assertCreated()->assertJsonPath('data.round.status', 'pending_confirmation');

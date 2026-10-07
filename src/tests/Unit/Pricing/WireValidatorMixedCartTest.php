@@ -22,7 +22,7 @@ final class WireValidatorMixedCartTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.3.0',
+            'engine' => 'php-mithqal/0.4.0',
             'match' => true,
             'failures' => [],
             'informational' => ['mixed_cart_unverifiable'],
@@ -70,7 +70,7 @@ final class WireValidatorMixedCartTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.3.0',
+            'engine' => 'php-mithqal/0.4.0',
             'match' => true,
             'failures' => [],
             'informational' => ['mixed_cart_unverifiable'],
@@ -94,7 +94,7 @@ final class WireValidatorMixedCartTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.3.0',
+            'engine' => 'php-mithqal/0.4.0',
             'match' => true,
             'failures' => [],
             'informational' => ['mixed_cart_unverifiable'],

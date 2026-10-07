@@ -1,0 +1,17 @@
+{
+  "description": "LAUNCH combo add-on (owner decision 6) — the profit split, shared by pos_api (App/Support/Pricing/ComboAllocation.php) and mithqal_pricing v0.4.0. Money in baisas. split: one share per unit, round half up, the last unit takes the remainder (cumulative split when that would go below 0); line: the children of one combo / meal line (weight = the item's normal unit price, qty per ONE combo / meal).",
+  "split": [
+    {"name": "family_box_units", "amount": 5000, "weights": [2000, 2000, 1000, 1000], "expected": [1667, 1667, 833, 833]},
+    {"name": "equal_three", "amount": 1000, "weights": [1, 1, 1], "expected": [333, 333, 334]},
+    {"name": "all_zero_weights_split_equally", "amount": 10, "weights": [0, 0, 0], "expected": [3, 3, 4]},
+    {"name": "zero_amount", "amount": 0, "weights": [5, 5], "expected": [0, 0]},
+    {"name": "remainder_below_zero_uses_cumulative", "amount": 5, "weights": [1, 1, 1, 0], "expected": [2, 1, 2, 0]},
+    {"name": "single_item_takes_all", "amount": 700, "weights": [100], "expected": [700]}
+  ],
+  "line": [
+    {"name": "family_box", "unit_price": 5000, "qty": 1, "line_total": 5000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [3334, 833, 833]},
+    {"name": "family_box_times_two", "unit_price": 5000, "qty": 2, "line_total": 10000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [6668, 1666, 1666]},
+    {"name": "beef_meal_main_first", "unit_price": 3200, "qty": 1, "line_total": 3200, "children": [{"weight": 2000, "qty": 1}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [1600, 800, 800]},
+    {"name": "fractional_qty_resplits_the_line_total", "unit_price": 1000, "qty": 1.5, "line_total": 1500, "children": [{"weight": 500, "qty": 1}, {"weight": 500, "qty": 1}], "expected": [750, 750]}
+  ]
+}

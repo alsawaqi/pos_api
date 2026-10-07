@@ -69,7 +69,7 @@ final class WireValidatorGoldenProjectionTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.3.0',
+            'engine' => 'php-mithqal/0.4.0',
             'match' => true,
             'failures' => [],
         ], (new WireValidator)->validate($order, 100, 10, 99));

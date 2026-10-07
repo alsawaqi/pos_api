@@ -94,8 +94,11 @@ final class TabletSurfaceTest extends TestCase
     {
         $hidden = $this->p4Product('Staff meal', '0.500', ['show_on_customer_tablet' => false]);
         $fries = $this->p4Product('Fries', '0.800', ['cooking_minutes' => 4]);
-        $meal = $this->p4Combo('Cake meal', '2.500', [['Main', 1, 1, [$this->cake => '0.000']], ['Side', 1, 1, [$fries => '0.000']]]);
-        DB::table('pos_combo_slots')->where('id', $meal['slots'][0])->update(['is_main' => true]);
+        // LAUNCH combo add-on — "Make it a meal?" is a meal on the cake's category (+0.700, fries included).
+        $cakes = $this->p4Category('Cakes');
+        DB::table('pos_products')->where('id', $this->cake)->update(['category_id' => $cakes]);
+        $mealId = $this->p4Meal('meal', '0.700', [$cakes]);
+        $this->p4FixedLine(['meal_id' => $mealId], $fries);
         $noSugar = $this->p4Addons($this->coffee, ['No sugar' => '0.000'], ['name' => 'Remove', 'kind' => 'remove', 'min_selections' => 0])['No sugar'];
         $large = $this->p4Addons($this->coffee, ['Large' => '0.200'], ['name' => 'Size', 'min_selections' => 1, 'max_selections' => 1])['Large'];
         // Large takes a to-go cup (Quick / To go only) that is sold out.
@@ -115,7 +118,8 @@ final class TabletSurfaceTest extends TestCase
         $this->assertFalse($products->has($hidden));
         $this->assertSame(5, $products[$this->coffee]['cooking_minutes']);
         $this->assertSame(12, $products[$this->cake]['cooking_minutes']);
-        $this->assertSame([$meal['id']], array_column($products[$this->cake]['meals'], 'combo_product_id'));
+        $this->assertSame($mealId, $products[$this->cake]['meal_id']);
+        $this->assertSame([[$mealId, 700, true]], array_map(static fn (array $m): array => [$m['id'], $m['meal_price_baisas'], $m['available']], $dineIn['meals']));
         $groups = collect($dineIn['addon_groups'])->keyBy('name');
         $this->assertSame('remove', $groups['Remove']['kind']);
         $this->assertSame([1, 1], [$groups['Size']['min_selections'], $groups['Size']['max_selections']]);

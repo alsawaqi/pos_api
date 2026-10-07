@@ -28,8 +28,10 @@ use Tests\TestCase;
  *      breakdown alone, and the counted-at stamps never move backwards
  *  L1  removes_ingredient_id acts only on an option of a Remove group
  *  L2  device config and QR menu agree on a combo's cooking time
- *  L3  a combo whose required slot has no available option is unavailable
- *  L6  a meal's price_from is the true cheapest completion
+ *  L3  a combo whose fixed item or choice line cannot be served is
+ *      unavailable (LAUNCH combo add-on: lines replace slots)
+ *  L6  retired by the combo add-on: a meal shows its meal price
+ *      ("+1.200"), no price_from (LAUNCH-COMBO_WORK_ORDER.md §1.4)
  *  L7  a first container count racing another device does not fail
  *  H1  line and combo-pick notes are one line, at most 140 characters
  */
@@ -265,55 +267,27 @@ final class FixOrderA1ReviewTest extends TestCase
         $this->assertSame([20, 20], [$device[$box['id']]['cooking_minutes'], $qr[$box['id']]['cooking_minutes']]);
     }
 
-    public function test_l3_a_combo_whose_required_slot_has_no_available_option_is_unavailable_and_offers_no_meal(): void
+    public function test_l3_a_combo_whose_fixed_item_or_choice_line_cannot_be_served_is_unavailable(): void
     {
         $this->menuBase('2026-10-06 09:00:00');
         $burger = $this->p4Product('Burger', '2.000');
         $summer = $this->p4Product('Summer juice', '1.000', ['on_sale_until' => '2026-10-05']);
         $cola = $this->p4Product('Cola', '0.500');
         $cake = $this->p4Product('Cake', '1.000', ['on_sale_until' => '2026-10-05']);
+        $water = $this->p4Product('Water', '0.200');
         $ended = $this->p4Combo('Summer meal', '2.500', [['Main', 1, 1, [$burger => '0.000']], ['Drink', 1, 1, [$summer => '0.000']]]);
         $soldOut = $this->p4Combo('Cola meal', '2.500', [['Main', 1, 1, [$burger => '0.000']], ['Drink', 1, 1, [$cola => '0.000']]]);
-        $optional = $this->p4Combo('Burger plus', '2.200', [['Main', 1, 1, [$burger => '0.000']], ['Dessert', 0, 1, [$cake => '0.000']]]);
-        DB::table('pos_combo_slots')->whereIn('id', [$ended['slots'][0], $soldOut['slots'][0], $optional['slots'][0]])->update(['is_main' => true]);
+        // LAUNCH combo add-on — a choice line needs ONE available item (repeats are allowed): pick 2 of {Cake (ended), Water}.
+        $choice = $this->p4Combo('Burger plus', '2.200', [['Main', 1, 1, [$burger => '0.000']], ['Dessert', 2, 2, [$cake => '0.000', $water => '0.000']]]);
+        $empty = $this->p4Combo('Cake plus', '2.200', [['Main', 1, 1, [$burger => '0.000']], ['Dessert', 2, 2, [$cake => '0.000', $summer => '0.000']]]);
         DB::table('pos_product_sold_out')->insert(['company_id' => 100, 'branch_id' => 10, 'product_id' => $cola,
             'set_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
 
         $menu = $this->qrProducts();
         $this->assertSame([false, 'outside_dates'], [$menu[$ended['id']]['available'], $menu[$ended['id']]['unavailable_reason']]);
         $this->assertSame([false, 'sold_out'], [$menu[$soldOut['id']]['available'], $menu[$soldOut['id']]['unavailable_reason']]);
-        // An optional slot that emptied does not block the combo.
-        $this->assertSame([true, null], [$menu[$optional['id']]['available'], $menu[$optional['id']]['unavailable_reason']]);
-        // Only the combo that can be completed is offered as a meal.
-        $this->assertSame([$optional['id']], array_column($menu[$burger]['meals'], 'combo_product_id'));
-    }
-
-    // ---- L6 ----
-
-    public function test_l6_a_meal_is_priced_from_its_true_cheapest_completion(): void
-    {
-        $this->menuBase('2026-10-06 09:00:00');
-        $burger = $this->p4Product('Burger', '2.000');
-        $fries = $this->p4Product('Fries', '0.800');
-        $salad = $this->p4Product('Salad', '0.900');
-        $rings = $this->p4Product('Onion rings', '0.900');
-        // The burger needs a size: Regular +0.200 or Large +0.500 (a required group, min 1).
-        $this->p4Addons($burger, ['Large' => '0.500', 'Regular' => '0.200'], ['name' => 'Size', 'min_selections' => 1, 'max_selections' => 1, 'selection_mode' => 'single']);
-        // The Side slot's default is the costly one; the cheapest (salad) is sold out.
-        $meal = $this->p4Combo('Burger meal', '2.500', [
-            ['Main', 1, 1, [$burger => '0.000']],
-            ['Sides', 2, 2, [$fries => '0.400', $salad => '0.000', $rings => '0.100']],
-        ]);
-        DB::table('pos_combo_slots')->where('id', $meal['slots'][0])->update(['is_main' => true]);
-        DB::table('pos_product_sold_out')->insert(['company_id' => 100, 'branch_id' => 10, 'product_id' => $salad,
-            'set_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
-        // A combo whose main slot is not a single pick is no meal.
-        $double = $this->p4Combo('Double', '3.500', [['Burgers', 2, 2, [$burger => '0.000']]]);
-        DB::table('pos_combo_slots')->where('id', $double['slots'][0])->update(['is_main' => true]);
-
-        // 2.500 + Regular 0.200 + 2 × onion rings 0.100.
-        $this->assertSame([[$meal['id'], 2900]], array_map(static fn (array $m): array => [$m['combo_product_id'], $m['price_from_baisas']],
-            $this->qrProducts()[$burger]['meals']));
+        $this->assertSame([true, null], [$menu[$choice['id']]['available'], $menu[$choice['id']]['unavailable_reason']]);
+        $this->assertSame([false, 'outside_dates'], [$menu[$empty['id']]['available'], $menu[$empty['id']]['unavailable_reason']]);
     }
 
     // ---- H1 ----
@@ -329,8 +303,8 @@ final class FixOrderA1ReviewTest extends TestCase
         $line = fn (?string $note, ?string $pick = null) => [
             ['product_id' => $burger, 'qty' => 1, 'addon_ids' => [], 'notes' => $note],
             ['product_id' => $meal['id'], 'qty' => 1, 'addon_ids' => [], 'notes' => null, 'combo' => [
-                ['slot_id' => $meal['slots'][0], 'product_id' => $burger, 'qty' => 1, 'addon_ids' => [], 'notes' => $pick],
-                ['slot_id' => $meal['slots'][1], 'product_id' => $fries, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
+                ['line_id' => $meal['slots'][0], 'product_id' => $burger, 'qty' => 1, 'addon_ids' => [], 'notes' => $pick],
+                ['line_id' => $meal['slots'][1], 'product_id' => $fries, 'qty' => 1, 'addon_ids' => [], 'notes' => null],
             ]],
         ];
 
@@ -374,8 +348,8 @@ final class FixOrderA1ReviewTest extends TestCase
         $result = $this->p4Push('mdev_a1_notes', [$this->p4Event('order.create', $this->p4Order([
             ['product_id' => $burger, 'qty' => 1, 'unit_price_baisas' => 2000, 'line_total_baisas' => 2000, 'notes' => $long],
             ['product_id' => $meal['id'], 'qty' => 1, 'unit_price_baisas' => 2500, 'line_total_baisas' => 2500, 'combo' => [
-                ['slot_id' => $meal['slots'][0], 'product_id' => $burger, 'qty' => 1, 'extra_price_baisas' => 0, 'notes' => "Well\tdone"],
-                ['slot_id' => $meal['slots'][1], 'product_id' => $fries, 'qty' => 1, 'extra_price_baisas' => 0],
+                ['line_id' => $meal['slots'][0], 'product_id' => $burger, 'qty' => 1, 'extra_price_baisas' => 0, 'notes' => "Well\tdone"],
+                ['line_id' => $meal['slots'][1], 'product_id' => $fries, 'qty' => 1, 'extra_price_baisas' => 0],
             ]],
         ]))])->json('data.results.0');
 

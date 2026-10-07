@@ -41,7 +41,7 @@ final class WireValidatorTest extends TestCase
 
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.3.0',
+            'engine' => 'php-mithqal/0.4.0',
             'match' => true,
             'failures' => [],
         ], $this->check($this->order()));
@@ -49,7 +49,7 @@ final class WireValidatorTest extends TestCase
         $mismatch = $this->order(['grand_total_baisas' => 2001]);
         $this->assertSame([
             'checked' => true,
-            'engine' => 'php-mithqal/0.3.0',
+            'engine' => 'php-mithqal/0.4.0',
             'match' => false,
             'failures' => [[
                 'code' => 'identity_zero',

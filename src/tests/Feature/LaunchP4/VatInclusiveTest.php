@@ -136,7 +136,7 @@ final class VatInclusiveTest extends TestCase
         $order = $this->p4Order([$line], 95, true);
         $result = $this->p4Push('mdev_p4_incl', [$this->p4Event('order.create', $order)])->json('data.results.0');
         $this->assertSame('processed', $result['status'], (string) json_encode($result));
-        $this->assertSame(['checked' => true, 'engine' => 'php-mithqal/0.3.0', 'match' => true, 'failures' => []], $result['result']['pricing_check']);
+        $this->assertSame(['checked' => true, 'engine' => 'php-mithqal/0.4.0', 'match' => true, 'failures' => []], $result['result']['pricing_check']);
         $row = DB::table('pos_orders')->where('uuid', $order['uuid'])->first();
         $this->assertTrue((bool) $row->prices_include_tax);
         $this->assertSame([2000, 95, 2000], [Money::toBaisas($row->subtotal), Money::toBaisas($row->tax_total), Money::toBaisas($row->grand_total)]);

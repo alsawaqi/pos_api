@@ -12,7 +12,7 @@ use Illuminate\Testing\TestResponse;
 
 /**
  * LAUNCH-P4 — shared fixtures for the products-and-menu suites: catalogue
- * rows (standard products, combos with slots and options, add-ons), a paired
+ * rows (standard products, combos and meals with lines, add-ons), a paired
  * device and its sync push, and a live QR session. Company 100, branch 10.
  */
 trait LaunchP4Fixtures
@@ -36,35 +36,121 @@ trait LaunchP4Fixtures
     }
 
     /**
-     * A combo with its slots. Each slot: [name, min, max, options] with
-     * options as [product_id => extra price (OMR string)]; the first option
-     * of a slot is its default.
+     * A combo built from "slots" (the LAUNCH-P4 shape, kept for the older
+     * suites). LAUNCH combo add-on: each slot [name, min, max, options]
+     * becomes a LINE — one option with min = max >= 1 is a FIXED line (that
+     * item × min); anything else a CHOICE line "pick max(min, 1)" over a
+     * fresh category holding its option products (a product with no category
+     * joins it), each option's extra price kept as the item's extra price.
+     * 'slots' returns the line ids in slot order.
      *
      * @param  list<array{0: string, 1: int, 2: int, 3: array<int, string>}>  $slots
      * @return array{id: int, slots: list<int>}
      */
     protected function p4Combo(string $name, string $price, array $slots, array $overrides = []): array
     {
+        $companyId = (int) ($overrides['company_id'] ?? 100);
         $comboId = $this->p4Product($name, $price, $overrides + ['product_type' => 'combo']);
-        $slotIds = [];
+        $lineIds = [];
         foreach ($slots as $order => [$slotName, $min, $max, $options]) {
-            $slotId = (int) DB::table('pos_combo_slots')->insertGetId([
-                'uuid' => (string) Str::uuid(), 'company_id' => (int) ($overrides['company_id'] ?? 100), 'combo_product_id' => $comboId,
-                'name' => $slotName, 'name_ar' => $slotName.' (ع)', 'min_choices' => $min, 'max_choices' => $max,
-                'sort_order' => $order, 'created_at' => now(), 'updated_at' => now(),
-            ]);
-            $optionOrder = 0;
-            foreach ($options as $productId => $extra) {
-                DB::table('pos_combo_slot_options')->insert([
-                    'company_id' => (int) ($overrides['company_id'] ?? 100), 'slot_id' => $slotId, 'product_id' => $productId,
-                    'extra_price' => $extra, 'is_default' => $optionOrder === 0, 'sort_order' => $optionOrder++,
-                    'created_at' => now(), 'updated_at' => now(),
-                ]);
+            if (count($options) === 1 && $min === $max && $min >= 1) {
+                $lineIds[] = $this->p4FixedLine(['combo_product_id' => $comboId], (int) array_key_first($options), $min, [], $order, $companyId);
+
+                continue;
             }
-            $slotIds[] = $slotId;
+            $category = $this->p4Category($slotName.' '.$comboId, $companyId);
+            foreach (array_keys($options) as $productId) {
+                DB::table('pos_products')->where('id', $productId)->whereNull('category_id')->update(['category_id' => $category]);
+            }
+            $lineIds[] = $this->p4ChoiceLine(['combo_product_id' => $comboId], $category, max($min, 1),
+                array_filter($options, static fn (string $extra): bool => (float) $extra > 0), [], $order, $companyId, $slotName);
         }
 
-        return ['id' => $comboId, 'slots' => $slotIds];
+        return ['id' => $comboId, 'slots' => $lineIds];
+    }
+
+    protected function p4Category(string $name, int $companyId = 100): int
+    {
+        return (int) DB::table('pos_product_categories')->insertGetId([
+            'uuid' => (string) Str::uuid(), 'company_id' => $companyId, 'name' => $name, 'name_ar' => $name.' (ع)',
+            'status' => 'active', 'display_order' => 0, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+    }
+
+    /**
+     * LAUNCH combo add-on — a fixed line (product × quantity) with its
+     * upgrades [product_id => upgrade price].
+     *
+     * @param  array{combo_product_id?: int, meal_id?: int}  $owner
+     * @param  array<int, string>  $upgrades
+     */
+    protected function p4FixedLine(array $owner, int $productId, int $quantity = 1, array $upgrades = [], int $sort = 0, int $companyId = 100): int
+    {
+        $lineId = (int) DB::table('pos_combo_lines')->insertGetId($owner + [
+            'company_id' => $companyId, 'kind' => 'fixed', 'product_id' => $productId, 'quantity' => $quantity,
+            'sort_order' => $sort, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $order = 0;
+        foreach ($upgrades as $upgradeId => $upgradePrice) {
+            DB::table('pos_combo_line_upgrades')->insert([
+                'company_id' => $companyId, 'line_id' => $lineId, 'product_id' => $upgradeId, 'upgrade_price' => $upgradePrice,
+                'sort_order' => $order++, 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        return $lineId;
+    }
+
+    /**
+     * LAUNCH combo add-on — a choice line "pick $pick from $categoryId" with
+     * per-item extra prices [product_id => price] and unticked products.
+     *
+     * @param  array{combo_product_id?: int, meal_id?: int}  $owner
+     * @param  array<int, string>  $extras
+     * @param  list<int>  $excluded
+     */
+    protected function p4ChoiceLine(array $owner, int $categoryId, int $pick = 1, array $extras = [], array $excluded = [], int $sort = 0, int $companyId = 100, string $name = 'Drink'): int
+    {
+        $lineId = (int) DB::table('pos_combo_lines')->insertGetId($owner + [
+            'company_id' => $companyId, 'kind' => 'choice', 'category_id' => $categoryId, 'pick_count' => $pick,
+            'name' => $name, 'name_ar' => $name.' (ع)', 'sort_order' => $sort, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        foreach ($extras as $productId => $extra) {
+            DB::table('pos_combo_line_items')->insert(['company_id' => $companyId, 'line_id' => $lineId, 'product_id' => $productId,
+                'excluded' => false, 'extra_price' => $extra, 'created_at' => now(), 'updated_at' => now()]);
+        }
+        foreach ($excluded as $productId) {
+            DB::table('pos_combo_line_items')->insert(['company_id' => $companyId, 'line_id' => $lineId, 'product_id' => $productId,
+                'excluded' => true, 'extra_price' => '0.000', 'created_at' => now(), 'updated_at' => now()]);
+        }
+
+        return $lineId;
+    }
+
+    /**
+     * LAUNCH combo add-on — a meal ("Make it a meal? +price") on the mains of
+     * $categoryIds minus $excluded.
+     *
+     * @param  list<int>  $categoryIds
+     * @param  list<int>  $excluded
+     */
+    protected function p4Meal(string $name, string $mealPrice, array $categoryIds, array $excluded = [], array $overrides = []): int
+    {
+        $companyId = (int) ($overrides['company_id'] ?? 100);
+        $mealId = (int) DB::table('pos_meals')->insertGetId($overrides + [
+            'uuid' => (string) Str::uuid(), 'company_id' => $companyId, 'name' => $name, 'name_ar' => $name.' (ع)',
+            'meal_price' => $mealPrice, 'status' => 'active', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        foreach ($categoryIds as $categoryId) {
+            DB::table('pos_meal_categories')->insert(['company_id' => $companyId, 'meal_id' => $mealId, 'category_id' => $categoryId,
+                'created_at' => now(), 'updated_at' => now()]);
+        }
+        foreach ($excluded as $productId) {
+            DB::table('pos_meal_excluded_products')->insert(['company_id' => $companyId, 'meal_id' => $mealId, 'product_id' => $productId,
+                'created_at' => now(), 'updated_at' => now()]);
+        }
+
+        return $mealId;
     }
 
     /** An add-on group bound to $productId with one option per [name => price delta]. @return array<string, int> option ids by name */

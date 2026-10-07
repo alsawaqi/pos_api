@@ -517,7 +517,7 @@ class BuildDeviceConfigAction
             ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $comboLines['combos']->get((int) $p->id), $lineItems)))->all(),
             // LAUNCH combo add-on — every active meal on sale today, on EVERY
             // pull (full and delta): the device replaces its meal set wholesale.
-            'meals' => $meals->map(fn (object $meal): array => $this->mapMeal($meal, $comboLines['meals']->get($meal->id, collect()), $lineItems))->values()->all(),
+            'meals' => $meals->map(fn (object $meal): array => $this->mapMeal($meal, $comboLines['meals']->get($meal->id, collect()), $lineItems, $meals))->values()->all(),
             'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
@@ -1204,14 +1204,18 @@ class BuildDeviceConfigAction
      *   {id, uuid, name, name_ar, meal_price_baisas, sort_order,
      *    on_sale_from, on_sale_until ('YYYY-MM-DD' | null),
      *    categories: [category ids], excluded: [unticked product ids],
-     *    mains: [product ids sold here today that get the offer],
+     *    mains: [product ids sold here today that get the offer: the ones
+     *            whose meal this is ({@see ComboLines::mealFor()} over the
+     *            active meals on sale today, as the pricer and the pricing
+     *            check use; combo fix order 2, C-16)],
      *    lines: [...] ({@see linePayload()})}
      *
      * @param  Collection<int, object>  $lines
      * @param  Collection<int|string, Product>  $lineItems
+     * @param  Collection<int, object>  $meals  the active meals on sale today
      * @return array<string, mixed>
      */
-    private function mapMeal(object $meal, Collection $lines, Collection $lineItems): array
+    private function mapMeal(object $meal, Collection $lines, Collection $lineItems, Collection $meals): array
     {
         return [
             'id' => (int) $meal->id,
@@ -1224,7 +1228,7 @@ class BuildDeviceConfigAction
             'on_sale_until' => SaleDates::format($meal->on_sale_until),
             'categories' => $meal->categories,
             'excluded' => $meal->excluded,
-            'mains' => $lineItems->filter(static fn (Product $item): bool => ComboLines::isMainOf($meal, $item))
+            'mains' => $lineItems->filter(static fn (Product $item): bool => ComboLines::mealFor($meals, $item)?->id === $meal->id)
                 ->keys()->map(static fn ($id): int => (int) $id)->values()->all(),
             'lines' => $lines->map(fn (object $line): array => $this->linePayload($line, $lineItems))->values()->all(),
         ];

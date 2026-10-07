@@ -268,6 +268,10 @@ return new class extends Migration
             $table->date('on_sale_from')->nullable();
             $table->date('on_sale_until')->nullable();
             $table->smallInteger('cooking_minutes')->nullable();
+            // LAUNCH costs & allergens add-on (pos_admin 2026_10_07_110001):
+            // the dish's own target food cost % (NULL = the company target).
+            // Portal-only; mirrored for schema parity.
+            $table->decimal('target_food_cost_percent', 5, 2)->nullable();
             $table->timestamps();
             $table->softDeletes();
         });
@@ -469,6 +473,30 @@ return new class extends Migration
             $table->decimal('quantity', 12, 3);
             $table->timestamps();
             $table->unique(['product_id', 'component_product_id'], 'pos_product_components_pair_unique');
+        });
+
+        // LAUNCH costs & allergens add-on (pos_admin 2026_10_07_110001):
+        // allergen ticks on an ingredient / prep item, and on a product
+        // (kind 'contains' | 'may_contain'). A dish's allergens are worked
+        // out, never stored. The Postgres CHECKs (the 14 codes, the kind)
+        // are rehearsal-verified.
+        Schema::create('pos_ingredient_allergens', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('ingredient_id');
+            $table->string('allergen', 16);
+            $table->timestamps();
+            $table->unique(['ingredient_id', 'allergen'], 'pos_ingredient_allergens_ingredient_allergen_unique');
+        });
+
+        Schema::create('pos_product_allergens', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('company_id');
+            $table->unsignedBigInteger('product_id');
+            $table->string('allergen', 16);
+            $table->string('kind', 16);
+            $table->timestamps();
+            $table->unique(['product_id', 'allergen', 'kind'], 'pos_product_allergens_product_allergen_kind_unique');
         });
 
         // LAUNCH combo add-on (pos_admin 2026_10_07_100001 / _100002): combos

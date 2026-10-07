@@ -1,5 +1,5 @@
 {
-  "description": "LAUNCH combo add-on (owner decision 6) — the profit split, shared by pos_api (App/Support/Pricing/ComboAllocation.php) and mithqal_pricing v0.4.0. Money in baisas. split: one share per unit, round half up, the last unit takes the remainder (cumulative split when that would go below 0); line: the children of one combo / meal line (weight = the item's normal unit price, qty per ONE combo / meal).",
+  "description": "LAUNCH combo add-on (owner decision 6; fix order 1 tester calls 2-3) - the profit split, shared by pos_api (App/Support/Pricing/ComboAllocation.php) and mithqal_pricing v0.4.0. Money in baisas. split: one share per unit, round half up, the last unit takes the remainder (the cumulative split when that would go below 0; all weights 0 = equal). line: the children of one combo / meal line; weight = the item unit price FOR THE ORDER TYPE (the delivery price on a delivery order, else the in-store price); qty per ONE combo / meal; paid = line_total - line_discount (never below 0); a whole line qty Q splits Q copies of the units at once; a fractional qty splits paid by the per-one shares of unit_price.",
   "split": [
     {"name": "family_box_units", "amount": 5000, "weights": [2000, 2000, 1000, 1000], "expected": [1667, 1667, 833, 833]},
     {"name": "equal_three", "amount": 1000, "weights": [1, 1, 1], "expected": [333, 333, 334]},
@@ -9,9 +9,13 @@
     {"name": "single_item_takes_all", "amount": 700, "weights": [100], "expected": [700]}
   ],
   "line": [
-    {"name": "family_box", "unit_price": 5000, "qty": 1, "line_total": 5000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [3334, 833, 833]},
-    {"name": "family_box_times_two", "unit_price": 5000, "qty": 2, "line_total": 10000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [6668, 1666, 1666]},
-    {"name": "beef_meal_main_first", "unit_price": 3200, "qty": 1, "line_total": 3200, "children": [{"weight": 2000, "qty": 1}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [1600, 800, 800]},
-    {"name": "fractional_qty_resplits_the_line_total", "unit_price": 1000, "qty": 1.5, "line_total": 1500, "children": [{"weight": 500, "qty": 1}, {"weight": 500, "qty": 1}], "expected": [750, 750]}
+    {"name": "family_box", "unit_price": 5000, "qty": 1, "paid": 5000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [3334, 833, 833]},
+    {"name": "family_box_times_two", "unit_price": 5000, "qty": 2, "paid": 10000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [6668, 1666, 1666]},
+    {"name": "family_box_after_10pct_line_discount", "unit_price": 5000, "qty": 1, "paid": 4500, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [3000, 750, 750]},
+    {"name": "two_boxes_after_line_discount", "unit_price": 5000, "qty": 2, "paid": 9000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [6000, 1500, 1500]},
+    {"name": "family_box_delivery_weights", "unit_price": 5000, "qty": 1, "paid": 5000, "children": [{"weight": 2500, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [3572, 714, 714]},
+    {"name": "partial_cancel_one_of_two_boxes", "unit_price": 5000, "qty": 1, "paid": 5000, "children": [{"weight": 2000, "qty": 2}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [3334, 833, 833]},
+    {"name": "beef_meal_main_first", "unit_price": 3200, "qty": 1, "paid": 3200, "children": [{"weight": 2000, "qty": 1}, {"weight": 1000, "qty": 1}, {"weight": 1000, "qty": 1}], "expected": [1600, 800, 800]},
+    {"name": "fractional_qty_resplits_the_paid_total", "unit_price": 1000, "qty": 1.5, "paid": 1500, "children": [{"weight": 500, "qty": 1}, {"weight": 500, "qty": 1}], "expected": [750, 750]}
   ]
 }

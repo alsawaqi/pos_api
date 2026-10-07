@@ -32,9 +32,9 @@ final class ComboAllocationTest extends TestCase
     public function test_the_line_vectors(): void
     {
         foreach (self::vectors()['line'] as $vector) {
-            $shares = ComboAllocation::forLine($vector['unit_price'], $vector['qty'], $vector['line_total'], $vector['children']);
+            $shares = ComboAllocation::forLine($vector['unit_price'], $vector['qty'], $vector['paid'], $vector['children']);
             $this->assertSame($vector['expected'], $shares, $vector['name']);
-            $this->assertSame($vector['line_total'], array_sum($shares), $vector['name']);
+            $this->assertSame($vector['paid'], array_sum($shares), $vector['name']);
         }
     }
 

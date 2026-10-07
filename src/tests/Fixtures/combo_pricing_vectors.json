@@ -1,0 +1,18 @@
+{
+  "description": "LAUNCH combo add-on (owner decisions 3, 4, 7; fix order 1 tester call 4) - the unit price of one order line, shared by pos_api (App/Support/Pricing/ComboPricing.php) and mithqal_pricing v0.4.0. Money in baisas. item = qty x max(0, extra + sum(addons)); standard = max(0, base + sum(base_addons)); combo = max(0, base + sum(items)); meal = max(0, max(0, base + sum(base_addons)) + meal_price + sum(items)). The base_addons of a meal are the add-ons of its main; a combo has none.",
+  "cases": [
+    {"name": "standard_plain", "kind": "standard", "base": 1000, "base_addons": [200], "meal_price": 0, "items": [], "expected": 1200},
+    {"name": "standard_minus_remove", "kind": "standard", "base": 1000, "base_addons": [-100], "meal_price": 0, "items": [], "expected": 900},
+    {"name": "standard_floor_at_0", "kind": "standard", "base": 50, "base_addons": [-100], "meal_price": 0, "items": [], "expected": 0},
+    {"name": "combo_fixed_only", "kind": "combo", "base": 5000, "base_addons": [], "meal_price": 0, "items": [{"qty": 2, "extra": 0, "addons": []}, {"qty": 1, "extra": 0, "addons": []}, {"qty": 1, "extra": 0, "addons": []}], "expected": 5000},
+    {"name": "combo_upgrade_and_extra", "kind": "combo", "base": 5000, "base_addons": [], "meal_price": 0, "items": [{"qty": 2, "extra": 0, "addons": []}, {"qty": 1, "extra": 800, "addons": []}, {"qty": 1, "extra": 300, "addons": []}], "expected": 6100},
+    {"name": "combo_pick4_extra_and_addon", "kind": "combo", "base": 2500, "base_addons": [], "meal_price": 0, "items": [{"qty": 2, "extra": 300, "addons": [200]}, {"qty": 2, "extra": 0, "addons": []}], "expected": 3500},
+    {"name": "combo_item_floor_4_cola_no_ice", "kind": "combo", "base": 6000, "base_addons": [], "meal_price": 0, "items": [{"qty": 4, "extra": 0, "addons": [-500]}], "expected": 6000},
+    {"name": "combo_item_minus_within_extra", "kind": "combo", "base": 5000, "base_addons": [], "meal_price": 0, "items": [{"qty": 1, "extra": 300, "addons": [-100]}], "expected": 5200},
+    {"name": "meal_beef", "kind": "meal", "base": 2000, "base_addons": [], "meal_price": 1200, "items": [{"qty": 1, "extra": 0, "addons": []}, {"qty": 1, "extra": 0, "addons": []}], "expected": 3200},
+    {"name": "meal_chicken", "kind": "meal", "base": 1800, "base_addons": [], "meal_price": 1200, "items": [{"qty": 1, "extra": 0, "addons": []}, {"qty": 1, "extra": 0, "addons": []}], "expected": 3000},
+    {"name": "meal_main_minus_remove", "kind": "meal", "base": 2000, "base_addons": [-100], "meal_price": 1200, "items": [{"qty": 1, "extra": 0, "addons": []}], "expected": 3100},
+    {"name": "meal_main_floor", "kind": "meal", "base": 2000, "base_addons": [-2500], "meal_price": 1200, "items": [{"qty": 1, "extra": 0, "addons": []}], "expected": 1200},
+    {"name": "meal_upgrade_and_extra", "kind": "meal", "base": 2000, "base_addons": [], "meal_price": 1200, "items": [{"qty": 1, "extra": 800, "addons": []}, {"qty": 1, "extra": 300, "addons": []}], "expected": 4300}
+  ]
+}

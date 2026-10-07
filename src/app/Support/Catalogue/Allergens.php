@@ -228,6 +228,21 @@ final class Allergens
         return $graph;
     }
 
+    /** @return list<string> the allergens ticked on the ingredient row itself */
+    public function ownIngredient(int $ingredientId): array
+    {
+        return self::normalise($this->ingredientTags[$ingredientId] ?? []);
+    }
+
+    /** @return array{contains: list<string>, may_contain: list<string>} the ticks set by hand on the product itself */
+    public function ownProduct(int $productId): array
+    {
+        return [
+            'contains' => self::normalise($this->own[$productId][self::CONTAINS] ?? []),
+            'may_contain' => self::normalise($this->own[$productId][self::MAY_CONTAIN] ?? []),
+        ];
+    }
+
     /** @return list<string> an ingredient's allergens (a prep item: with its recipe's, every level) */
     public function ingredient(int $ingredientId): array
     {

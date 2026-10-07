@@ -34,6 +34,7 @@ use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Catalogue\Allergens;
 use App\Support\Catalogue\ComboLines;
 use App\Support\Catalogue\CookingTime;
 use App\Support\Catalogue\SaleDates;
@@ -173,6 +174,9 @@ class BuildDeviceConfigAction
         // devices with its combos and meals.
         $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->pluck('id')->map(static fn ($id): int => (int) $id)->all();
         $meals = ComboLines::meals($companyId, SaleDates::day($at));
+        // LAUNCH costs & allergens add-on — the merchant's allergen graph, read
+        // once for the whole build (products, meals and add-on options).
+        $allergens = Allergens::load($companyId);
         $comboLines = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
         $lineRefs = ComboLines::references($comboLines['combos']->flatten(1)->merge($comboLines['meals']->flatten(1)));
         $mealCategoryIds = $meals->flatMap(static fn (object $meal): array => $meal->categories)->unique()->values()->all();
@@ -514,16 +518,18 @@ class BuildDeviceConfigAction
                 $deliveryPricesByProduct->get($p->id),
                 $minThresholdByIngredient,
                 $branchBalanceByIngredient,
-            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $comboLines['combos']->get((int) $p->id), $lineItems)))->all(),
+            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $comboLines['combos']->get((int) $p->id), $lineItems), $this->allergenFields($allergens->product((int) $p->id))))->all(),
             // LAUNCH combo add-on — every active meal on sale today, on EVERY
             // pull (full and delta): the device replaces its meal set wholesale.
-            'meals' => $meals->map(fn (object $meal): array => $this->mapMeal($meal, $comboLines['meals']->get($meal->id, collect()), $lineItems, $meals))->values()->all(),
+            'meals' => $meals->map(fn (object $meal): array => $this->mapMeal($meal, $comboLines['meals']->get($meal->id, collect()), $lineItems, $meals)
+                + $this->allergenFields($allergens->meal((int) $meal->id)))->values()->all(),
             'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
                 $addonsByGroup->get($g->id),
                 $consumptionByAddon,
                 $recipeCopy,
+                $allergens,
             ))->all(),
             'ingredients' => $ingredients->map(fn (Ingredient $i): array => $this->mapIngredient($i))->all(),
             'branch_stock' => $branchStock->map(fn (BranchStock $s): array => $this->mapBranchStock($s))->all(),
@@ -547,6 +553,9 @@ class BuildDeviceConfigAction
             'expense_categories' => $expenseCategories->map(fn (ExpenseCategory $c): array => $this->mapExpenseCategory($c))->all(),
             'void_reasons' => $voidReasons->map(fn (VoidReason $r): array => $this->mapVoidReason($r))->all(),
             'comp_reasons' => $compReasons->map(fn (CompReason $r): array => $this->mapCompReason($r))->all(),
+            // LAUNCH costs & allergens add-on — the 14 allergens with their
+            // English and Arabic names (full + delta, tiny, fixed list).
+            'allergens' => Allergens::catalogue(),
             'deleted' => $this->deletedMap($companyId, $branchId, $branchFloorIds, $since, $at, $prepIngredientIds)
                 + ['taxes' => $since === null ? [] : $this->nonEffectiveTaxIds($companyId, $taxes)],
         ];
@@ -1130,6 +1139,27 @@ class BuildDeviceConfigAction
     }
 
     /**
+     * LAUNCH costs & allergens add-on — a product's or meal's allergen codes
+     * ({@see Allergens}, in the fixed order of Allergens::CODES):
+     *
+     *   allergens    what it contains: its own ticks plus everything worked
+     *                out from its recipe (prep items followed down), its
+     *                components and, for a combo, every item its lines can
+     *                serve (fixed products, upgrades, every choice option);
+     *                a meal: the union of its line items (the main adds its
+     *                own)
+     *   may_contain  "may contain" (traces) added by hand, never repeating
+     *                an allergen of `allergens`
+     *
+     * @param  array{contains: list<string>, may_contain: list<string>}  $of
+     * @return array{allergens: list<string>, may_contain: list<string>}
+     */
+    private function allergenFields(array $of): array
+    {
+        return ['allergens' => $of['contains'], 'may_contain' => $of['may_contain']];
+    }
+
+    /**
      * LAUNCH combo add-on — one line of a combo or meal (the same keys for
      * both kinds; the other kind's are null / []):
      *
@@ -1377,7 +1407,7 @@ class BuildDeviceConfigAction
      * @param  Collection<int|string, mixed>|null  $consumptionByAddon
      * @return array<string, mixed>
      */
-    private function mapAddOnGroup(AddOnGroup $g, $addons, $consumptionByAddon = null, ?RecipeCopy $recipeCopy = null): array
+    private function mapAddOnGroup(AddOnGroup $g, $addons, $consumptionByAddon = null, ?RecipeCopy $recipeCopy = null, ?Allergens $allergens = null): array
     {
         return [
             'id' => (int) $g->id,
@@ -1397,7 +1427,11 @@ class BuildDeviceConfigAction
             // an ordinary optional add-on group.
             'kind' => (string) ($g->kind ?? 'extras'),
             'addons' => $addons
-                ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a, $consumptionByAddon?->get($a->id), $recipeCopy))->values()->all()
+                ? $addons->map(fn (AddOn $a): array => $this->mapAddOn($a, $consumptionByAddon?->get($a->id), $recipeCopy) + [
+                    // LAUNCH costs & allergens add-on — what the option adds
+                    // ("Extra cheese" → milk); [] for Remove / instructions.
+                    'allergens' => $allergens?->addon((int) $a->id) ?? [],
+                ])->values()->all()
                 : [],
         ];
     }

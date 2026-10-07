@@ -10,6 +10,7 @@ use App\Models\BranchProduct;
 use App\Models\Product;
 use App\Models\ProductCategory;
 use App\Support\BusinessClock;
+use App\Support\Catalogue\Allergens;
 use App\Support\Catalogue\BranchCatalogue;
 use App\Support\Catalogue\ComboLines;
 use App\Support\Catalogue\CookingTime;
@@ -44,6 +45,11 @@ use Illuminate\Support\Facades\DB;
  *  - top-level `meals[]` lists the meals on sale today ({@see mealPayload()});
  *    a product that is the main of an AVAILABLE meal carries its `meal_id`
  *    ("Make it a meal? +meal_price"), else null.
+ *
+ * LAUNCH costs & allergens add-on — every product, ITEM and meal carries
+ * `allergens` and `may_contain` (codes, {@see Allergens}); every add-on
+ * option `allergens` (what it adds); top-level `allergens` lists the 14
+ * codes with their English and Arabic names.
  */
 final class BuildQrBranchMenuAction
 {
@@ -69,6 +75,10 @@ final class BuildQrBranchMenuAction
         $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->pluck('id')
             ->map(static fn ($id): int => (int) $id)->all();
         $meals = ComboLines::meals($companyId, $today);
+        $allergens = Allergens::load($companyId);
+        $allergenFields = static function (array $of): array {
+            return ['allergens' => $of['contains'], 'may_contain' => $of['may_contain']];
+        };
         $lines = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
         $refs = ComboLines::references($lines['combos']->flatten(1)->merge($lines['meals']->flatten(1)));
         $itemProducts = SaleDates::onSale($this->products->soldByBranch($companyId, $branchId)->where('is_internal', false)
@@ -181,7 +191,7 @@ final class BuildQrBranchMenuAction
                 || $line->upgrades->has((int) $item->id) || ComboLines::choiceOffers($line, $item)))
             ->filter(static fn (Product $item): bool => BranchCatalogue::availableAt($item, $branchProducts->get($item->id)))
             ->map(static fn (Product $item): ?int => CookingTime::of($item))->values()->all();
-        $itemRow = static function (Product $item) use ($availabilityOf, $groupIdsFor, $soldOut): array {
+        $itemRow = static function (Product $item) use ($availabilityOf, $groupIdsFor, $soldOut, $allergens, $allergenFields): array {
             $availability = $availabilityOf($item);
 
             return [
@@ -197,10 +207,10 @@ final class BuildQrBranchMenuAction
                 'sold_out' => isset($soldOut[(int) $item->id]),
                 'addon_group_ids' => $groupIdsFor($item),
                 'cooking_minutes' => CookingTime::of($item),
-            ];
+            ] + $allergenFields($allergens->product((int) $item->id));
         };
         $linePayload = fn (object $line): array => $this->linePayload($line, $itemProducts, $itemRow);
-        $mealRows = $meals->map(static function (object $meal) use ($lines, $linesAvailability, $linePayload): array {
+        $mealRows = $meals->map(static function (object $meal) use ($lines, $linesAvailability, $linePayload, $allergens, $allergenFields): array {
             $mealLines = $lines['meals']->get($meal->id, collect());
             $availability = $linesAvailability($mealLines);
             $price = Money::toBaisas($meal->meal_price);
@@ -216,7 +226,7 @@ final class BuildQrBranchMenuAction
                 'available' => $availability->available,
                 'unavailable_reason' => $availability->reason,
                 'lines' => $mealLines->map($linePayload)->values()->all(),
-            ];
+            ] + $allergenFields($allergens->meal((int) $meal->id));
         })->values();
         $availableMeals = $meals->filter(static fn (object $meal): bool => (bool) ($mealRows->firstWhere('id', (int) $meal->id)['available'] ?? false));
         $taxPolicy = CompanyTaxPolicy::for($companyId);
@@ -245,6 +255,7 @@ final class BuildQrBranchMenuAction
             })->values()->all(),
             'products' => $products->map(function (Product $product) use (
                 $availabilityOf, $groupIdsFor, $soldOut, $comboAvailability, $lines, $lineCooking, $linePayload, $availableMeals,
+                $allergens, $allergenFields,
             ): array {
                 $availability = $product->isCombo() ? $comboAvailability($product) : $availabilityOf($product);
                 $basePriceBaisas = Money::toBaisas($product->base_price);
@@ -278,7 +289,7 @@ final class BuildQrBranchMenuAction
                         : CookingTime::of($product),
                     // LAUNCH combo add-on — "Make it a meal?": the available meal this is the main of.
                     'meal_id' => $product->isCombo() ? null : ComboLines::mealFor($availableMeals, $product)?->id,
-                ];
+                ] + $allergenFields($allergens->product((int) $product->id));
                 if ($product->isCombo()) {
                     $row['combo'] = ['lines' => $comboLines->map($linePayload)->values()->all()];
                 }
@@ -289,6 +300,7 @@ final class BuildQrBranchMenuAction
             'addon_groups' => $addonGroups->map(function (AddOnGroup $group) use (
                 $addonsByGroup,
                 $addonAvailability,
+                $allergens,
             ): array {
                 /** @var Collection<int, AddOn> $addons */
                 $addons = $addonsByGroup->get($group->id, collect());
@@ -306,7 +318,7 @@ final class BuildQrBranchMenuAction
                     // LAUNCH review add-on — 'extras' | 'remove' | 'instructions'.
                     // LAUNCH combo add-on — a 'remove' option may be below 0.
                     'kind' => (string) ($group->kind ?? 'extras'),
-                    'addons' => $addons->map(static function (AddOn $addon) use ($addonAvailability): array {
+                    'addons' => $addons->map(static function (AddOn $addon) use ($addonAvailability, $allergens): array {
                         $priceDeltaBaisas = Money::toBaisas($addon->price_delta);
                         $availability = $addonAvailability->get((int) $addon->id, [
                             'available' => false,
@@ -328,10 +340,13 @@ final class BuildQrBranchMenuAction
                             'available' => $availability['available'],
                             'unavailable_reason' => $availability['reason'],
                             'display_order' => (int) $addon->display_order,
+                            // What the option adds ("Extra cheese" → milk).
+                            'allergens' => $allergens->addon((int) $addon->id),
                         ];
                     })->values()->all(),
                 ];
             })->values()->all(),
+            'allergens' => Allergens::catalogue(),
         ];
     }
 

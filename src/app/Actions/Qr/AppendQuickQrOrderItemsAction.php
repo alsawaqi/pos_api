@@ -57,8 +57,9 @@ final class AppendQuickQrOrderItemsAction
                     'product_id' => $line['product_id'], 'qty' => $line['qty'],
                     'addon_ids' => array_column($line['addons'], 'add_on_id'),
                     'notes' => $line['notes'],
+                    'meal_id' => $line['meal_id'] ?? null,
                     'combo' => array_map(static fn (array $component): array => [
-                        'slot_id' => $component['slot_id'], 'product_id' => $component['product_id'], 'qty' => $component['qty'],
+                        'line_id' => $component['line_id'] ?? null, 'product_id' => $component['product_id'], 'qty' => $component['qty'],
                         'addon_ids' => array_column($component['addons'], 'add_on_id'), 'notes' => $component['notes'],
                     ], $line['components'] ?? []),
                 ], $existing->priced_lines);
@@ -141,12 +142,13 @@ final class AppendQuickQrOrderItemsAction
             return [
                 'product_id' => (int) $line['product_id'], 'qty' => (int) $line['qty'],
                 'addon_ids' => $addons, 'notes' => $line['notes'] ?? '',
-                // LAUNCH-P4 — a combo line's choices are part of the request.
+                // LAUNCH combo add-on — the meal and the combo / meal items are part of the request.
+                'meal_id' => isset($line['meal_id']) ? (int) $line['meal_id'] : null,
                 'combo' => array_map(static function (array $component): array {
                     $ids = array_map(intval(...), $component['addon_ids'] ?? array_column($component['addons'] ?? [], 'add_on_id'));
                     sort($ids);
 
-                    return ['slot_id' => (int) $component['slot_id'], 'product_id' => (int) $component['product_id'],
+                    return ['line_id' => (int) ($component['line_id'] ?? 0), 'product_id' => (int) $component['product_id'],
                         'qty' => (int) ($component['qty'] ?? 1), 'addon_ids' => $ids, 'notes' => $component['notes'] ?? ''];
                 }, is_array($line['combo'] ?? null) ? $line['combo'] : []),
             ];

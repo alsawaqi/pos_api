@@ -251,13 +251,14 @@ final class AppendStaffRoundAction
                 'qty' => $line['qty'],
                 'notes' => $line['notes'],
                 'addon_ids' => $line['addon_ids'],
-            ] + (isset($line['combo']) && is_array($line['combo']) && $line['combo'] !== [] ? ['combo' => $line['combo']] : []) + [
-                'requested' => true,
-                'held_reason' => $heldLine['reason'],
-                'addon_id' => $heldLine['addon_id'],
-                'unit_price_baisas' => null,
-                'line_total_baisas' => null,
-            ];
+            ] + (isset($line['combo']) && is_array($line['combo']) && $line['combo'] !== [] ? ['combo' => $line['combo']] : [])
+                + (isset($line['meal_id']) ? ['meal_id' => (int) $line['meal_id']] : []) + [
+                    'requested' => true,
+                    'held_reason' => $heldLine['reason'],
+                    'addon_id' => $heldLine['addon_id'],
+                    'unit_price_baisas' => null,
+                    'line_total_baisas' => null,
+                ];
         }
 
         return $stored;

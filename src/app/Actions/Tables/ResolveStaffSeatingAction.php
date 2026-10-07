@@ -64,7 +64,9 @@ final class ResolveStaffSeatingAction
                 // LAUNCH-P4 — a combo line's choices, per ONE combo (the device
                 // wire shape); the server prices them, any sent price is ignored.
                 'lines.*.combo' => ['sometimes', 'nullable', 'array', 'max:50'],
-                'lines.*.combo.*.slot_id' => ['required', 'integer', 'min:1'],
+                // LAUNCH combo add-on — items name their combo / meal line.
+                'lines.*.meal_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+                'lines.*.combo.*.line_id' => ['required', 'integer', 'min:1'],
                 'lines.*.combo.*.product_id' => ['required', 'integer', 'min:1'],
                 'lines.*.combo.*.qty' => ['sometimes', 'integer', 'min:1', 'max:99'],
                 'lines.*.combo.*.addon_ids' => ['sometimes', 'array', 'max:50'],

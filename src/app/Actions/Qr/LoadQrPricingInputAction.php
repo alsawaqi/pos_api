@@ -12,6 +12,8 @@ use App\Models\Offer;
 use App\Models\Product;
 use App\Support\BusinessClock;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Catalogue\ComboLines;
+use App\Support\Catalogue\SaleDates;
 use App\Support\Money;
 use App\Support\Orders\OneLineNote;
 use App\Support\Pricing\CompanyTaxPolicy;
@@ -31,14 +33,27 @@ use Illuminate\Support\Facades\DB;
 /**
  * Resolves unpriced QR lines against live DB rows and builds the canonical engine input.
  *
+ * LAUNCH combo add-on (replaces the LAUNCH-P4 slots):
+ *  - a combo line (a combo product) or a meal line (`meal_id` on a main
+ *    product) carries `combo` — its items per ONE combo / meal, each
+ *    {line_id, product_id, qty, addon_ids, notes}:
+ *      fixed line   the line's product or one of its upgrades, the qty
+ *                   adding up to the line's quantity; a fixed line sent with
+ *                   no entry is served as is (its product × quantity);
+ *      choice line  items the line offers (its category, not unticked),
+ *                   repeats allowed, the qty adding up to pick N exactly
+ *                   (nothing is pre-picked: a missing choice is refused).
+ *    Each item's own add-ons follow its own groups.
+ *  - unit price (the device wire rule, mithqal_pricing v0.4.0):
+ *      standard  max(0, base + Σ add-ons)
+ *      combo     max(0, combo price + Σ items qty × (extra / upgrade price
+ *                + its add-ons))
+ *      meal      max(0, main price + Σ main add-ons + meal price + Σ items …)
+ *    A Remove option may be below 0; the line never goes below 0. A combo
+ *    line takes no add-ons of its own; a meal line's add-ons are the main's.
+ *  - discounts and offers see a meal line as no product / category (only
+ *    order-wide ones reach it); a combo line is its combo product.
  * LAUNCH-P4:
- *  - combos: a line for a combo product carries `combo` — its choices per
- *    ONE combo, each {slot_id, product_id, qty, addon_ids, notes}. Every
- *    choice must be an option of its slot, each slot's count within
- *    min..max; the choice's own add-ons follow its own groups. The line's
- *    unit price is the combo price + Σ choice qty × (extra price + its
- *    add-on prices) — the device wire rule. A combo line takes no add-ons
- *    of its own.
  *  - sold out (a hand-set switch per branch) refuses a product or a combo
  *    choice; QR is an in-store channel (sold_in_store); staff rounds use the
  *    staff set (M5: the QR menu switch does not apply to staff).
@@ -111,8 +126,8 @@ final class LoadQrPricingInputAction
             $pricingLines[] = new PricingLine(
                 unitPriceBaisas: $resolved->unitPriceBaisas,
                 qty: $resolved->qty,
-                productId: (int) $resolved->product->id,
-                categoryId: $resolved->product->category_id !== null ? (int) $resolved->product->category_id : null,
+                productId: $resolved->isMeal() ? null : (int) $resolved->product->id,
+                categoryId: ! $resolved->isMeal() && $resolved->product->category_id !== null ? (int) $resolved->product->category_id : null,
             );
             $resolvedLines[] = $resolved;
         }
@@ -196,9 +211,10 @@ final class LoadQrPricingInputAction
 
     /**
      * Everything the lines name, read once: line products (the customer or
-     * staff set), combo choices (any in-store-or-not, non-internal product of
-     * the branch catalogue), branch rows, sold-out switches, add-on groups,
-     * add-ons with their availability, and the combos' slots and options.
+     * staff set), the combos' and meals' lines, the items they may serve
+     * (any non-internal standard product of the branch catalogue — a side
+     * sold only inside a meal included), branch rows, sold-out switches,
+     * add-on groups and add-ons with their availability.
      *
      * @param  list<array<string, mixed>>  $lines
      * @return array<string, mixed>
@@ -206,6 +222,7 @@ final class LoadQrPricingInputAction
     private function context(int $companyId, int $branchId, array $lines, DateTimeImmutable $now, bool $staff, ?string $orderType = null): array
     {
         $lineProductIds = array_values(array_unique(array_column($lines, 'product_id')));
+        $mealIds = array_values(array_unique(array_filter(array_column($lines, 'meal_id'), static fn ($id): bool => $id !== null)));
         $componentProductIds = [];
         $addonIds = [];
         foreach ($lines as $line) {
@@ -215,11 +232,15 @@ final class LoadQrPricingInputAction
                 array_push($addonIds, ...$component['addon_ids']);
             }
         }
-        $componentProductIds = array_values(array_unique($componentProductIds));
         $addonIds = array_values(array_unique($addonIds));
 
         $query = $staff ? $this->products->forStaff($companyId, $branchId) : $this->products->forBranch($companyId, $branchId);
         $products = $query->whereIn('pos_products.id', $lineProductIds === [] ? [0] : $lineProductIds)->get()->keyBy('id');
+        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->keys()->map(static fn ($id): int => (int) $id)->all();
+        $meals = ComboLines::meals($companyId, null, $mealIds);
+        $comboLines = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
+        $references = ComboLines::references($comboLines['combos']->flatten(1)->merge($comboLines['meals']->flatten(1)));
+        $componentProductIds = array_values(array_unique(array_merge($componentProductIds, $references['products'])));
         $choices = $this->products->soldByBranch($companyId, $branchId)->where('is_internal', false)
             ->where('product_type', '<>', Product::TYPE_COMBO)
             ->whereIn('pos_products.id', $componentProductIds === [] ? [0] : $componentProductIds)->get()->keyBy('id');
@@ -229,12 +250,6 @@ final class LoadQrPricingInputAction
         $groupProducts = $products->reject(static fn (Product $p): bool => $p->isCombo())->union($choices);
         $addons = AddOn::query()->where('company_id', $companyId)->where('status', 'active')
             ->whereIn('id', $addonIds === [] ? [0] : $addonIds)->get()->keyBy('id');
-
-        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->keys()->map(static fn ($id): int => (int) $id)->all();
-        $slots = DB::table('pos_combo_slots')->whereIn('combo_product_id', $comboIds === [] ? [0] : $comboIds)
-            ->orderBy('sort_order')->orderBy('id')->get();
-        $options = DB::table('pos_combo_slot_options')->whereIn('slot_id', $slots->pluck('id')->all() ?: [0])->get()
-            ->groupBy('slot_id')->map(static fn (Collection $rows): Collection => $rows->keyBy('product_id'));
 
         return [
             'now' => $now,
@@ -246,8 +261,9 @@ final class LoadQrPricingInputAction
             'addons' => $addons,
             // Fix order PK-A1 (L3) — option lines "Used for" the order's type only.
             'addon_availability' => $this->addonAvailability->handle($companyId, $branchId, $addons->values(), $now, $orderType),
-            'slots' => $slots->groupBy('combo_product_id'),
-            'options' => $options,
+            'combo_lines' => $comboLines['combos'],
+            'meal_lines' => $comboLines['meals'],
+            'meals' => $meals,
         ];
     }
 
@@ -281,19 +297,34 @@ final class LoadQrPricingInputAction
         }
 
         $components = [];
-        if ($product->isCombo()) {
-            $components = $this->resolveCombo($context, $product, $line['combo']);
-            if (isset($components['reason'])) {
-                return $components;
+        $meal = null;
+        $mealPriceBaisas = 0;
+        if ($line['meal_id'] !== null) {
+            // LAUNCH combo add-on — "Make it a meal?": an active meal on sale
+            // today whose mains include this product.
+            $row = $context['meals']->get($line['meal_id']);
+            if ($row === null || $product->isCombo()
+                || ! SaleDates::covers($row->on_sale_from, $row->on_sale_until, SaleDates::day($context['now']))
+                || ! ComboLines::isMainOf($row, $product)) {
+                return ['reason' => QrCatalogueException::COMBO_INVALID, 'addon_id' => null];
             }
+            $meal = new QrResolvedMeal((int) $row->id, (string) $row->name, $row->name_ar, Money::toBaisas($row->meal_price));
+            $mealPriceBaisas = $meal->mealPriceBaisas;
+            $components = $this->resolveComboLines($context, $context['meal_lines']->get($meal->id, collect()), $line['combo']);
+        } elseif ($product->isCombo()) {
+            $components = $this->resolveComboLines($context, $context['combo_lines']->get((int) $product->id, collect()), $line['combo']);
         } elseif ($line['combo'] !== []) {
             return ['reason' => QrCatalogueException::COMBO_INVALID, 'addon_id' => null];
         }
+        if (isset($components['reason'])) {
+            return $components;
+        }
 
         $basePriceBaisas = Money::toBaisas($product->base_price);
-        $unitPriceBaisas = $basePriceBaisas
+        // Owner decision 7 — a line never goes below 0 (a Remove option may).
+        $unitPriceBaisas = max(0, $basePriceBaisas + $mealPriceBaisas
             + array_sum(array_map(static fn (QrResolvedAddOn $resolved): int => $resolved->priceDeltaBaisas, $addons))
-            + array_sum(array_map(static fn (QrResolvedComponent $component): int => $component->priceBaisas(), $components));
+            + array_sum(array_map(static fn (QrResolvedComponent $component): int => $component->priceBaisas(), $components)));
 
         return new QrResolvedLine(
             product: $product,
@@ -303,6 +334,7 @@ final class LoadQrPricingInputAction
             unitPriceBaisas: $unitPriceBaisas,
             addons: $addons,
             components: $components,
+            meal: $meal,
         );
     }
 
@@ -349,50 +381,78 @@ final class LoadQrPricingInputAction
     }
 
     /**
-     * LAUNCH-P4 — a combo's choices: each an option of its slot, each slot's
-     * count (Σ qty) within min..max, each chosen item orderable here.
+     * LAUNCH combo add-on — the items of a combo or meal, line by line in
+     * the lines' order: a fixed line's product or upgrades adding up to its
+     * quantity (none sent = the product as is), a choice line's offered items
+     * adding up to pick N exactly; every item orderable here, its add-ons
+     * valid for it. Any entry naming another line is refused.
      *
      * @param  array<string, mixed>  $context
-     * @param  list<array<string, mixed>>  $choices
+     * @param  Collection<int, object>  $lines
+     * @param  list<array<string, mixed>>  $entries
      * @return list<QrResolvedComponent>|array{reason: string, addon_id: int|null}
      */
-    private function resolveCombo(array $context, Product $combo, array $choices): array
+    private function resolveComboLines(array $context, Collection $lines, array $entries): array
     {
-        $slots = $context['slots']->get($combo->id, collect())->keyBy('id');
-        $counts = [];
-        $components = [];
-        foreach ($choices as $choice) {
-            $slot = $slots->get($choice['slot_id']);
-            $option = $slot === null ? null : $context['options']->get($slot->id)?->get($choice['product_id']);
-            if ($option === null) {
-                return ['reason' => QrCatalogueException::COMBO_INVALID, 'addon_id' => null];
+        $invalid = ['reason' => QrCatalogueException::COMBO_INVALID, 'addon_id' => null];
+        $byId = $lines->keyBy('id');
+        $grouped = [];
+        foreach ($entries as $entry) {
+            if (! $byId->has($entry['line_id'])) {
+                return $invalid;
             }
-            /** @var Product|null $item */
-            $item = $context['choices']->get($choice['product_id']);
-            $reason = $this->availability($context, $item);
-            if ($reason !== null) {
-                return ['reason' => $reason === 'product_missing' ? QrCatalogueException::COMBO_INVALID : $reason, 'addon_id' => null];
-            }
-            $addons = $this->resolveAddons($context, $item, $choice['addon_ids']);
-            if (isset($addons['reason'])) {
-                return $addons;
-            }
-            $counts[(int) $slot->id] = ($counts[(int) $slot->id] ?? 0) + $choice['qty'];
-            $components[] = new QrResolvedComponent(
-                slotId: (int) $slot->id,
-                slotName: (string) $slot->name,
-                slotNameAr: $slot->name_ar,
-                product: $item,
-                qty: $choice['qty'],
-                extraPriceBaisas: Money::toBaisas($option->extra_price),
-                notes: $choice['notes'],
-                addons: $addons,
-            );
+            $grouped[$entry['line_id']][] = $entry;
         }
-        foreach ($slots as $slot) {
-            $count = $counts[(int) $slot->id] ?? 0;
-            if ($count < (int) $slot->min_choices || $count > (int) $slot->max_choices) {
-                return ['reason' => QrCatalogueException::COMBO_INVALID, 'addon_id' => null];
+
+        $components = [];
+        foreach ($lines as $line) {
+            $picks = $grouped[$line->id] ?? [];
+            if ($line->kind === ComboLines::FIXED && $picks === []) {
+                $picks = [['line_id' => $line->id, 'product_id' => $line->product_id, 'qty' => $line->quantity, 'addon_ids' => [], 'notes' => '']];
+            }
+            $wanted = $line->kind === ComboLines::FIXED ? $line->quantity : $line->pick_count;
+            if (array_sum(array_column($picks, 'qty')) !== $wanted) {
+                return $invalid;
+            }
+            foreach ($picks as $pick) {
+                /** @var Product|null $item */
+                $item = $context['choices']->get($pick['product_id']);
+                if ($item === null) {
+                    return $invalid;
+                }
+                if ($line->kind === ComboLines::FIXED) {
+                    $upgrade = (int) $item->id === $line->product_id ? null : ComboLines::upgradeFor($line, (int) $item->id);
+                    if ((int) $item->id !== $line->product_id && $upgrade === null) {
+                        return $invalid;
+                    }
+                    $kind = $upgrade === null ? ComboLines::KIND_FIXED : ComboLines::KIND_UPGRADE;
+                    $extra = $upgrade === null ? 0 : Money::toBaisas($upgrade->upgrade_price);
+                } else {
+                    if (! ComboLines::choiceOffers($line, $item)) {
+                        return $invalid;
+                    }
+                    $kind = ComboLines::KIND_CHOICE;
+                    $extra = ComboLines::choiceExtraBaisas($line, (int) $item->id);
+                }
+                $reason = $this->availability($context, $item);
+                if ($reason !== null) {
+                    return ['reason' => $reason, 'addon_id' => null];
+                }
+                $addons = $this->resolveAddons($context, $item, $pick['addon_ids']);
+                if (isset($addons['reason'])) {
+                    return $addons;
+                }
+                $components[] = new QrResolvedComponent(
+                    lineId: $line->id,
+                    kind: $kind,
+                    lineName: $line->kind === ComboLines::CHOICE ? (string) $line->name : null,
+                    lineNameAr: $line->kind === ComboLines::CHOICE ? $line->name_ar : null,
+                    product: $item,
+                    qty: $pick['qty'],
+                    extraPriceBaisas: $extra,
+                    notes: $pick['notes'],
+                    addons: $addons,
+                );
             }
         }
 
@@ -404,15 +464,15 @@ final class LoadQrPricingInputAction
         return match ($reason) {
             QrCatalogueException::ADDON_UNAVAILABLE => new QrCatalogueException($reason, 'This add-on is not available.'),
             QrCatalogueException::ADDON_SELECTION_INVALID => new QrCatalogueException($reason, 'The selected add-ons are invalid.'),
-            QrCatalogueException::COMBO_INVALID => new QrCatalogueException($reason, 'The combo choices are invalid.'),
-            QrProductAvailability::SOLD_OUT => new QrCatalogueException(QrCatalogueException::PRODUCT_SOLD_OUT, 'A combo choice is sold out.'),
+            QrCatalogueException::COMBO_INVALID => new QrCatalogueException($reason, 'The combo or meal items are invalid.'),
+            QrProductAvailability::SOLD_OUT => new QrCatalogueException(QrCatalogueException::PRODUCT_SOLD_OUT, 'An item of the combo or meal is sold out.'),
             default => new QrCatalogueException(QrCatalogueException::PRODUCT_UNAVAILABLE, 'This product is not available.'),
         };
     }
 
     /**
      * @param  list<array<string, mixed>>  $lines
-     * @return list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string, combo: list<array{slot_id: int, product_id: int, qty: int, addon_ids: list<int>, notes: string}>}>
+     * @return list<array{product_id: int, qty: int, addon_ids: list<int>, notes: string, meal_id: int|null, combo: list<array{line_id: int, product_id: int, qty: int, addon_ids: list<int>, notes: string}>}>
      */
     private function normaliseLines(array $lines): array
     {
@@ -427,7 +487,8 @@ final class LoadQrPricingInputAction
                 || ! is_int($line['product_id']) || $line['product_id'] < 1
                 || ! is_int($line['qty']) || $line['qty'] < 1
                 || ! is_array($line['addon_ids'])
-                || ($line['notes'] !== null && ! is_string($line['notes']))) {
+                || ($line['notes'] !== null && ! is_string($line['notes']))
+                || (($line['meal_id'] ?? null) !== null && (! is_int($line['meal_id']) || $line['meal_id'] < 1))) {
                 throw new QrCatalogueException(QrCatalogueException::INVALID_LINE, 'The order lines are invalid.');
             }
             $normalised[] = [
@@ -435,6 +496,8 @@ final class LoadQrPricingInputAction
                 'qty' => $line['qty'],
                 'addon_ids' => $this->addonIds($line['addon_ids']),
                 'notes' => OneLineNote::cut($line['notes']) ?? '',
+                // LAUNCH combo add-on — "Make it a meal?" on this (main) product.
+                'meal_id' => $line['meal_id'] ?? null,
                 'combo' => $this->normaliseCombo($line['combo'] ?? null),
             ];
         }
@@ -443,11 +506,13 @@ final class LoadQrPricingInputAction
     }
 
     /**
-     * LAUNCH-P4 — a combo line's choices. Add-ons come as `addon_ids` (QR)
-     * or the device wire's `addons: [{add_on_id, ...}]`; any price a device
-     * sends inside is ignored (the server prices).
+     * LAUNCH combo add-on — a combo or meal line's items, per ONE combo /
+     * meal: {line_id, product_id, qty, addon_ids | addons, notes}. Add-ons
+     * come as `addon_ids` (QR, tablet) or the device wire's `addons:
+     * [{add_on_id, ...}]`; any price, kind or allocation a device sends
+     * inside is ignored (the server prices). The old `slot_id` is refused.
      *
-     * @return list<array{slot_id: int, product_id: int, qty: int, addon_ids: list<int>, notes: string}>
+     * @return list<array{line_id: int, product_id: int, qty: int, addon_ids: list<int>, notes: string}>
      */
     private function normaliseCombo(mixed $combo): array
     {
@@ -465,7 +530,7 @@ final class LoadQrPricingInputAction
                 ? array_map(static fn (mixed $addon): mixed => is_array($addon) ? ($addon['add_on_id'] ?? null) : null, $choice['addons'])
                 : []);
             if (! is_array($choice)
-                || ! is_int($choice['slot_id'] ?? null) || $choice['slot_id'] < 1
+                || ! is_int($choice['line_id'] ?? null) || $choice['line_id'] < 1
                 || ! is_int($choice['product_id'] ?? null) || $choice['product_id'] < 1
                 || ! is_int($qty) || $qty < 1 || $qty > 99
                 || ! is_array($addonIds)
@@ -473,7 +538,7 @@ final class LoadQrPricingInputAction
                 throw new QrCatalogueException(QrCatalogueException::INVALID_LINE, 'The order lines are invalid.');
             }
             $choices[] = [
-                'slot_id' => $choice['slot_id'],
+                'line_id' => $choice['line_id'],
                 'product_id' => $choice['product_id'],
                 'qty' => $qty,
                 'addon_ids' => $this->addonIds($addonIds),

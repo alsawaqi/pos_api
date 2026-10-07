@@ -159,26 +159,21 @@ final class CreateQrOrderAction
                     null,
                     $this->snapshots->removedIngredientIds((int) $session->company_id, $resolved->addonIds()),
                 );
-                $childrenPayload = $resolved->isCombo() ? $this->children->payload($resolved, (int) $session->company_id) : [];
+                // LAUNCH combo add-on — a combo or meal: one parent, its items as children.
+                $childrenPayload = $this->children->payload($resolved, (int) $session->company_id);
                 $item = OrderItem::query()->create([
                     'order_id' => $order->id,
-                    'product_id' => $resolved->product->id,
-                    'product_name_snapshot' => $resolved->product->name,
                     'qty' => $resolved->qty,
                     // Base and add-on prices are frozen separately; line_total
                     // is the authoritative combined gross for this quantity.
                     'unit_price_snapshot' => Money::toOmr($resolved->unitPriceBaisas),
                     'line_discount' => Money::toOmr($this->lineDiscountBaisas($price, $index)),
                     'line_total' => Money::toOmr($resolved->unitPriceBaisas * $resolved->qty),
-                    'recipe_snapshot_json' => $productSnapshots['recipe_snapshot_json'],
-                    'component_snapshot_json' => $productSnapshots['component_snapshot_json'],
                     'status' => OrderItem::STATUS_OPEN,
-                    'notes' => $resolved->notes !== '' ? $resolved->notes : null,
-                    'cooking_minutes' => QrComboChildren::parentCookingMinutes($resolved->product, $childrenPayload),
-                ]);
+                ] + QrComboChildren::parentAttributes($resolved, $productSnapshots, $childrenPayload));
                 $itemIds[$index] = (int) $item->id;
 
-                foreach ($resolved->addons as $resolvedAddon) {
+                foreach (QrComboChildren::parentAddons($resolved) as $resolvedAddon) {
                     $addonSnapshots = $this->snapshots->addon(
                         $resolvedAddon->addon,
                         (int) $session->company_id,
@@ -190,10 +185,7 @@ final class CreateQrOrderAction
                         'price_delta_snapshot' => Money::toOmr($resolvedAddon->priceDeltaBaisas),
                     ] + $addonSnapshots);
                 }
-                // LAUNCH-P4 — a combo line's chosen items become its children.
-                if ($resolved->isCombo()) {
-                    $this->children->write($item, $childrenPayload);
-                }
+                $this->children->write($item, $childrenPayload);
             }
 
             $this->writeDiscountRows($order, $loaded, $price, $itemIds, $now);

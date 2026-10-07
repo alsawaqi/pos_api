@@ -6,6 +6,8 @@ namespace App\Support\Pricing;
 
 use App\Models\Product;
 use App\Models\Tax;
+use App\Support\Catalogue\ComboLines;
+use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -21,7 +23,7 @@ use Throwable;
  */
 final class WireValidator
 {
-    private const ENGINE = 'php-mithqal/0.3.0';
+    private const ENGINE = 'php-mithqal/0.4.0';
 
     /**
      * @param  array<string, mixed>  $order
@@ -197,7 +199,7 @@ final class WireValidator
             ]);
         }
 
-        // LAUNCH-P4 — combo lines: flagged, never refused.
+        // LAUNCH combo add-on — combo and meal lines: flagged, never refused.
         $this->checkCombos($lines, $companyId, $failures);
 
         $delivery = ($order['order_type'] ?? null) === 'delivery';
@@ -518,10 +520,16 @@ final class WireValidator
     }
 
     /**
-     * LAUNCH-P4 — a combo line's choices against its live slots: each choice
-     * an option of its slot at the option's extra price, each slot's count
-     * (Σ qty per ONE combo) within min..max; a `combo` on a product that is
-     * not a combo is wrong too. The first problem is reported as `combo`.
+     * LAUNCH combo add-on — a combo or meal line's items against its live
+     * lines (flagged, never refused): every item names a line of its combo
+     * / meal; a fixed line's items are its product (extra 0) or an upgrade
+     * (at the upgrade price) adding up to its quantity (none sent = served
+     * as is); a choice line's items are offered by it (its category, not
+     * unticked, at the item's extra price) adding up to pick N; a meal line
+     * names an active meal whose mains include its product; items on a line
+     * that is neither a combo nor a meal are wrong too; device-sent revenue
+     * shares, when sent for every item, add up to the line total. The first
+     * problem is reported as `combo`.
      *
      * @param  list<mixed>  $lines
      * @param  list<array{code: string, expected: mixed, actual: mixed}>  $failures
@@ -529,42 +537,67 @@ final class WireValidator
     private function checkCombos(array $lines, int $companyId, array &$failures): void
     {
         $productIds = [];
+        $mealIds = [];
         foreach ($lines as $line) {
-            $productIds[] = (int) (((array) $line)['product_id'] ?? 0);
+            $line = (array) $line;
+            $productIds[] = (int) ($line['product_id'] ?? 0);
+            foreach (is_array($line['combo'] ?? null) ? $line['combo'] : [] as $choice) {
+                $productIds[] = (int) (((array) $choice)['product_id'] ?? 0);
+            }
+            if (isset($line['meal_id'])) {
+                $mealIds[] = (int) $line['meal_id'];
+            }
         }
-        $combos = Product::withTrashed()->where('company_id', $companyId)->whereIn('id', $productIds ?: [0])
-            ->where('product_type', Product::TYPE_COMBO)->pluck('id')->map(static fn ($id): int => (int) $id)->all();
-        $comboSet = array_fill_keys($combos, true);
-        $slots = DB::table('pos_combo_slots')->whereIn('combo_product_id', $combos ?: [0])->get()->groupBy('combo_product_id');
-        $options = DB::table('pos_combo_slot_options')
-            ->whereIn('slot_id', $slots->flatten(1)->pluck('id')->all() ?: [0])->get()
-            ->groupBy('slot_id')->map(static fn ($rows) => $rows->keyBy('product_id'));
+        $products = Product::withTrashed()->where('company_id', $companyId)->whereIn('id', $productIds ?: [0])->get()->keyBy('id');
+        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->keys()->map(static fn ($id): int => (int) $id)->all();
+        $meals = ComboLines::meals($companyId, null, array_values(array_unique($mealIds)), false);
+        $owners = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
 
         foreach ($lines as $index => $rawLine) {
             $line = (array) $rawLine;
-            $productId = (int) ($line['product_id'] ?? 0);
-            $choices = is_array($line['combo'] ?? null) ? array_values($line['combo']) : [];
-            if (! isset($comboSet[$productId])) {
+            $product = $products->get((int) ($line['product_id'] ?? 0));
+            $choices = is_array($line['combo'] ?? null) ? array_values(array_map(static fn ($c): array => (array) $c, $line['combo'])) : [];
+            $mealId = isset($line['meal_id']) ? (int) $line['meal_id'] : null;
+            if ($mealId !== null) {
+                $meal = $meals->get($mealId);
+                if ($meal === null || $product === null || ! ComboLines::isMainOf($meal, $product)) {
+                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'meal_main' => $mealId], ['line_index' => $index, 'product_id' => (int) ($line['product_id'] ?? 0)]);
+
+                    return;
+                }
+                $ownerLines = $owners['meals']->get($mealId, collect());
+            } elseif ($product !== null && $product->isCombo()) {
+                $ownerLines = $owners['combos']->get((int) $product->id, collect());
+            } else {
                 if ($choices !== []) {
                     $this->failOnce($failures, 'combo', ['line_index' => $index, 'combo' => false], ['line_index' => $index, 'choices' => count($choices)]);
                 }
 
                 continue;
             }
-            $comboSlots = $slots->get($productId, collect())->keyBy('id');
-            $counts = [];
-            foreach ($choices as $rawChoice) {
-                $choice = (array) $rawChoice;
-                $slotId = (int) ($choice['slot_id'] ?? 0);
-                $option = $comboSlots->has($slotId) ? $options->get($slotId)?->get((int) ($choice['product_id'] ?? 0)) : null;
-                if ($option === null) {
-                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'option_in_slot' => $slotId], [
+
+            $byLine = $ownerLines->keyBy('id');
+            $sums = [];
+            foreach ($choices as $choice) {
+                $lineId = (int) ($choice['line_id'] ?? 0);
+                $owner = $byLine->get($lineId);
+                $item = $products->get((int) ($choice['product_id'] ?? 0));
+                $extra = null;
+                if ($owner !== null && $item !== null) {
+                    if ($owner->kind === ComboLines::FIXED) {
+                        $upgrade = ComboLines::upgradeFor($owner, (int) $item->id);
+                        $extra = (int) $item->id === $owner->product_id ? 0 : ($upgrade !== null ? Money::toBaisas($upgrade->upgrade_price) : null);
+                    } elseif (ComboLines::choiceOffers($owner, $item)) {
+                        $extra = ComboLines::choiceExtraBaisas($owner, (int) $item->id);
+                    }
+                }
+                if ($extra === null) {
+                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'item_of_line' => $lineId], [
                         'line_index' => $index, 'product_id' => (int) ($choice['product_id'] ?? 0),
                     ]);
 
                     return;
                 }
-                $extra = (int) round(((float) $option->extra_price) * 1000);
                 if ((int) ($choice['extra_price_baisas'] ?? 0) !== $extra) {
                     $this->failOnce($failures, 'combo', ['line_index' => $index, 'extra_price_baisas' => $extra], [
                         'line_index' => $index, 'extra_price_baisas' => (int) ($choice['extra_price_baisas'] ?? 0),
@@ -572,18 +605,28 @@ final class WireValidator
 
                     return;
                 }
-                $counts[$slotId] = ($counts[$slotId] ?? 0) + (float) ($choice['qty'] ?? 0);
+                $sums[$lineId] = ($sums[$lineId] ?? 0) + (float) ($choice['qty'] ?? 0);
             }
-            foreach ($comboSlots as $slot) {
-                $count = $counts[(int) $slot->id] ?? 0;
-                if ($count < (int) $slot->min_choices || $count > (int) $slot->max_choices) {
-                    $this->failOnce($failures, 'combo', [
-                        'line_index' => $index, 'slot_id' => (int) $slot->id,
-                        'choices_between' => [(int) $slot->min_choices, (int) $slot->max_choices],
-                    ], ['line_index' => $index, 'slot_id' => (int) $slot->id, 'choices' => $count]);
+            foreach ($ownerLines as $owner) {
+                $count = $sums[$owner->id] ?? null;
+                $wanted = $owner->kind === ComboLines::FIXED ? $owner->quantity : $owner->pick_count;
+                if (($owner->kind === ComboLines::CHOICE || $count !== null) && (float) ($count ?? 0) !== (float) $wanted) {
+                    $this->failOnce($failures, 'combo', ['line_index' => $index, 'line_id' => $owner->id, 'items' => $wanted],
+                        ['line_index' => $index, 'line_id' => $owner->id, 'items' => $count ?? 0]);
 
                     return;
                 }
+            }
+            $shares = array_map(static fn (array $choice): mixed => $choice['allocated_revenue_baisas'] ?? null, $choices);
+            if ($mealId !== null) {
+                $shares[] = $line['main_allocated_revenue_baisas'] ?? null;
+            }
+            $sent = array_filter($shares, static fn (mixed $share): bool => $share !== null);
+            if ($sent !== [] && (count($sent) !== count($shares) || array_sum($sent) !== (int) ($line['line_total_baisas'] ?? 0))) {
+                $this->failOnce($failures, 'combo', ['line_index' => $index, 'allocated_revenue_baisas' => (int) ($line['line_total_baisas'] ?? 0)],
+                    ['line_index' => $index, 'allocated_revenue_baisas' => array_sum($sent)]);
+
+                return;
             }
         }
     }

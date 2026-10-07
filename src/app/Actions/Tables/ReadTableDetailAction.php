@@ -234,12 +234,13 @@ final class ReadTableDetailAction
                 $safe = Arr::only($line, ['line_index', 'product_id', 'product_name', 'product_name_ar', 'qty', 'notes',
                     'base_price_baisas', 'unit_price_baisas', 'line_discount_baisas', 'line_total_baisas',
                     'order_item_id', 'cancelled_qty', 'cancelled_discount_baisas', 'held_reason', 'held_disposition',
-                    'addon_id', 'addon_ids', 'requested']);
-                // LAUNCH-P4 — a combo line's chosen items, per ONE combo.
+                    'addon_id', 'addon_ids', 'requested', 'meal_id', 'meal_name', 'meal_name_ar', 'meal_price_baisas',
+                    'display_name', 'display_name_ar']);
+                // LAUNCH combo add-on — a combo or meal line's items, per ONE combo / meal.
                 if (isset($line['components'])) {
                     $safe['components'] = array_map(static fn (array $component): array => Arr::only($component, [
-                        'slot_id', 'slot_name', 'slot_name_ar', 'product_id', 'name', 'name_ar', 'product_name', 'product_name_ar',
-                        'qty', 'extra_price_baisas', 'notes',
+                        'line_id', 'kind', 'line_name', 'line_name_ar', 'slot_id', 'slot_name', 'slot_name_ar', 'product_id', 'name',
+                        'name_ar', 'product_name', 'product_name_ar', 'qty', 'extra_price_baisas', 'notes',
                     ]) + ['addons' => array_map(static fn (array $addon): array => Arr::only($addon, ['add_on_id', 'name', 'name_ar', 'price_delta_baisas']),
                         $component['addons'] ?? [])], $line['components']);
                 }

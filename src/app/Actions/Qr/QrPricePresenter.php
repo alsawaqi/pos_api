@@ -37,9 +37,16 @@ final class QrPricePresenter
                 'unit_price_baisas' => $line->unitPriceBaisas,
                 'line_discount_baisas' => $lineDiscounts[$index] ?? 0,
                 'line_total_baisas' => $line->unitPriceBaisas * $line->qty,
-            ] + ($line->isCombo() ? ['components' => array_map(static fn (QrResolvedComponent $component): array => [
-                // LAUNCH-P4 — a combo line's choices, per ONE combo.
-                'slot_id' => $component->slotId,
+            ] + ($line->meal !== null ? [
+                // LAUNCH combo add-on — a meal on this main ("Beef burger meal").
+                'meal_id' => $line->meal->id,
+                'meal_price_baisas' => $line->meal->mealPriceBaisas,
+                'display_name' => $line->displayName(),
+                'display_name_ar' => $line->displayNameAr(),
+            ] : []) + ($line->hasChildren() ? ['components' => array_map(static fn (QrResolvedComponent $component): array => [
+                // LAUNCH combo add-on — a combo or meal line's items, per ONE combo / meal.
+                'line_id' => $component->lineId,
+                'kind' => $component->kind,
                 'product_id' => (int) $component->product->id,
                 'qty' => $component->qty,
                 'addon_ids' => $component->addonIds(),

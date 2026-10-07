@@ -7,17 +7,21 @@ namespace App\Actions\Qr;
 use App\Models\Product;
 
 /**
- * LAUNCH-P4 — one item chosen inside a combo line, per ONE combo: the slot
- * it was chosen in, the product, how many, the option's extra price and the
- * item's own add-ons (at their own prices).
+ * LAUNCH combo add-on — one item inside a combo or meal line, per ONE combo /
+ * meal: the line it came from (line id, its question name for a choice), its
+ * kind ('fixed' | 'upgrade' | 'choice'), the product actually served, how
+ * many, its price inside the combo (a choice extra or an upgrade price, per
+ * item; 0 for a plain fixed item) and the item's own add-ons (at their own
+ * prices, a Remove option may be below 0).
  */
 final readonly class QrResolvedComponent
 {
     /** @param list<QrResolvedAddOn> $addons */
     public function __construct(
-        public int $slotId,
-        public string $slotName,
-        public ?string $slotNameAr,
+        public int $lineId,
+        public string $kind,
+        public ?string $lineName,
+        public ?string $lineNameAr,
         public Product $product,
         public int $qty,
         public int $extraPriceBaisas,
@@ -25,7 +29,7 @@ final readonly class QrResolvedComponent
         public array $addons,
     ) {}
 
-    /** What this choice adds to ONE combo: qty × (extra price + its add-on prices). */
+    /** What this item adds to ONE combo / meal: qty × (its extra or upgrade price + its add-on prices). */
     public function priceBaisas(): int
     {
         return $this->qty * ($this->extraPriceBaisas + array_sum(array_map(

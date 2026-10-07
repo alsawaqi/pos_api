@@ -34,6 +34,7 @@ use App\Models\Table;
 use App\Models\Tax;
 use App\Models\VoidReason;
 use App\Support\Catalogue\BranchCatalogue;
+use App\Support\Catalogue\ComboLines;
 use App\Support\Catalogue\CookingTime;
 use App\Support\Catalogue\SaleDates;
 use App\Support\OrderNumbering;
@@ -164,19 +165,22 @@ class BuildDeviceConfigAction
         $products = $productsQuery->get();
         $productIds = $products->pluck('id')->all();
 
-        // LAUNCH-P4 — combos: their slots and options (per ONE combo).
-        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->pluck('id')->all();
-        $comboSlots = DB::table('pos_combo_slots')->whereIn('combo_product_id', $comboIds ?: [0])
-            ->orderBy('sort_order')->orderBy('id')->get();
-        $comboOptions = DB::table('pos_combo_slot_options')->whereIn('slot_id', $comboSlots->pluck('id')->all() ?: [0])
-            ->orderBy('sort_order')->orderBy('id')->get()->groupBy('slot_id');
-        $slotsByCombo = $comboSlots->groupBy('combo_product_id');
-        // Fix order A-1 (L2) — a combo without its own cooking time shows its
-        // longest option, as on the QR menu: the options this branch sells
-        // today (read here, a delta may not carry them).
-        $optionIds = $comboOptions->flatten(1)->pluck('product_id')->map(static fn ($id): int => (int) $id)->unique()->values()->all();
-        $optionCooking = $this->sellableProducts($companyId, $branchId, $at)
-            ->whereIn('pos_products.id', $optionIds ?: [0])->pluck('cooking_minutes', 'id');
+        // LAUNCH combo add-on — combos and meals as lists of lines (per ONE
+        // combo / meal). The items a line may serve are resolved for THIS
+        // branch: products sold here today (read here, a delta may not carry
+        // them). Every pull re-sends every combo (changedProducts) and the
+        // whole meal set, so a product joining a choice category reaches the
+        // devices with its combos and meals.
+        $comboIds = $products->filter(static fn (Product $p): bool => $p->isCombo())->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        $meals = ComboLines::meals($companyId, SaleDates::day($at));
+        $comboLines = ComboLines::load($comboIds, $meals->keys()->map(static fn ($id): int => (int) $id)->all());
+        $lineRefs = ComboLines::references($comboLines['combos']->flatten(1)->merge($comboLines['meals']->flatten(1)));
+        $mealCategoryIds = $meals->flatMap(static fn (object $meal): array => $meal->categories)->unique()->values()->all();
+        $lineItems = $this->sellableProducts($companyId, $branchId, $at)
+            ->where('product_type', Product::TYPE_STANDARD)
+            ->where(static fn (Builder $q) => $q->whereIn('pos_products.id', $lineRefs['products'] ?: [0])
+                ->orWhereIn('pos_products.category_id', array_values(array_unique(array_merge($lineRefs['categories'], $mealCategoryIds))) ?: [0]))
+            ->orderBy('display_order')->orderBy('id')->get()->keyBy('id');
         // M2 — "Apply to every product" groups join every product's list.
         $globalGroupIds = AddOnGroup::query()->where('company_id', $companyId)->where('is_global', true)
             ->where('status', 'active')->orderBy('display_order')->orderBy('id')->pluck('id')
@@ -510,7 +514,10 @@ class BuildDeviceConfigAction
                 $deliveryPricesByProduct->get($p->id),
                 $minThresholdByIngredient,
                 $branchBalanceByIngredient,
-            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $slotsByCombo->get($p->id), $comboOptions, $optionCooking)))->all(),
+            ), $this->launchP4ProductFields($p, $soldOut, $globalGroupIds, $groupIdsByProduct->get($p->id), $comboLines['combos']->get((int) $p->id), $lineItems)))->all(),
+            // LAUNCH combo add-on — every active meal on sale today, on EVERY
+            // pull (full and delta): the device replaces its meal set wholesale.
+            'meals' => $meals->map(fn (object $meal): array => $this->mapMeal($meal, $comboLines['meals']->get($meal->id, collect()), $lineItems))->values()->all(),
             'delivery_providers' => $deliveryProviders->map(fn ($p): array => $this->mapDeliveryProvider($p))->all(),
             'addon_groups' => $addonGroups->map(fn (AddOnGroup $g): array => $this->mapAddOnGroup(
                 $g,
@@ -1084,24 +1091,21 @@ class BuildDeviceConfigAction
      *   addon_group_ids   own + category-free bindings plus every active
      *                     "Apply to every product" group (M2); none for a
      *                     combo (its items carry the add-ons)
-     *   combo             for a combo: {slots: [{id, name, name_ar, min, max,
-     *                     sort_order, options: [{product_id,
-     *                     extra_price_baisas, is_default, sort_order}]}]}
+     *   combo             LAUNCH combo add-on, for a combo: {lines: [...]}
+     *                     ({@see linePayload()})
      *
      * @param  array<int, true>  $soldOut
      * @param  list<int>  $globalGroupIds
      * @param  Collection<int, \stdClass>|null  $groupRows
-     * @param  Collection<int, \stdClass>|null  $slots
-     * @param  Collection<int|string, Collection<int, \stdClass>>  $options
+     * @param  Collection<int, object>|null  $lines  the combo's lines
+     * @param  Collection<int|string, Product>  $lineItems  products a line may serve here today
      * @return array<string, mixed>
      */
-    private function launchP4ProductFields(Product $p, array $soldOut, array $globalGroupIds, $groupRows, $slots, Collection $options, ?Collection $optionCooking = null): array
+    private function launchP4ProductFields(Product $p, array $soldOut, array $globalGroupIds, $groupRows, ?Collection $lines, Collection $lineItems): array
     {
         $combo = $p->isCombo();
-        $optionMinutes = $combo ? collect($slots ?? [])
-            ->flatMap(static fn (object $slot): Collection => collect($options->get($slot->id) ?? []))
-            ->filter(static fn (object $option): bool => $optionCooking?->has($option->product_id) ?? false)
-            ->map(static fn (object $option) => $optionCooking->get($option->product_id)) : collect();
+        $optionMinutes = $combo ? collect($this->lineProducts($lines ?? collect(), $lineItems))
+            ->map(static fn (Product $item): ?int => CookingTime::of($item)) : collect();
         $own = $groupRows ? $groupRows->map(fn ($r): int => (int) $r->add_on_group_id)->values()->all() : [];
         $fields = [
             'product_type' => $combo ? Product::TYPE_COMBO : Product::TYPE_STANDARD,
@@ -1119,25 +1123,111 @@ class BuildDeviceConfigAction
             'cooking_minutes' => $combo ? CookingTime::comboFigure($p, $optionMinutes) : CookingTime::of($p),
         ];
         if ($combo) {
-            $fields['combo'] = ['slots' => collect($slots ?? [])->map(fn (object $slot): array => [
-                'id' => (int) $slot->id,
-                'name' => $slot->name,
-                'name_ar' => $slot->name_ar,
-                'min' => (int) $slot->min_choices,
-                'max' => (int) $slot->max_choices,
-                'sort_order' => (int) $slot->sort_order,
-                // LAUNCH review add-on — the main slot ("Make it a meal?").
-                'is_main' => (bool) ($slot->is_main ?? false),
-                'options' => collect($options->get($slot->id) ?? [])->map(fn (object $option): array => [
-                    'product_id' => (int) $option->product_id,
-                    'extra_price_baisas' => (int) $this->baisas($option->extra_price),
-                    'is_default' => (bool) $option->is_default,
-                    'sort_order' => (int) $option->sort_order,
-                ])->values()->all(),
-            ])->values()->all()];
+            $fields['combo'] = ['lines' => collect($lines ?? [])->map(fn (object $line): array => $this->linePayload($line, $lineItems))->values()->all()];
         }
 
         return $fields;
+    }
+
+    /**
+     * LAUNCH combo add-on — one line of a combo or meal (the same keys for
+     * both kinds; the other kind's are null / []):
+     *
+     *   {id, kind: 'fixed' | 'choice', sort_order,
+     *    product_id, quantity,                       fixed: the item × quantity
+     *    upgrades: [{product_id, upgrade_price_baisas, sort_order}],
+     *    name, name_ar, category_id, pick_count,     choice: the question
+     *    items: [{product_id, extra_price_baisas}]}  choice: what it offers
+     *
+     * Upgrades and choice items are the products sold at this branch today
+     * (active, not internal, standard, branch scope, sale dates); the device
+     * also drops a sold_out one. A fixed item missing from the bundle's
+     * products (or sold out) makes the combo / meal unavailable, as does a
+     * choice line with no item left.
+     *
+     * @param  Collection<int|string, Product>  $lineItems
+     * @return array<string, mixed>
+     */
+    private function linePayload(object $line, Collection $lineItems): array
+    {
+        $fixed = $line->kind === ComboLines::FIXED;
+
+        return [
+            'id' => $line->id,
+            'kind' => $line->kind,
+            'sort_order' => $line->sort_order,
+            'product_id' => $fixed ? $line->product_id : null,
+            'quantity' => $fixed ? $line->quantity : null,
+            'upgrades' => $fixed ? $line->upgrades->filter(static fn (object $u): bool => $lineItems->has((int) $u->product_id))
+                ->map(fn (object $u): array => [
+                    'product_id' => (int) $u->product_id,
+                    'upgrade_price_baisas' => (int) $this->baisas($u->upgrade_price),
+                    'sort_order' => (int) $u->sort_order,
+                ])->values()->all() : [],
+            'name' => $fixed ? null : $line->name,
+            'name_ar' => $fixed ? null : $line->name_ar,
+            'category_id' => $fixed ? null : $line->category_id,
+            'pick_count' => $fixed ? null : $line->pick_count,
+            'items' => $fixed ? [] : $lineItems->filter(static fn (Product $item): bool => ComboLines::choiceOffers($line, $item))
+                ->map(static fn (Product $item): array => [
+                    'product_id' => (int) $item->id,
+                    'extra_price_baisas' => ComboLines::choiceExtraBaisas($line, (int) $item->id),
+                ])->values()->all(),
+        ];
+    }
+
+    /**
+     * The products the lines can serve here today (fixed items, upgrades,
+     * choice items).
+     *
+     * @param  Collection<int, object>  $lines
+     * @param  Collection<int|string, Product>  $lineItems
+     * @return list<Product>
+     */
+    private function lineProducts(Collection $lines, Collection $lineItems): array
+    {
+        $out = [];
+        foreach ($lines as $line) {
+            foreach ($lineItems as $item) {
+                if ((int) $item->id === $line->product_id || $line->upgrades->has((int) $item->id) || ComboLines::choiceOffers($line, $item)) {
+                    $out[(int) $item->id] = $item;
+                }
+            }
+        }
+
+        return array_values($out);
+    }
+
+    /**
+     * LAUNCH combo add-on — one meal ("Make it a meal?"):
+     *
+     *   {id, uuid, name, name_ar, meal_price_baisas, sort_order,
+     *    on_sale_from, on_sale_until ('YYYY-MM-DD' | null),
+     *    categories: [category ids], excluded: [unticked product ids],
+     *    mains: [product ids sold here today that get the offer],
+     *    lines: [...] ({@see linePayload()})}
+     *
+     * @param  Collection<int, object>  $lines
+     * @param  Collection<int|string, Product>  $lineItems
+     * @return array<string, mixed>
+     */
+    private function mapMeal(object $meal, Collection $lines, Collection $lineItems): array
+    {
+        return [
+            'id' => (int) $meal->id,
+            'uuid' => $meal->uuid,
+            'name' => $meal->name,
+            'name_ar' => $meal->name_ar,
+            'meal_price_baisas' => (int) $this->baisas($meal->meal_price),
+            'sort_order' => (int) $meal->sort_order,
+            'on_sale_from' => SaleDates::format($meal->on_sale_from),
+            'on_sale_until' => SaleDates::format($meal->on_sale_until),
+            'categories' => $meal->categories,
+            'excluded' => $meal->excluded,
+            'mains' => $lineItems->filter(static fn (Product $item): bool => ComboLines::isMainOf($meal, $item))
+                ->keys()->map(static fn ($id): int => (int) $id)->values()->all(),
+            'lines' => $lines->map(fn (object $line): array => $this->linePayload($line, $lineItems))->values()->all(),
+        ];
     }
 
     /**
@@ -1162,8 +1252,8 @@ class BuildDeviceConfigAction
 
     /**
      * Delta change-detection for products: the product row, THIS branch's
-     * shelf / availability row, THIS branch's sold-out switch, or (LAUNCH-P4)
-     * a combo's slots or options changed after the cursor.
+     * shelf / availability row, THIS branch's sold-out switch changed after
+     * the cursor, or (LAUNCH combo add-on) it is a combo (always re-sent).
      *
      * @param  Builder<Product>  $query
      */
@@ -1183,18 +1273,10 @@ class BuildDeviceConfigAction
                         ->where('pos_product_sold_out.branch_id', $branchId)
                         ->where('pos_product_sold_out.updated_at', '>', $since);
                 })
-                ->orWhereExists(function ($sub) use ($since): void {
-                    $sub->selectRaw('1')->from('pos_combo_slots')
-                        ->whereColumn('pos_combo_slots.combo_product_id', 'pos_products.id')
-                        ->where(function ($changed) use ($since): void {
-                            $changed->where('pos_combo_slots.updated_at', '>', $since)
-                                ->orWhereExists(function ($option) use ($since): void {
-                                    $option->selectRaw('1')->from('pos_combo_slot_options')
-                                        ->whereColumn('pos_combo_slot_options.slot_id', 'pos_combo_slots.id')
-                                        ->where('pos_combo_slot_options.updated_at', '>', $since);
-                                });
-                        });
-                });
+                // LAUNCH combo add-on — every combo, on every pull: its
+                // choice items follow its categories live (a product added
+                // to a category later joins), so it is always re-sent.
+                ->orWhere('pos_products.product_type', Product::TYPE_COMBO);
             // LAUNCH review add-on — a limited-time date boundary crossed since
             // the cursor moves no row: a product whose first day has come
             // arrives, one whose last day has passed leaves via deleted.products.

@@ -31,34 +31,56 @@ final class FreezeQrRoundLinesAction
     }
 
     /**
-     * LAUNCH-P4 — a combo line also freezes its `components`, per ONE combo,
-     * for the kitchen ticket and the bill: {slot_id, slot_name, slot_name_ar,
-     * product_id, product_name, product_name_ar, qty, extra_price_baisas,
-     * notes, addons}. A standard line keeps its exact earlier shape.
+     * LAUNCH combo add-on — a combo or meal line also freezes its
+     * `components`, per ONE combo / meal, for the kitchen ticket and the
+     * bill: {line_id, kind, line_name, line_name_ar, product_id, name,
+     * name_ar, product_name, product_name_ar, qty, extra_price_baisas, notes,
+     * addons} (kind 'fixed' | 'upgrade' | 'choice'; a meal's main is the
+     * line's product, so it is not repeated here). A meal line adds meal_id,
+     * meal_name, meal_name_ar, meal_price_baisas and display_name /
+     * display_name_ar ("Beef burger meal"); its `addons` are the main's. A
+     * standard line keeps its exact earlier shape.
      *
      * @return array<string, mixed>
      */
     private static function frozen(QrResolvedLine $line, int $discount): array
     {
         $frozen = self::line($line, $discount);
-        if ($line->isCombo()) {
-            $frozen['components'] = array_map(static fn (QrResolvedComponent $component): array => [
-                'slot_id' => $component->slotId,
-                'slot_name' => $component->slotName,
-                'slot_name_ar' => $component->slotNameAr,
-                'product_id' => (int) $component->product->id,
-                'name' => (string) $component->product->name,
-                'name_ar' => $component->product->name_ar,
-                'product_name' => (string) $component->product->name,
-                'product_name_ar' => $component->product->name_ar,
-                'qty' => $component->qty,
-                'extra_price_baisas' => $component->extraPriceBaisas,
-                'notes' => $component->notes,
-                'addons' => self::addons($component->addons),
-            ], $line->components);
+        if ($line->hasChildren()) {
+            $frozen['components'] = self::components($line);
+        }
+        if ($line->meal !== null) {
+            $frozen += [
+                'meal_id' => $line->meal->id,
+                'meal_name' => $line->meal->name,
+                'meal_name_ar' => $line->meal->nameAr,
+                'meal_price_baisas' => $line->meal->mealPriceBaisas,
+                'display_name' => $line->displayName(),
+                'display_name_ar' => $line->displayNameAr(),
+            ];
         }
 
         return $frozen;
+    }
+
+    /** @return list<array<string, mixed>> */
+    public static function components(QrResolvedLine $line): array
+    {
+        return array_map(static fn (QrResolvedComponent $component): array => [
+            'line_id' => $component->lineId,
+            'kind' => $component->kind,
+            'line_name' => $component->lineName,
+            'line_name_ar' => $component->lineNameAr,
+            'product_id' => (int) $component->product->id,
+            'name' => (string) $component->product->name,
+            'name_ar' => $component->product->name_ar,
+            'product_name' => (string) $component->product->name,
+            'product_name_ar' => $component->product->name_ar,
+            'qty' => $component->qty,
+            'extra_price_baisas' => $component->extraPriceBaisas,
+            'notes' => $component->notes,
+            'addons' => self::addons($component->addons),
+        ], $line->components);
     }
 
     /**

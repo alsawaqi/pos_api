@@ -13,11 +13,19 @@ use Illuminate\Support\Collection;
 /**
  * An order's lines as a device resumes them (held orders, transfers).
  *
- * LAUNCH-P4 — combo children are not lines of their own: each top-level
- * combo line carries them back as `combo`, in the device wire shape per
- * ONE combo ({slot_id, product_id, product_name, qty, extra_price_baisas,
- * notes, addons}), so a resumed cart rebuilds the same combo and line
- * indexes (comps, discounts) keep pointing at the right lines.
+ * LAUNCH combo add-on — children are not lines of their own: each top-level
+ * line carries them back in the device order wire shape, so a resumed cart
+ * rebuilds the same combo / meal and line indexes (comps, discounts) keep
+ * pointing at the right lines:
+ *
+ *   combo line  {product_id: the combo, …, addons: [], combo: [ITEM…]}
+ *   meal line   {product_id: the MAIN, meal_id, product_name ("<main>
+ *               <meal>"), notes / addons: the main's,
+ *               main_allocated_revenue_baisas, combo: [ITEM…]}
+ *   ITEM        per ONE combo / meal: {id, line_id, kind ('fixed' |
+ *               'upgrade' | 'choice'), product_id, product_name, qty,
+ *               extra_price_baisas, allocated_revenue_baisas (the whole
+ *               line's share), notes, addons}
  */
 final class DeviceOrderItems
 {
@@ -34,27 +42,35 @@ final class DeviceOrderItems
             ->groupBy('parent_order_item_id');
 
         return self::lines($order)->map(static function (OrderItem $item) use ($children): array {
+            $kids = $children->get($item->id, collect());
+            $main = $item->meal_id !== null ? $kids->first(static fn (OrderItem $child): bool => $child->combo_child_kind === 'main') : null;
             $line = [
                 'id' => (int) $item->id,
-                'product_id' => $item->product_id !== null ? (int) $item->product_id : null,
+                'product_id' => $main !== null ? (int) $main->product_id : ($item->product_id !== null ? (int) $item->product_id : null),
                 'product_name' => $item->product_name_snapshot,
                 'qty' => (float) $item->qty,
                 'unit_price_baisas' => Money::toBaisas($item->unit_price_snapshot),
                 'line_discount_baisas' => Money::toBaisas($item->line_discount),
                 'line_total_baisas' => Money::toBaisas($item->line_total),
                 'status' => $item->status,
-                'notes' => $item->notes,
-                'addons' => self::addons($item),
+                'notes' => $main !== null ? $main->notes : $item->notes,
+                'addons' => self::addons($main ?? $item),
             ];
-            $combo = $children->get($item->id);
-            if ($combo !== null) {
-                $line['combo'] = $combo->map(static fn (OrderItem $child): array => [
+            if ($item->meal_id !== null) {
+                $line['meal_id'] = (int) $item->meal_id;
+                $line['main_allocated_revenue_baisas'] = $main?->allocated_revenue_baisas !== null ? (int) $main->allocated_revenue_baisas : null;
+            }
+            $items = $kids->reject(static fn (OrderItem $child): bool => $main !== null && $child->id === $main->id);
+            if ($kids->isNotEmpty()) {
+                $line['combo'] = $items->map(static fn (OrderItem $child): array => [
                     'id' => (int) $child->id,
-                    'slot_id' => $child->combo_slot_id !== null ? (int) $child->combo_slot_id : null,
+                    'line_id' => $child->combo_line_id !== null ? (int) $child->combo_line_id : null,
+                    'kind' => $child->combo_child_kind,
                     'product_id' => $child->product_id !== null ? (int) $child->product_id : null,
                     'product_name' => $child->product_name_snapshot,
                     'qty' => (float) $item->qty > 0 ? round((float) $child->qty / (float) $item->qty, 3) : (float) $child->qty,
                     'extra_price_baisas' => Money::toBaisas($child->combo_extra_price ?? 0),
+                    'allocated_revenue_baisas' => $child->allocated_revenue_baisas !== null ? (int) $child->allocated_revenue_baisas : null,
                     'notes' => $child->notes,
                     'addons' => self::addons($child),
                 ])->values()->all();

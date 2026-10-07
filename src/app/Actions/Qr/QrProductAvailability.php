@@ -46,6 +46,12 @@ final readonly class QrProductAvailability
 
     private function __construct(public bool $available, public ?string $reason) {}
 
+    /** LAUNCH combo add-on — orderable (every line of a combo or meal can be served). */
+    public static function available(): self
+    {
+        return new self(true, null);
+    }
+
     /** Fix order A-1 (L3) — not orderable for one of the reasons above (a combo that cannot be completed). */
     public static function unavailable(string $reason): self
     {

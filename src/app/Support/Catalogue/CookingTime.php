@@ -110,6 +110,10 @@ final class CookingTime
      */
     public static function forLine(?Product $product, array $childMinutes = []): ?int
     {
+        // LAUNCH combo add-on — a meal parent has no product: its longest child.
+        if ($product === null && $childMinutes !== []) {
+            return self::longest($childMinutes);
+        }
         if ($product !== null && $product->isCombo()) {
             return self::longest($childMinutes) ?? self::of($product);
         }

@@ -25,10 +25,12 @@ use App\Models\SyncEvent;
 use App\Models\Table;
 use App\Models\TableSession;
 use App\Models\TabletOrder;
+use App\Support\Catalogue\ComboLines;
 use App\Support\Catalogue\CookingTime;
 use App\Support\CustomerIdentity;
 use App\Support\Money;
 use App\Support\Orders\OneLineNote;
+use App\Support\Pricing\ComboAllocation;
 use App\Support\Recipes\RecipeCopy;
 use App\Support\Recipes\RecipeInForce;
 use App\Support\Staff\SaleAuthorizations;
@@ -216,6 +218,10 @@ class CreateOrderHandler implements SyncEventHandler
             }
             $copy = new RecipeCopy((int) $device->company_id, $moment);
             $keptCopies = [];
+            // LAUNCH combo add-on — each line's children as written: a meal's
+            // main first, then the combo / meal items (a fixed line the
+            // device left out is served as is).
+            $plans = $this->linePlans($order['lines'], (int) $device->company_id);
 
             if ($existing !== null) {
                 if ($existing->qr_session_id !== null) {
@@ -233,7 +239,7 @@ class CreateOrderHandler implements SyncEventHandler
                 }
 
                 // Read before the purge: unchanged lines keep these copies.
-                $keptCopies = $this->keptLineCopies($existing, $order['lines']);
+                $keptCopies = $this->keptLineCopies($existing, $plans);
                 $this->purgeOrderChildren($existing);
                 $existing->update($columns);
                 $model = $existing;
@@ -252,46 +258,58 @@ class CreateOrderHandler implements SyncEventHandler
                 // faithful when the product was deleted while the order sat
                 // in a device's offline outbox.
                 $product = Product::withTrashed()->where('company_id', $device->company_id)->find($productId);
+                $plan = $plans[$index];
+                $isMeal = $plan['meal_id'] !== null;
 
                 // LAUNCH-P3 P3-6 — a re-sent open order keeps the copy a line
                 // already had unless the line changed (another product, qty
                 // or add-on set); a new or changed line copies at this sale.
                 // Fix order 1 L2: a kept recipe only while the product is
                 // still made-to-order (P3-7 holds for kept copies too).
-                $kept = $this->takeKeptLineCopy($keptCopies, $line);
+                $kept = $this->takeKeptLineCopy($keptCopies, $plan);
 
                 // LAUNCH review add-on — the line's Remove options (ordinary
                 // add_on_ids) leave their ingredients out of its recipe copy;
                 // the cooking time is the server's snapshot (devices send
                 // nothing new). A kept, unchanged line keeps both copies.
+                // LAUNCH combo add-on — a MEAL parent carries the money only:
+                // no product (the main is its first child), its meal_id, the
+                // name "<main> <meal>", no recipe, no components, no add-ons.
                 $item = OrderItem::create([
                     'order_id' => $model->id,
-                    'product_id' => $productId,
-                    'product_name_snapshot' => $product?->name ?? ('#'.$productId),
+                    'product_id' => $isMeal ? null : $productId,
+                    'meal_id' => $plan['meal_id'],
+                    'product_name_snapshot' => $isMeal
+                        ? trim(($product?->name ?? ('#'.$productId)).' '.($plan['meal_name'] ?? ''))
+                        : ($product?->name ?? ('#'.$productId)),
                     'qty' => $line['qty'],
                     'unit_price_snapshot' => Money::toOmr((int) $line['unit_price_baisas']),
                     'line_discount' => Money::toOmr((int) ($line['line_discount_baisas'] ?? 0)),
                     'line_total' => Money::toOmr((int) $line['line_total_baisas']),
-                    'recipe_snapshot_json' => $kept !== null
+                    'recipe_snapshot_json' => $isMeal ? null : ($kept !== null
                         ? ((string) $product?->stock_mode === 'ingredient' ? $kept['recipe'] : null)
-                        : $copy->productRecipe($product, $copy->removedIngredientIds($this->addOnIdsOf($line))),
-                    'component_snapshot_json' => $kept !== null ? $kept['components'] : $this->snapshotComponents($productId),
+                        : $copy->productRecipe($product, $copy->removedIngredientIds($this->addOnIdsOf($line)))),
+                    'component_snapshot_json' => $isMeal ? [] : ($kept !== null ? $kept['components'] : $this->snapshotComponents($productId)),
                     'status' => OrderItem::STATUS_OPEN,
                     // Fix order A-1 (H1) — one line on the kitchen ticket; cut, never refused.
-                    'notes' => OneLineNote::cut($line['notes'] ?? null),
-                    'cooking_minutes' => $kept !== null ? ($kept['cooking_minutes'] ?? null) : CookingTime::of($product),
+                    'notes' => $isMeal ? null : OneLineNote::cut($line['notes'] ?? null),
+                    'cooking_minutes' => $isMeal ? null : ($kept !== null ? ($kept['cooking_minutes'] ?? null) : CookingTime::of($product)),
                 ]);
                 $itemIds[$index] = (int) $item->id;
 
-                $this->writeAddons($item, $line['addons'] ?? [], $device, $copy, $kept);
+                if (! $isMeal) {
+                    $this->writeAddons($item, $line['addons'] ?? [], $device, $copy, $kept);
+                }
 
-                // LAUNCH-P4 — a combo line's chosen items become its children
-                // (data contract): the item, qty = combo qty × choice qty, no
-                // money (the revenue sits on this line), their own recipe,
-                // component and add-on copies. Never refused for an invalid
-                // combo — the pricing check flags it.
+                // LAUNCH combo add-on — a combo or meal line's items become its
+                // children (data contract): the item served, qty = line qty ×
+                // item qty, no money (the revenue sits on this line), the line
+                // id, kind, extra / upgrade price and revenue share, their own
+                // recipe, component and add-on copies. Never refused for an
+                // invalid combo or meal — the pricing check flags it.
                 $childMinutes = [];
-                foreach ($line['combo'] ?? [] as $component) {
+                $shares = $this->revenueShares($line, $plan);
+                foreach ($plan['children'] as $position => $component) {
                     $childId = (int) $component['product_id'];
                     $child = Product::withTrashed()->where('company_id', $device->company_id)->find($childId);
                     $keptChild = $kept !== null ? $this->takeKeptChildCopy($kept, $component) : null;
@@ -309,21 +327,25 @@ class CreateOrderHandler implements SyncEventHandler
                             ? ((string) $child?->stock_mode === 'ingredient' ? $keptChild['recipe'] : null)
                             : $copy->productRecipe($child, $copy->removedIngredientIds($this->addOnIdsOf($component))),
                         'component_snapshot_json' => $keptChild !== null ? $keptChild['components'] : $this->snapshotComponents($childId),
-                        'combo_slot_id' => (int) $component['slot_id'],
+                        'combo_line_id' => $component['line_id'],
+                        'combo_child_kind' => $component['kind'],
                         'combo_extra_price' => Money::toOmr((int) ($component['extra_price_baisas'] ?? 0)),
+                        'allocated_revenue_baisas' => $shares[$position] ?? 0,
                         'status' => OrderItem::STATUS_OPEN,
                         'notes' => OneLineNote::cut($component['notes'] ?? null),
                         'cooking_minutes' => $childCooking,
                     ]);
                     $this->writeAddons($childItem, $component['addons'] ?? [], $device, $copy, $keptChild);
                 }
-                // LAUNCH review add-on — a combo parent stores its longest
-                // child's cooking time (else the combo's own value).
-                if ($kept === null && $product !== null && $product->isCombo()) {
-                    $parentCooking = CookingTime::forLine($product, $childMinutes);
+                // LAUNCH review add-on — a combo or meal parent stores its
+                // longest child's cooking time (else the combo's own value).
+                if ($kept === null && $plan['children'] !== [] && ($isMeal || ($product !== null && $product->isCombo()))) {
+                    $parentCooking = CookingTime::forLine($isMeal ? null : $product, $childMinutes);
                     if ($parentCooking !== $item->cooking_minutes) {
                         $item->update(['cooking_minutes' => $parentCooking]);
                     }
+                } elseif ($kept !== null && $isMeal) {
+                    $item->update(['cooking_minutes' => $kept['cooking_minutes'] ?? null]);
                 }
             }
 
@@ -528,6 +550,16 @@ class CreateOrderHandler implements SyncEventHandler
             $foreignAddOns = array_diff($addOnIds, array_map('intval', $ownedAddOns));
             if ($foreignAddOns !== []) {
                 throw new RuntimeException('order references add-on(s) outside the device tenant: '.implode(',', $foreignAddOns));
+            }
+        }
+
+        // LAUNCH combo add-on — a meal line names a meal of the device's own company.
+        $mealIds = array_values(array_unique(array_map('intval', array_filter(array_column($order['lines'], 'meal_id'), static fn ($id): bool => $id !== null))));
+        if ($mealIds !== []) {
+            $ownedMeals = DB::table('pos_meals')->where('company_id', $companyId)->whereIn('id', $mealIds)->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+            $foreignMeals = array_diff($mealIds, $ownedMeals);
+            if ($foreignMeals !== []) {
+                throw new RuntimeException('order references meal(s) outside the device tenant: '.implode(',', $foreignMeals));
             }
         }
 
@@ -837,12 +869,20 @@ class CreateOrderHandler implements SyncEventHandler
             'lines.*.qty' => ['required', 'numeric', 'gt:0'],
             'lines.*.unit_price_baisas' => ['required', 'integer', 'min:0'],
             'lines.*.line_total_baisas' => ['required', 'integer', 'min:0'],
-            // LAUNCH-P4 — a combo line's choices, per ONE combo (data contract).
+            // LAUNCH combo add-on — a meal line ("Make it a meal?" on the main
+            // product_id; its addons are the main's) and the main's share.
+            'lines.*.meal_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'lines.*.main_allocated_revenue_baisas' => ['sometimes', 'nullable', 'integer', 'min:0'],
+            // LAUNCH combo add-on — a combo or meal line's items, per ONE combo
+            // / meal (data contract): the line, the kind, the item served, its
+            // extra / upgrade price and (optional) its revenue share.
             'lines.*.combo' => ['sometimes', 'nullable', 'array'],
-            'lines.*.combo.*.slot_id' => ['required', 'integer'],
+            'lines.*.combo.*.line_id' => ['required', 'integer', 'min:1'],
+            'lines.*.combo.*.kind' => ['sometimes', 'nullable', 'string', 'in:fixed,upgrade,choice'],
             'lines.*.combo.*.product_id' => ['required', 'integer'],
             'lines.*.combo.*.qty' => ['required', 'numeric', 'gt:0'],
             'lines.*.combo.*.extra_price_baisas' => ['sometimes', 'integer', 'min:0'],
+            'lines.*.combo.*.allocated_revenue_baisas' => ['sometimes', 'nullable', 'integer', 'min:0'],
             'lines.*.combo.*.notes' => ['nullable', 'string'],
             'lines.*.combo.*.addons' => ['sometimes', 'array'],
             'lines.*.combo.*.addons.*.add_on_id' => ['required', 'integer'],
@@ -929,12 +969,14 @@ class CreateOrderHandler implements SyncEventHandler
      * @param  list<array<string, mixed>>  $incomingLines  the re-send's lines
      * @return array<string, list<array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}>>
      */
-    private function keptLineCopies(Order $order, array $incomingLines): array
+    private function keptLineCopies(Order $order, array $plans): array
     {
         $copies = [];
         $items = OrderItem::query()->where('order_id', $order->id)->with('addons')->orderBy('id')->get();
         // LAUNCH-P4 — a combo line's children travel with it: they are part
-        // of the line's identity (its choices) and keep their own copies.
+        // of the line's identity (its items) and keep their own copies.
+        // LAUNCH combo add-on — a meal parent is keyed by its meal; its main
+        // child is one of its items.
         $childrenByParent = $items->filter(static fn (OrderItem $i): bool => $i->parent_order_item_id !== null)
             ->groupBy('parent_order_item_id');
         foreach ($items->filter(static fn (OrderItem $i): bool => $i->parent_order_item_id === null) as $item) {
@@ -942,7 +984,8 @@ class CreateOrderHandler implements SyncEventHandler
             $combo = [];
             foreach ($childrenByParent->get($item->id, collect()) as $child) {
                 $perCombo = (float) $item->qty > 0 ? (float) $child->qty / (float) $item->qty : (float) $child->qty;
-                $childKey = $this->childKey((int) $child->combo_slot_id, (int) $child->product_id, $perCombo, $child->addons->pluck('add_on_id')->all());
+                $childKey = $this->childKey((string) ($child->combo_child_kind ?? ''), (int) ($child->combo_line_id ?? $child->combo_slot_id ?? 0),
+                    (int) $child->product_id, $perCombo, $child->addons->pluck('add_on_id')->all());
                 $children[$childKey][] = [
                     'recipe' => $child->recipe_snapshot_json,
                     'components' => $child->component_snapshot_json,
@@ -952,7 +995,8 @@ class CreateOrderHandler implements SyncEventHandler
                 $combo[] = $childKey;
             }
 
-            $key = $this->lineKey((int) $item->product_id, $item->qty, $item->addons->pluck('add_on_id')->all(), $combo);
+            $owner = $item->meal_id !== null ? 'm'.(int) $item->meal_id : (string) (int) $item->product_id;
+            $key = $this->lineKey($owner, $item->qty, $item->addons->pluck('add_on_id')->all(), $combo);
             $copies[$key][] = [
                 'recipe' => $item->recipe_snapshot_json,
                 'components' => $item->component_snapshot_json,
@@ -963,8 +1007,8 @@ class CreateOrderHandler implements SyncEventHandler
         }
 
         $incoming = [];
-        foreach ($incomingLines as $line) {
-            $key = $this->incomingLineKey($line);
+        foreach ($plans as $plan) {
+            $key = $this->planKey($plan);
             $incoming[$key] = ($incoming[$key] ?? 0) + 1;
         }
         foreach ($copies as $key => $list) {
@@ -975,6 +1019,117 @@ class CreateOrderHandler implements SyncEventHandler
         }
 
         return $copies;
+    }
+
+    /**
+     * LAUNCH combo add-on — every incoming line's plan: the meal (id and
+     * name) and the children as written, in order: a meal's main first
+     * (kind 'main', the line's product, add-ons and notes, its share from
+     * main_allocated_revenue_baisas), then the combo / meal items line by
+     * line in the lines' order (a fixed line the device left out is served as
+     * is: its product × quantity), then any item naming an unknown line. A
+     * kind the device did not send is derived from the line (fixed /
+     * upgrade / choice); an unknown line keeps the device's kind or none.
+     *
+     * @param  list<array<string, mixed>>  $lines
+     * @return list<array{meal_id: int|null, meal_name: string|null, line: array<string, mixed>, parent_addons: list<array<string, mixed>>, children: list<array<string, mixed>>}>
+     */
+    private function linePlans(array $lines, int $companyId): array
+    {
+        $productIds = array_values(array_unique(array_map(static fn (array $line): int => (int) $line['product_id'], $lines)));
+        $comboIds = Product::withTrashed()->where('company_id', $companyId)->whereIn('id', $productIds ?: [0])
+            ->where('product_type', Product::TYPE_COMBO)->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        $mealIds = array_values(array_unique(array_map('intval', array_filter(array_column($lines, 'meal_id'), static fn ($id): bool => $id !== null))));
+        $meals = DB::table('pos_meals')->where('company_id', $companyId)->whereIn('id', $mealIds ?: [0])->get()->keyBy('id');
+        $owners = ComboLines::load($comboIds, $mealIds);
+
+        $plans = [];
+        foreach ($lines as $line) {
+            $mealId = isset($line['meal_id']) ? (int) $line['meal_id'] : null;
+            $ownerLines = $mealId !== null
+                ? $owners['meals']->get($mealId, collect())
+                : $owners['combos']->get((int) $line['product_id'], collect());
+            $sent = [];
+            foreach (is_array($line['combo'] ?? null) ? $line['combo'] : [] as $component) {
+                $sent[(int) $component['line_id']][] = $component;
+            }
+            $children = [];
+            if ($mealId !== null) {
+                $children[] = [
+                    'line_id' => null, 'kind' => ComboLines::KIND_MAIN, 'product_id' => (int) $line['product_id'], 'qty' => 1,
+                    'extra_price_baisas' => 0, 'notes' => $line['notes'] ?? null, 'addons' => $line['addons'] ?? [],
+                    'allocated_revenue_baisas' => $line['main_allocated_revenue_baisas'] ?? null,
+                ];
+            }
+            foreach ($ownerLines as $ownerLine) {
+                $entries = $sent[$ownerLine->id] ?? [];
+                unset($sent[$ownerLine->id]);
+                if ($entries === [] && $ownerLine->kind === ComboLines::FIXED) {
+                    $entries = [['line_id' => $ownerLine->id, 'product_id' => $ownerLine->product_id, 'qty' => $ownerLine->quantity,
+                        'kind' => ComboLines::KIND_FIXED, 'extra_price_baisas' => 0, 'notes' => null, 'addons' => [], 'filled' => true]];
+                }
+                foreach ($entries as $entry) {
+                    $kind = in_array($entry['kind'] ?? null, [ComboLines::KIND_FIXED, ComboLines::KIND_UPGRADE, ComboLines::KIND_CHOICE], true)
+                        ? $entry['kind']
+                        : ($ownerLine->kind === ComboLines::CHOICE ? ComboLines::KIND_CHOICE
+                            : ((int) $entry['product_id'] === $ownerLine->product_id ? ComboLines::KIND_FIXED : ComboLines::KIND_UPGRADE));
+                    $children[] = ['kind' => $kind, 'line_id' => (int) $entry['line_id']] + $entry;
+                }
+            }
+            foreach ($sent as $entries) {
+                foreach ($entries as $entry) {
+                    $kind = in_array($entry['kind'] ?? null, [ComboLines::KIND_FIXED, ComboLines::KIND_UPGRADE, ComboLines::KIND_CHOICE], true) ? $entry['kind'] : null;
+                    $children[] = ['kind' => $kind, 'line_id' => (int) $entry['line_id']] + $entry;
+                }
+            }
+            $plans[] = [
+                'meal_id' => $mealId,
+                'meal_name' => $mealId !== null ? ($meals->get($mealId)?->name ?? null) : null,
+                'line' => $line,
+                'parent_addons' => $mealId !== null ? [] : ($line['addons'] ?? []),
+                'children' => $children,
+            ];
+        }
+
+        return $plans;
+    }
+
+    /**
+     * LAUNCH combo add-on (owner decision 6) — each child's share of the
+     * line total: the device's own split when every child carries one and
+     * they add up exactly to the line total (it priced with the prices it
+     * had at sale time); otherwise the server's split by the items' normal
+     * prices now ({@see ComboAllocation}).
+     *
+     * @param  array<string, mixed>  $line
+     * @param  array<string, mixed>  $plan
+     * @return list<int>
+     */
+    private function revenueShares(array $line, array $plan): array
+    {
+        $children = $plan['children'];
+        if ($children === []) {
+            return [];
+        }
+        $total = (int) $line['line_total_baisas'];
+        $sent = array_map(static fn (array $child): mixed => $child['allocated_revenue_baisas'] ?? null, $children);
+        if (! in_array(null, $sent, true)
+            && array_filter($sent, static fn (mixed $value): bool => ! is_int($value) || $value < 0) === []
+            && array_sum($sent) === $total) {
+            return array_values($sent);
+        }
+        $prices = Product::withTrashed()->whereIn('id', array_map(static fn (array $child): int => (int) $child['product_id'], $children) ?: [0])
+            ->pluck('base_price', 'id');
+
+        return ComboAllocation::forLine(
+            (int) $line['unit_price_baisas'],
+            (float) $line['qty'],
+            $total,
+            array_map(static fn (array $child): array => [
+                'weight' => Money::toBaisas($prices->get((int) $child['product_id']) ?? 0),
+                'qty' => (float) $child['qty'],
+            ], $children),
+        );
     }
 
     /**
@@ -1044,67 +1199,70 @@ class CreateOrderHandler implements SyncEventHandler
      * the line is new or changed.
      *
      * @param  array<string, list<array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}>>  $kept
-     * @param  array<string, mixed>  $line
+     * @param  array<string, mixed>  $plan  the line's plan ({@see linePlans()})
      * @return array{recipe: mixed, components: mixed, addons: array<int, list<array<string, mixed>>>}|null
      */
-    private function takeKeptLineCopy(array &$kept, array $line): ?array
+    private function takeKeptLineCopy(array &$kept, array $plan): ?array
     {
-        $key = $this->incomingLineKey($line);
+        $key = $this->planKey($plan);
 
         return ($kept[$key] ?? []) !== [] ? array_shift($kept[$key]) : null;
     }
 
     /**
-     * @param  array<string, mixed>  $line  an incoming payload line
+     * @param  array<string, mixed>  $plan  an incoming line's plan
      */
-    private function incomingLineKey(array $line): string
+    private function planKey(array $plan): string
     {
+        $line = $plan['line'];
+
         return $this->lineKey(
-            (int) $line['product_id'],
+            $plan['meal_id'] !== null ? 'm'.$plan['meal_id'] : (string) (int) $line['product_id'],
             $line['qty'],
-            array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $line['addons'] ?? []),
-            array_map(fn (array $component): string => $this->incomingChildKey($component), $line['combo'] ?? []),
+            array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $plan['parent_addons']),
+            array_map(fn (array $component): string => $this->incomingChildKey($component), $plan['children']),
         );
     }
 
     /**
      * A line's identity for the re-send rule: what its stock use depends on —
-     * the product, the quantity and the add-on set (and, LAUNCH-P4, a
-     * combo's choices). Price, discount and note edits leave the line
-     * "unchanged".
+     * the product (LAUNCH combo add-on: or 'm' + the meal), the quantity and
+     * the add-on set (and a combo's or meal's items). Price, discount and
+     * note edits leave the line "unchanged".
      *
      * @param  list<int|string>  $addOnIds
-     * @param  list<string>  $comboKeys  the combo's choice keys ({@see childKey()})
+     * @param  list<string>  $comboKeys  the items' keys ({@see childKey()})
      */
-    private function lineKey(int $productId, mixed $qty, array $addOnIds, array $comboKeys = []): string
+    private function lineKey(string $owner, mixed $qty, array $addOnIds, array $comboKeys = []): string
     {
         $ids = array_map('intval', $addOnIds);
         sort($ids);
         sort($comboKeys);
 
-        return $productId.'|'.number_format((float) $qty, 3, '.', '').'|'.implode(',', $ids)
+        return $owner.'|'.number_format((float) $qty, 3, '.', '').'|'.implode(',', $ids)
             .($comboKeys === [] ? '' : '|'.implode(';', $comboKeys));
     }
 
     /**
-     * LAUNCH-P4 — one combo choice's identity: slot, product, quantity per
-     * ONE combo and its add-on set.
+     * LAUNCH combo add-on — one item's identity: its kind, line, product,
+     * quantity per ONE combo / meal and its add-on set.
      *
      * @param  list<int|string>  $addOnIds
      */
-    private function childKey(int $slotId, int $productId, float $qtyPerCombo, array $addOnIds): string
+    private function childKey(string $kind, int $lineId, int $productId, float $qtyPerCombo, array $addOnIds): string
     {
         $ids = array_map('intval', $addOnIds);
         sort($ids);
 
-        return $slotId.':'.$productId.':'.number_format($qtyPerCombo, 3, '.', '').':'.implode(',', $ids);
+        return $kind.':'.$lineId.':'.$productId.':'.number_format($qtyPerCombo, 3, '.', '').':'.implode(',', $ids);
     }
 
-    /** @param array<string, mixed> $component an incoming combo choice */
+    /** @param array<string, mixed> $component an incoming item (from a plan) */
     private function incomingChildKey(array $component): string
     {
         return $this->childKey(
-            (int) $component['slot_id'],
+            (string) ($component['kind'] ?? ''),
+            (int) ($component['line_id'] ?? 0),
             (int) $component['product_id'],
             (float) $component['qty'],
             array_map(static fn (array $addon): int => (int) ($addon['add_on_id'] ?? 0), $component['addons'] ?? []),
@@ -1112,7 +1270,7 @@ class CreateOrderHandler implements SyncEventHandler
     }
 
     /**
-     * The kept copy for this incoming combo choice of a kept (unchanged) line.
+     * The kept copy for this incoming item of a kept (unchanged) line.
      *
      * @param  array<string, mixed>  $kept
      * @param  array<string, mixed>  $component

@@ -1,0 +1,31 @@
+{
+  "approve": {
+    "protocol_version": 1,
+    "event_id": "00000000-0000-4000-8000-000000000006",
+    "epoch": 1,
+    "occurred_at": "2026-10-08T18:00:00+00:00",
+    "action": "approve",
+    "submission_uuid": "00000000-0000-4000-8000-000000000002",
+    "expected_revision": 1
+  },
+  "item_done": {
+    "protocol_version": 1,
+    "event_id": "00000000-0000-4000-8000-000000000007",
+    "epoch": 1,
+    "occurred_at": "2026-10-08T18:00:00+00:00",
+    "action": "item_done",
+    "submission_uuid": "00000000-0000-4000-8000-000000000002",
+    "expected_revision": 1,
+    "area_uuid": "00000000-0000-4000-8000-000000000020",
+    "line_uuid": "00000000-0000-4000-8000-000000000010"
+  },
+  "claim_delivery": {
+    "protocol_version": 1,
+    "event_id": "00000000-0000-4000-8000-000000000008",
+    "epoch": 1,
+    "occurred_at": "2026-10-08T18:00:00+00:00",
+    "action": "claim_delivery",
+    "delivery_uuid": "00000000-0000-4000-8000-000000000040",
+    "attempt_uuid": "00000000-0000-4000-8000-000000000041"
+  }
+}

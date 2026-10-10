@@ -51,7 +51,7 @@ final class LaunchP0RealSchemaTest extends TestCase
         }
         DeviceActivationToken::factory()->for($device)->forPlaintext('p0-real-code')->create();
         Auth::forgetGuards();
-        $fresh = $this->postJson('/api/v1/auth/device/activate', ['code' => 'p0-real-code'])->assertOk()->json('data.device_token');
+        $fresh = $this->postJson('/api/v1/auth/device/activate', ['code' => 'p0-real-code', 'serial' => $device->serial_number, 'app' => 'till'])->assertOk()->json('data.device_token');
         $this->assertNotSame($raw, $fresh);
         Auth::forgetGuards();
         $this->withToken($fresh)->postJson('/api/v1/device/heartbeat', ['pending_outbox_count' => 2, 'quarantined_count' => 1, 'app_version' => 'p0-test'])->assertOk();

@@ -7,6 +7,8 @@ namespace App\Actions\Tables;
 use App\Actions\Qr\PresentQrPendingOrderAction;
 use App\Actions\Qr\QrDineInException;
 use App\Actions\Qr\RefreshQrOrderTotalsAction;
+use App\Kitchen\DomainCancellation;
+use App\Kitchen\PreparationEvidence;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderDiscount;
@@ -211,9 +213,10 @@ final class CancelStaffLineAction
                 'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => []];
         }
         $this->totals->handle($order);
+        $kitchenEvidence = PreparationEvidence::assertChoice($order, $cancelledItems, (bool) $payload['prepared']);
         $waste = $this->waste->plan($cancelledItems, (bool) $payload['prepared'], (string) $order->order_type);
         $afterPersist = $this->waste->book($order, $primary, $payload, $waste);
-        $values = ['waste' => $waste, 'cancelled_qty' => $cancelled, 'unlinked_line_count' => $unlinked,
+        $values = ['waste' => $waste, 'kitchen_preparation_evidence' => $kitchenEvidence, 'cancelled_qty' => $cancelled, 'unlinked_line_count' => $unlinked,
             'grand_total_baisas' => Money::toBaisas($order->grand_total), 'rounds' => $changes];
         $this->journal->handle($primary, 'round_resolved', $values + [
             'action' => 'line_cancelled', 'client_request_id' => $payload['client_request_id'],
@@ -226,6 +229,8 @@ final class CancelStaffLineAction
             + (isset($payload['combo']) && is_array($payload['combo']) ? ['combo_picks' => $this->requestPicks($payload['combo'], [])] : [])
             + (isset($payload['approved_by_staff_id']) ? ['approved_by_staff_id' => (int) $payload['approved_by_staff_id']] : []),
             (int) $device->id, afterPersist: $afterPersist);
+
+        DomainCancellation::reconcile($order, $payload['client_request_id']);
 
         return ['outcome' => 'cancelled'] + $values;
     }

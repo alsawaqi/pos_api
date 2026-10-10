@@ -6,6 +6,7 @@ namespace App\Actions\Qr;
 
 use App\Actions\Device\Sync\Handlers\ProductWasteHandler;
 use App\Actions\Tables\BookTableCancellationWasteAction;
+use App\Kitchen\PreparationEvidence;
 use App\Models\BranchStock;
 use App\Models\Device;
 use App\Models\Order;
@@ -40,7 +41,9 @@ final class QuickOrderCancellationWasteAction
             array_push($ids, ...OrderItem::query()->where('order_id', $order->id)
                 ->whereIn('parent_order_item_id', $ids)->pluck('id')->map(static fn ($id): int => (int) $id)->all());
         }
-        $ids = array_values(array_unique($ids));
+        // Item Done is per component/area. Unlike legacy full-ticket printing,
+        // completing a parent never proves its independently routed children Done.
+        $ids = array_values(array_unique([...$ids, ...PreparationEvidence::forOrder($order)['done']]));
         sort($ids);
 
         return $ids;

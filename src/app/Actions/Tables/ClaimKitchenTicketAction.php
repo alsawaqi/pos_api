@@ -17,6 +17,7 @@ use App\Models\TabletOrder;
 use Closure;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 
 /** A claim is durable until an explicit failed result, never a timed lease. */
@@ -30,6 +31,21 @@ final class ClaimKitchenTicketAction
      * @return array<string, mixed>
      */
     public function handle(Device $device, array $payload): array
+    {
+        return DB::transaction(function () use ($device, $payload): array {
+            if (Schema::hasTable('pos_kv2_branches')) {
+                $branch = DB::table('pos_kv2_branches')->where('company_id', $device->company_id)
+                    ->where('branch_id', $device->branch_id)->lockForUpdate()->first();
+                if ($branch && $branch->mode !== 'legacy') {
+                    throw new QrDineInException('kitchen_v2_required', 409, 'This branch uses the kitchen journal.');
+                }
+            }
+
+            return $this->claimLegacy($device, $payload);
+        }, 5);
+    }
+
+    private function claimLegacy(Device $device, array $payload): array
     {
         return $this->locked($device, $payload['ticket_key'], function (
             Device $holder, Order $order, QrOrderRound $round, ?TableSession $seating, ?KitchenTicket $ticket,
@@ -168,6 +184,9 @@ final class ClaimKitchenTicketAction
                     if ($ticket !== null && ((int) $ticket->round_id !== (int) $round->id
                         || (int) $ticket->order_id !== (int) $order->id)) {
                         throw $this->notFound();
+                    }
+                    if ($ticket?->print_result === KitchenTicket::RESULT_RETIRED_LOCAL_UNKNOWN) {
+                        throw new QrDineInException('kitchen_local_test_retired', 409, 'This local test ticket was retired with an unknown print outcome.');
                     }
                     $result = $operation($holder, $order, $round, $seating, $ticket);
                     $events = $this->journal->flush();

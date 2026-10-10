@@ -1,0 +1,64 @@
+{
+  "work": [
+    {
+      "line_uuid": "00000000-0000-4000-8000-000000000010",
+      "area_uuid": "00000000-0000-4000-8000-000000000020",
+      "quantity": "2.000000",
+      "line": {
+        "line_uuid": "00000000-0000-4000-8000-000000000010",
+        "product_id": 1,
+        "category_id": null,
+        "quantity": "2.000000",
+        "name": "Fish",
+        "name_ar": "سمك",
+        "notes": "No salt",
+        "modifiers": [
+          "Extra lemon"
+        ],
+        "removals": [],
+        "allergens": [
+          "fish"
+        ]
+      }
+    }
+  ],
+  "copies": {
+    "00000000-0000-4000-8000-000000000030": [
+      {
+        "line_uuid": "00000000-0000-4000-8000-000000000010",
+        "product_id": 1,
+        "category_id": null,
+        "quantity": "2.000000",
+        "name": "Fish",
+        "name_ar": "سمك",
+        "notes": "No salt",
+        "modifiers": [
+          "Extra lemon"
+        ],
+        "removals": [],
+        "allergens": [
+          "fish"
+        ]
+      }
+    ],
+    "00000000-0000-4000-8000-000000000031": [
+      {
+        "line_uuid": "00000000-0000-4000-8000-000000000010",
+        "product_id": 1,
+        "category_id": null,
+        "quantity": "2.000000",
+        "name": "Fish",
+        "name_ar": "سمك",
+        "notes": "No salt",
+        "modifiers": [
+          "Extra lemon"
+        ],
+        "removals": [],
+        "allergens": [
+          "fish"
+        ]
+      }
+    ]
+  },
+  "needs_routing": []
+}

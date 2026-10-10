@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1\Device;
 use App\Actions\Qr\QrDineInException;
 use App\Actions\Qr\RejectDineInQrRoundAction;
 use App\Http\Requests\Api\V1\Device\DeviceQrRoundRequest;
+use App\Kitchen\CloudIntake;
 use App\Models\Device;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -21,10 +22,9 @@ final class DeviceQrRejectRoundController
         $device = $request->user();
 
         try {
-            $data = $this->reject->handle(
-                $device,
-                (int) $request->validated('round_id'),
-            );
+            $roundId = (int) $request->validated('round_id');
+            $data = app(CloudIntake::class)->review($request,
+                fn () => $this->reject->handle($device, $roundId), 'reject', roundId: $roundId);
         } catch (QrDineInException $exception) {
             return QrApiResponse::failure(
                 $exception->codeName,

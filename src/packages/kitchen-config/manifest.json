@@ -1,0 +1,12 @@
+{
+  "version": "1.0.2-k5",
+  "canonical_repository": "alsawaqi/pos_api",
+  "canonical_path": "src/packages/kitchen-config",
+  "files": {
+    "README.md": "2209c917f84a61fe4be0708bf45960c60f7abfb83b6dd51ed8d692c31c0c7027",
+    "src/Configuration.php": "36521f661913e026191415b05aeaf9a6db9f5da6d74e62856573662607fe7c88",
+    "src/KitchenFault.php": "25c081ee67510b8dc27c0dc54bdf80c8dda56117448dba18b3cb51f1e3fc9e07",
+    "src/Routing.php": "122bc964285e3a4606a5acb5f2cb1ab5a283a79a4c31701f952b77bfbd0387b8",
+    "src/Wire.php": "66f2d342362e9996b366129d4b2b19e5aba54b21ff19a06009077b4018cf42d1"
+  }
+}

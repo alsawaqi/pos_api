@@ -14,6 +14,7 @@ use App\Actions\Tables\JoinTableSessionAction;
 use App\Actions\Tables\MoveTableSessionAction;
 use App\Actions\Tables\OpenStaffTableSessionAction;
 use App\Http\Requests\Api\V1\Device\StaffTableSessionRequest;
+use App\Kitchen\CloudIntake;
 use App\Support\QrApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Carbon;
@@ -43,9 +44,10 @@ final class DeviceTableSessionController
         $clientAt = isset($payload['client_timestamp']) ? Carbon::parse($payload['client_timestamp']) : $receivedAt;
         $operation = (string) $request->route('table_operation');
         try {
-            $result = $operation === 'open'
+            $perform = fn () => $operation === 'open'
                 ? $this->open->handle($request->user(), $payload, $clientAt, $receivedAt)
                 : $this->{$operation}->handle($request->user(), $payload, $clientAt, $receivedAt, $uuid);
+            $result = $operation === 'round' ? app(CloudIntake::class)->directRound($request, $perform) : $perform();
         } catch (QrDineInException $exception) {
             $response = QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
             if ($exception->details !== []) {

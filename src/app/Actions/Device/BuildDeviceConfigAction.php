@@ -8,6 +8,7 @@ use App\Actions\Qr\DineInRoundMode;
 use App\Actions\Qr\QrScanGeofenceMode;
 use App\Actions\Qr\QrTableCardEnabled;
 use App\Actions\Tables\TableSessionsMode;
+use App\Kitchen\Compatibility;
 use App\Models\AddOn;
 use App\Models\AddOnGroup;
 use App\Models\Branch;
@@ -477,6 +478,11 @@ class BuildDeviceConfigAction
                 // server reads it again on every round, never trusting this hint.
                 'dine_in_round_mode' => $this->dineInRoundMode->forBranch($companyId, $branchId),
                 'table_sessions_mode' => $this->tableSessionsMode->forBranch($companyId, $branchId),
+                'kitchen_v2' => [...Compatibility::settings($companyId, $branchId),
+                    'removal_group_ids' => AddOnGroup::query()->where('company_id', $companyId)->where('kind', 'remove')->pluck('id')->map(fn ($id) => (int) $id)->all(),
+                    'device_uuid' => $device->uuid,
+                    'identity' => ['company_id' => $companyId, 'branch_id' => $branchId,
+                        'device_id' => (int) $device->id, 'assignment' => $device->assignment_activated_at?->toIso8601String()]],
                 'qr_table_card_enabled' => $this->tableCardEnabled->forBranch($companyId, $branchId) ? 'on' : 'off',
                 'qr_scan_geofence_mode' => $this->scanGeofenceMode->forBranch($companyId, $branchId),
                 // LAUNCH-P5 — { position: { actions: { key: bool }, discount_max_percent } }

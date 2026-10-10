@@ -46,6 +46,10 @@ class DeviceActivateController
             return self::refusal('activation_failed', $e->getMessage());
         }
 
+        if ($device->device_type === 'kitchen_display') {
+            return response()->json(['data' => ['device_token' => $device->plainTextToken, 'device' => ['uuid' => $device->uuid, 'company_id' => (int) $device->company_id, 'branch_id' => (int) $device->branch_id, 'device_type' => 'kitchen_display', 'name' => $device->name]], 'errors' => []]);
+        }
+
         return response()->json([
             'data' => [
                 'device_token' => $device->plainTextToken,

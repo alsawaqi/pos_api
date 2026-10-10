@@ -1,0 +1,61 @@
+{
+  "policies": {
+    "staff": "immediate",
+    "qr_web": "manual",
+    "customer_tablet": "manual"
+  },
+  "areas": [
+    {
+      "id": "00000000-0000-4000-8000-000000000020",
+      "name": "Grill"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000021",
+      "name": "Drinks"
+    }
+  ],
+  "destinations": [
+    {
+      "id": "00000000-0000-4000-8000-000000000030",
+      "name": "Kitchen printer",
+      "type": "printer",
+      "address": "192.168.100.173",
+      "port": 9100,
+      "profile": "escpos-unverified",
+      "paused": false
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000031",
+      "name": "Collection copy",
+      "type": "printer",
+      "address": "192.168.100.174",
+      "port": 9100,
+      "profile": "escpos-unverified",
+      "paused": false
+    }
+  ],
+  "rules": [
+    {
+      "kind": "item",
+      "reference_id": 1,
+      "areas": [
+        "00000000-0000-4000-8000-000000000020"
+      ],
+      "destinations": [
+        "00000000-0000-4000-8000-000000000030"
+      ]
+    }
+  ],
+  "all_items": [
+    "00000000-0000-4000-8000-000000000031",
+    "00000000-0000-4000-8000-000000000030"
+  ],
+  "fallback": {
+    "areas": [
+      "00000000-0000-4000-8000-000000000021"
+    ],
+    "destinations": [
+      "00000000-0000-4000-8000-000000000030"
+    ]
+  }
+}

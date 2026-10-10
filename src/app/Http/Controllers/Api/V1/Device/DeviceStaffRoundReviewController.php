@@ -11,6 +11,7 @@ use App\Actions\Tablet\TabletOrderException;
 use App\Actions\Tablet\TabletOrderStaffAction;
 use App\Http\Middleware\RequireTabletStaff;
 use App\Http\Requests\Api\V1\Device\StaffRoundReviewRequest;
+use App\Kitchen\CloudIntake;
 use App\Models\Device;
 use App\Models\TabletOrder;
 use App\Support\DeviceCapabilities;
@@ -31,7 +32,7 @@ final class DeviceStaffRoundReviewController
             return $tablet;
         }
         try {
-            return QrApiResponse::success($this->confirmRound->handle($request->user(), $uuid, $roundId));
+            return QrApiResponse::success(app(CloudIntake::class)->review($request, fn () => $this->confirmRound->handle($request->user(), $uuid, $roundId), 'approve', roundId: $roundId));
         } catch (QrDineInException $exception) {
             return QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
         }
@@ -43,7 +44,7 @@ final class DeviceStaffRoundReviewController
             return $tablet;
         }
         try {
-            return QrApiResponse::success($this->rejectRound->handle($request->user(), $uuid, $roundId));
+            return QrApiResponse::success(app(CloudIntake::class)->review($request, fn () => $this->rejectRound->handle($request->user(), $uuid, $roundId), 'reject', roundId: $roundId));
         } catch (QrDineInException $exception) {
             return QrApiResponse::failure($exception->codeName, $exception->getMessage(), $exception->httpStatus);
         }
@@ -73,7 +74,7 @@ final class DeviceStaffRoundReviewController
             return RequireTabletStaff::refusal($staff['failure']);
         }
         try {
-            return QrApiResponse::success($this->tablet->reviewRound($device, (int) $staff['staff_id'], $uuid, $roundId, $confirm));
+            return QrApiResponse::success(app(CloudIntake::class)->review($request, fn () => $this->tablet->reviewRound($device, (int) $staff['staff_id'], $uuid, $roundId, $confirm), $confirm ? 'approve' : 'reject', roundId: $roundId));
         } catch (TabletOrderException $exception) {
             return $exception->response();
         }

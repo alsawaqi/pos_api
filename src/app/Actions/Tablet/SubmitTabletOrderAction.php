@@ -15,6 +15,7 @@ use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Actions\Tables\ListTableBoardAction;
 use App\Actions\Tables\TableLoyaltyDiscount;
+use App\Kitchen\CloudIntake;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
 use App\Models\Order;
@@ -201,7 +202,9 @@ final class SubmitTabletOrderAction
             'total_baisas' => $price->grandTotalBaisas, 'kitchen_lines' => $kitchenLines,
         ], $now);
 
-        return ['tablet' => $row, 'replayed' => false];
+        app(CloudIntake::class)->capture($order, 'customer_tablet', $kitchenLines);
+
+        return ['tablet' => $row->fresh(), 'replayed' => false];
     }
 
     /**
@@ -348,7 +351,9 @@ final class SubmitTabletOrderAction
         $this->journal->handle($primary, 'customer_order_arrived', $event, (int) $tablet->id, $now);
         $this->journal->flush();
 
-        return ['tablet' => $row, 'replayed' => false];
+        app(CloudIntake::class)->capture($order, 'customer_tablet', $round->priced_lines, $round);
+
+        return ['tablet' => $row->fresh(), 'replayed' => false];
     }
 
     /**

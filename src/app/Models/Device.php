@@ -142,6 +142,7 @@ class Device extends Model implements Authenticatable
         'handheld' => 'handheld',
         'station' => 'payment_station',
         'customer_tablet' => 'customer_tablet',
+        'kds' => 'kitchen_display',
     ];
 
     public function acceptsActivationApp(string $app): bool

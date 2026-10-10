@@ -1,0 +1,835 @@
+{
+  "bundle": {
+    "policies": {
+      "staff": "immediate",
+      "qr_web": "manual",
+      "customer_tablet": "manual"
+    },
+    "areas": [
+      {
+        "id": "00000000-0000-4000-8000-000000000020",
+        "name": "Grill"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000021",
+        "name": "Drinks"
+      }
+    ],
+    "destinations": [
+      {
+        "id": "00000000-0000-4000-8000-000000000030",
+        "name": "Kitchen printer",
+        "type": "printer",
+        "address": "192.168.100.173",
+        "port": 9100,
+        "profile": "escpos-unverified",
+        "paused": false
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000031",
+        "name": "Collection copy",
+        "type": "printer",
+        "address": "192.168.100.174",
+        "port": 9100,
+        "profile": "escpos-unverified",
+        "paused": false
+      }
+    ],
+    "rules": [
+      {
+        "kind": "item",
+        "reference_id": 1,
+        "areas": [
+          "00000000-0000-4000-8000-000000000020"
+        ],
+        "destinations": [
+          "00000000-0000-4000-8000-000000000030"
+        ]
+      }
+    ],
+    "all_items": [
+      "00000000-0000-4000-8000-000000000031",
+      "00000000-0000-4000-8000-000000000030"
+    ],
+    "fallback": {
+      "areas": [
+        "00000000-0000-4000-8000-000000000021"
+      ],
+      "destinations": [
+        "00000000-0000-4000-8000-000000000030"
+      ]
+    }
+  },
+  "events": [
+    {
+      "protocol_version": 1,
+      "event_id": "99813d3b-289e-4d0e-9a51-b93aeb7433f5",
+      "epoch": 1,
+      "occurred_at": "2026-10-08T18:00:00+00:00",
+      "action": "submit",
+      "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+      "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+      "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+      "revision": 1,
+      "policy_version": 1,
+      "source": "main_pos",
+      "domain_event_uuid": "8d784549-cba1-49f0-9e45-af6e48c1e94f",
+      "domain_state": "submitted",
+      "context": {
+        "reference": "K1-TEST",
+        "table": "A2"
+      },
+      "lines": [
+        {
+          "line_uuid": "00000000-0000-4000-8000-000000000010",
+          "product_id": 1,
+          "category_id": null,
+          "quantity": "2.000000",
+          "name": "Fish",
+          "name_ar": "سمك",
+          "notes": "No salt",
+          "modifiers": [
+            "Extra lemon"
+          ],
+          "removals": [],
+          "allergens": [
+            "fish"
+          ]
+        }
+      ]
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "20970552-08d5-58ff-b5eb-e944998a438a",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:05.000Z",
+      "action": "claim_delivery",
+      "delivery_uuid": "c848be0a-2350-5fdc-bbe4-13842c370be2",
+      "attempt_uuid": "1c43039e-ed54-421c-a37a-425cab66ee9a"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "448eca44-5620-513c-8455-0a3f08a1d75f",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:05.000Z",
+      "action": "delivery_result",
+      "delivery_uuid": "c848be0a-2350-5fdc-bbe4-13842c370be2",
+      "attempt_uuid": "1c43039e-ed54-421c-a37a-425cab66ee9a",
+      "result": "sending"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "5d3ea400-fe48-58b5-8188-2afd97d45346",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:05.000Z",
+      "action": "delivery_result",
+      "delivery_uuid": "c848be0a-2350-5fdc-bbe4-13842c370be2",
+      "attempt_uuid": "1c43039e-ed54-421c-a37a-425cab66ee9a",
+      "result": "sent_unconfirmed",
+      "evidence": "transport_completed"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "c71af175-036c-486c-b35f-8ef8d2328718",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:00.000Z",
+      "action": "amend",
+      "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+      "expected_revision": 1,
+      "replacement": {
+        "lines": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "3.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ],
+        "context": {
+          "reference": "TRACE",
+          "table": "A3"
+        },
+        "policy_version": 1
+      }
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "27eb8de0-ecb4-52b3-bf61-ebe87b13d252",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:05.000Z",
+      "action": "claim_delivery",
+      "delivery_uuid": "2feaa5eb-a49d-536b-8af7-1ecfefe6dd7e",
+      "attempt_uuid": "4fad8e33-2b13-487f-a368-994ddb7a39ed"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "7afa13c7-a083-5786-b4d2-5124bd98a1c9",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:05.000Z",
+      "action": "delivery_result",
+      "delivery_uuid": "2feaa5eb-a49d-536b-8af7-1ecfefe6dd7e",
+      "attempt_uuid": "4fad8e33-2b13-487f-a368-994ddb7a39ed",
+      "result": "sending"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "fd9a95ca-3d28-5378-a4fb-84950ee9b8bb",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:05.000Z",
+      "action": "delivery_result",
+      "delivery_uuid": "2feaa5eb-a49d-536b-8af7-1ecfefe6dd7e",
+      "attempt_uuid": "4fad8e33-2b13-487f-a368-994ddb7a39ed",
+      "result": "sent_unconfirmed",
+      "evidence": "transport_completed"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "942b8df1-6939-4e0a-8e99-21a56fb74ac7",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:00.000Z",
+      "action": "done_all",
+      "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+      "expected_revision": 2,
+      "area_uuid": "00000000-0000-4000-8000-000000000020"
+    },
+    {
+      "protocol_version": 1,
+      "event_id": "51df13cd-6910-4bad-a6f3-c421f8a99664",
+      "epoch": 1,
+      "occurred_at": "2026-10-09T00:00:00.000Z",
+      "action": "served",
+      "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+      "expected_revision": 2,
+      "ready_cycle": "38f4c0f4-1c3b-5e64-9c22-8b2cc1f2b38c"
+    }
+  ],
+  "final_order": {
+    "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+    "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+    "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+    "source": "main_pos",
+    "revision": 2,
+    "policy_version": 1,
+    "release_mode": "immediate",
+    "state": "served",
+    "context": {
+      "reference": "TRACE",
+      "table": "A3"
+    },
+    "intent": {
+      "protocol_version": 1,
+      "event_id": "99813d3b-289e-4d0e-9a51-b93aeb7433f5",
+      "epoch": 1,
+      "occurred_at": "2026-10-08T18:00:00+00:00",
+      "action": "submit",
+      "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+      "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+      "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+      "revision": 2,
+      "policy_version": 1,
+      "source": "main_pos",
+      "domain_event_uuid": "8d784549-cba1-49f0-9e45-af6e48c1e94f",
+      "domain_state": "submitted",
+      "context": {
+        "reference": "TRACE",
+        "table": "A3"
+      },
+      "lines": [
+        {
+          "line_uuid": "00000000-0000-4000-8000-000000000010",
+          "product_id": 1,
+          "category_id": null,
+          "quantity": "3.000000",
+          "name": "Fish",
+          "name_ar": "سمك",
+          "notes": "No salt",
+          "modifiers": [
+            "Extra lemon"
+          ],
+          "removals": [],
+          "allergens": [
+            "fish"
+          ]
+        }
+      ]
+    },
+    "configuration": {
+      "policies": {
+        "staff": "immediate",
+        "qr_web": "manual",
+        "customer_tablet": "manual"
+      },
+      "areas": [
+        {
+          "id": "00000000-0000-4000-8000-000000000020",
+          "name": "Grill"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000021",
+          "name": "Drinks"
+        }
+      ],
+      "destinations": [
+        {
+          "id": "00000000-0000-4000-8000-000000000030",
+          "name": "Kitchen printer",
+          "type": "printer",
+          "address": "192.168.100.173",
+          "port": 9100,
+          "profile": "escpos-unverified",
+          "paused": false
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000031",
+          "name": "Collection copy",
+          "type": "printer",
+          "address": "192.168.100.174",
+          "port": 9100,
+          "profile": "escpos-unverified",
+          "paused": false
+        }
+      ],
+      "rules": [
+        {
+          "kind": "item",
+          "reference_id": 1,
+          "areas": [
+            "00000000-0000-4000-8000-000000000020"
+          ],
+          "destinations": [
+            "00000000-0000-4000-8000-000000000030"
+          ]
+        }
+      ],
+      "all_items": [
+        "00000000-0000-4000-8000-000000000031",
+        "00000000-0000-4000-8000-000000000030"
+      ],
+      "fallback": {
+        "areas": [
+          "00000000-0000-4000-8000-000000000021"
+        ],
+        "destinations": [
+          "00000000-0000-4000-8000-000000000030"
+        ]
+      }
+    },
+    "routing": {
+      "work": [
+        {
+          "line_uuid": "00000000-0000-4000-8000-000000000010",
+          "area_uuid": "00000000-0000-4000-8000-000000000020",
+          "quantity": "3.000000",
+          "line": {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "3.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          },
+          "state": "outstanding",
+          "done_at": null
+        }
+      ],
+      "copies": {
+        "00000000-0000-4000-8000-000000000030": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "3.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ],
+        "00000000-0000-4000-8000-000000000031": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "3.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ]
+      },
+      "needs_routing": []
+    },
+    "work": [
+      {
+        "line_uuid": "00000000-0000-4000-8000-000000000010",
+        "area_uuid": "00000000-0000-4000-8000-000000000020",
+        "quantity": "3.000000",
+        "line": {
+          "line_uuid": "00000000-0000-4000-8000-000000000010",
+          "product_id": 1,
+          "category_id": null,
+          "quantity": "3.000000",
+          "name": "Fish",
+          "name_ar": "سمك",
+          "notes": "No salt",
+          "modifiers": [
+            "Extra lemon"
+          ],
+          "removals": [],
+          "allergens": [
+            "fish"
+          ]
+        },
+        "state": "done",
+        "done_at": "2026-10-09T00:00:00.000Z",
+        "done_by": 42
+      }
+    ],
+    "released_at": "2026-10-09T00:00:00.000Z",
+    "ready_at": "2026-10-09T00:00:00.000Z",
+    "ready_cycle": "38f4c0f4-1c3b-5e64-9c22-8b2cc1f2b38c",
+    "handed_over_at": "2026-10-09T00:00:00.000Z",
+    "link_state": "pending",
+    "revisions": [
+      {
+        "revision": 1,
+        "intent": {
+          "protocol_version": 1,
+          "event_id": "99813d3b-289e-4d0e-9a51-b93aeb7433f5",
+          "epoch": 1,
+          "occurred_at": "2026-10-08T18:00:00+00:00",
+          "action": "submit",
+          "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+          "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+          "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+          "revision": 1,
+          "policy_version": 1,
+          "source": "main_pos",
+          "domain_event_uuid": "8d784549-cba1-49f0-9e45-af6e48c1e94f",
+          "domain_state": "submitted",
+          "context": {
+            "reference": "K1-TEST",
+            "table": "A2"
+          },
+          "lines": [
+            {
+              "line_uuid": "00000000-0000-4000-8000-000000000010",
+              "product_id": 1,
+              "category_id": null,
+              "quantity": "2.000000",
+              "name": "Fish",
+              "name_ar": "سمك",
+              "notes": "No salt",
+              "modifiers": [
+                "Extra lemon"
+              ],
+              "removals": [],
+              "allergens": [
+                "fish"
+              ]
+            }
+          ]
+        },
+        "configuration": {
+          "policies": {
+            "staff": "immediate",
+            "qr_web": "manual",
+            "customer_tablet": "manual"
+          },
+          "areas": [
+            {
+              "id": "00000000-0000-4000-8000-000000000020",
+              "name": "Grill"
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000021",
+              "name": "Drinks"
+            }
+          ],
+          "destinations": [
+            {
+              "id": "00000000-0000-4000-8000-000000000030",
+              "name": "Kitchen printer",
+              "type": "printer",
+              "address": "192.168.100.173",
+              "port": 9100,
+              "profile": "escpos-unverified",
+              "paused": false
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000031",
+              "name": "Collection copy",
+              "type": "printer",
+              "address": "192.168.100.174",
+              "port": 9100,
+              "profile": "escpos-unverified",
+              "paused": false
+            }
+          ],
+          "rules": [
+            {
+              "kind": "item",
+              "reference_id": 1,
+              "areas": [
+                "00000000-0000-4000-8000-000000000020"
+              ],
+              "destinations": [
+                "00000000-0000-4000-8000-000000000030"
+              ]
+            }
+          ],
+          "all_items": [
+            "00000000-0000-4000-8000-000000000031",
+            "00000000-0000-4000-8000-000000000030"
+          ],
+          "fallback": {
+            "areas": [
+              "00000000-0000-4000-8000-000000000021"
+            ],
+            "destinations": [
+              "00000000-0000-4000-8000-000000000030"
+            ]
+          }
+        },
+        "routing": {
+          "work": [
+            {
+              "line_uuid": "00000000-0000-4000-8000-000000000010",
+              "area_uuid": "00000000-0000-4000-8000-000000000020",
+              "quantity": "2.000000",
+              "line": {
+                "line_uuid": "00000000-0000-4000-8000-000000000010",
+                "product_id": 1,
+                "category_id": null,
+                "quantity": "2.000000",
+                "name": "Fish",
+                "name_ar": "سمك",
+                "notes": "No salt",
+                "modifiers": [
+                  "Extra lemon"
+                ],
+                "removals": [],
+                "allergens": [
+                  "fish"
+                ]
+              },
+              "state": "outstanding",
+              "done_at": null
+            }
+          ],
+          "copies": {
+            "00000000-0000-4000-8000-000000000030": [
+              {
+                "line_uuid": "00000000-0000-4000-8000-000000000010",
+                "product_id": 1,
+                "category_id": null,
+                "quantity": "2.000000",
+                "name": "Fish",
+                "name_ar": "سمك",
+                "notes": "No salt",
+                "modifiers": [
+                  "Extra lemon"
+                ],
+                "removals": [],
+                "allergens": [
+                  "fish"
+                ]
+              }
+            ],
+            "00000000-0000-4000-8000-000000000031": [
+              {
+                "line_uuid": "00000000-0000-4000-8000-000000000010",
+                "product_id": 1,
+                "category_id": null,
+                "quantity": "2.000000",
+                "name": "Fish",
+                "name_ar": "سمك",
+                "notes": "No salt",
+                "modifiers": [
+                  "Extra lemon"
+                ],
+                "removals": [],
+                "allergens": [
+                  "fish"
+                ]
+              }
+            ]
+          },
+          "needs_routing": []
+        },
+        "work": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "area_uuid": "00000000-0000-4000-8000-000000000020",
+            "quantity": "2.000000",
+            "line": {
+              "line_uuid": "00000000-0000-4000-8000-000000000010",
+              "product_id": 1,
+              "category_id": null,
+              "quantity": "2.000000",
+              "name": "Fish",
+              "name_ar": "سمك",
+              "notes": "No salt",
+              "modifiers": [
+                "Extra lemon"
+              ],
+              "removals": [],
+              "allergens": [
+                "fish"
+              ]
+            },
+            "state": "outstanding",
+            "done_at": null
+          }
+        ]
+      }
+    ]
+  },
+  "deliveries": [
+    {
+      "delivery_uuid": "c848be0a-2350-5fdc-bbe4-13842c370be2",
+      "revision": 1,
+      "purpose": "original",
+      "state": "sent_unconfirmed",
+      "attempt_uuid": "1c43039e-ed54-421c-a37a-425cab66ee9a",
+      "snapshot": {
+        "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+        "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+        "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+        "source": "main_pos",
+        "revision": 1,
+        "context": {
+          "reference": "K1-TEST",
+          "table": "A2"
+        },
+        "destination": {
+          "id": "00000000-0000-4000-8000-000000000030",
+          "name": "Kitchen printer",
+          "type": "printer",
+          "address": "192.168.100.173",
+          "port": 9100,
+          "profile": "escpos-unverified",
+          "paused": false
+        },
+        "lines": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "2.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "attempt_uuid": "1c43039e-ed54-421c-a37a-425cab66ee9a",
+          "state": "sent_unconfirmed",
+          "claimed_at_ms": 1791504005000,
+          "evidence": "transport_completed"
+        }
+      ],
+      "origin_event_id": "99813d3b-289e-4d0e-9a51-b93aeb7433f5",
+      "retry_after_ms": 1791504007000
+    },
+    {
+      "delivery_uuid": "fb12d7dd-47ff-5dc3-8172-0b65ced94e2c",
+      "revision": 1,
+      "purpose": "original",
+      "state": "cancelled",
+      "attempt_uuid": null,
+      "snapshot": {
+        "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+        "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+        "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+        "source": "main_pos",
+        "revision": 1,
+        "context": {
+          "reference": "K1-TEST",
+          "table": "A2"
+        },
+        "destination": {
+          "id": "00000000-0000-4000-8000-000000000031",
+          "name": "Collection copy",
+          "type": "printer",
+          "address": "192.168.100.174",
+          "port": 9100,
+          "profile": "escpos-unverified",
+          "paused": false
+        },
+        "lines": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "2.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ]
+      },
+      "attempts": [],
+      "origin_event_id": "99813d3b-289e-4d0e-9a51-b93aeb7433f5"
+    },
+    {
+      "delivery_uuid": "55036e30-4a20-50e6-b33f-98b08cfb6cfb",
+      "revision": 2,
+      "purpose": "change",
+      "state": "queued",
+      "attempt_uuid": null,
+      "attempts": [],
+      "origin_event_id": "c71af175-036c-486c-b35f-8ef8d2328718",
+      "snapshot": {
+        "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+        "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+        "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+        "source": "main_pos",
+        "revision": 2,
+        "context": {
+          "reference": "TRACE",
+          "table": "A3"
+        },
+        "destination": {
+          "id": "00000000-0000-4000-8000-000000000030",
+          "name": "Kitchen printer",
+          "type": "printer",
+          "address": "192.168.100.173",
+          "port": 9100,
+          "profile": "escpos-unverified",
+          "paused": false
+        },
+        "lines": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "3.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ],
+        "removed_line_uuids": [],
+        "removed_lines": [],
+        "context_changed": true,
+        "previous_context": {
+          "reference": "K1-TEST",
+          "table": "A2"
+        }
+      }
+    },
+    {
+      "delivery_uuid": "2feaa5eb-a49d-536b-8af7-1ecfefe6dd7e",
+      "revision": 2,
+      "purpose": "original",
+      "state": "sent_unconfirmed",
+      "attempt_uuid": "4fad8e33-2b13-487f-a368-994ddb7a39ed",
+      "attempts": [
+        {
+          "attempt_uuid": "4fad8e33-2b13-487f-a368-994ddb7a39ed",
+          "state": "sent_unconfirmed",
+          "claimed_at_ms": 1791504005000,
+          "evidence": "transport_completed"
+        }
+      ],
+      "origin_event_id": "c71af175-036c-486c-b35f-8ef8d2328718",
+      "snapshot": {
+        "submission_uuid": "50a33dd1-cc87-4150-8bf4-ad38f668d7fb",
+        "order_uuid": "1d611700-0110-44f9-86d3-a0370b9f76b8",
+        "round_uuid": "5994fb5a-3099-45cc-bd15-58524aca62dd",
+        "source": "main_pos",
+        "revision": 2,
+        "context": {
+          "reference": "TRACE",
+          "table": "A3"
+        },
+        "destination": {
+          "id": "00000000-0000-4000-8000-000000000031",
+          "name": "Collection copy",
+          "type": "printer",
+          "address": "192.168.100.174",
+          "port": 9100,
+          "profile": "escpos-unverified",
+          "paused": false
+        },
+        "lines": [
+          {
+            "line_uuid": "00000000-0000-4000-8000-000000000010",
+            "product_id": 1,
+            "category_id": null,
+            "quantity": "3.000000",
+            "name": "Fish",
+            "name_ar": "سمك",
+            "notes": "No salt",
+            "modifiers": [
+              "Extra lemon"
+            ],
+            "removals": [],
+            "allergens": [
+              "fish"
+            ]
+          }
+        ],
+        "removed_line_uuids": [],
+        "removed_lines": [],
+        "context_changed": false
+      },
+      "retry_after_ms": 1791504007000
+    }
+  ]
+}

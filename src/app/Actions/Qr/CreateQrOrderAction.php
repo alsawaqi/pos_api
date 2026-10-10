@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Qr;
 
+use App\Kitchen\CloudIntake;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\OrderDiscount;
@@ -194,6 +195,8 @@ final class CreateQrOrderAction
                 'status' => QrSession::STATUS_ORDERED,
                 'last_seen_at' => $now,
             ]);
+
+            app(CloudIntake::class)->capture($order, 'qr_web', app(FreezeQrRoundLinesAction::class)->handle($loaded, $price));
 
             return $order->fresh();
         }, 5);

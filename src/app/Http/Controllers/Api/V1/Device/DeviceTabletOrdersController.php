@@ -10,6 +10,7 @@ use App\Actions\Tablet\TabletOrderPresenter;
 use App\Actions\Tablet\TabletOrderStaffAction;
 use App\Http\Middleware\RequireTabletStaff;
 use App\Http\Requests\Api\V1\Tablet\TabletEditLinesRequest;
+use App\Kitchen\CloudIntake;
 use App\Models\Device;
 use App\Support\QrApiResponse;
 use App\Support\Staff\StaffToken;
@@ -55,7 +56,8 @@ final class DeviceTabletOrdersController
     /** POST device/tablet-orders/{uuid}/send-to-kitchen */
     public function send(Request $request, string $uuid): JsonResponse
     {
-        return $this->run(fn (): array => $this->action->send($this->device($request), $this->staff($request), $uuid));
+        return $this->run(fn (): array => app(CloudIntake::class)->review($request,
+            fn () => $this->action->send($this->device($request), $this->staff($request), $uuid), 'approve', tabletUuid: $uuid));
     }
 
     /** POST device/tablet-orders/{uuid}/redeem/approve {client_request_id, authorization} */

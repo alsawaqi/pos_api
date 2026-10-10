@@ -1,0 +1,15 @@
+{
+  "standard": "RFC8785",
+  "input": {
+    "z": "2.000000",
+    "a": {
+      "name": "سمك",
+      "modifiers": [
+        "  no salt  ",
+        "lemon"
+      ]
+    }
+  },
+  "canonical_utf8": "{\"a\":{\"modifiers\":[\"  no salt  \",\"lemon\"],\"name\":\"سمك\"},\"z\":\"2.000000\"}",
+  "sha256": "96f1362da88e749609e6ce4aa18a3fe1f288ac17466ba683e7d90e672bfe6f5d"
+}

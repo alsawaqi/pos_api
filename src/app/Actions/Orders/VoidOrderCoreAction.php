@@ -11,6 +11,8 @@ use App\Actions\Qr\CloseTableSessionForOrderAction;
 use App\Actions\Qr\QrChargeRecoveryGuard;
 use App\Actions\Qr\QuickOrderCancellationWasteAction;
 use App\Actions\Tables\TableLoyaltyDiscount;
+use App\Kitchen\DomainCancellation;
+use App\Kitchen\PreparationEvidence;
 use App\Models\Device;
 use App\Models\LoyaltyAccount;
 use App\Models\LoyaltyTransaction;
@@ -47,12 +49,12 @@ final class VoidOrderCoreAction
      * approver.
      */
     public function handle(Order $order, Device $device, Carbon $voidedAt, ?string $reason = null, ?VoidReason $voidReason = null,
-        ?int $voidedByStaffId = null, ?int $voidApprovedByStaffId = null): array
+        ?int $voidedByStaffId = null, ?int $voidApprovedByStaffId = null, bool $kitchenPreparationReviewed = false): array
     {
         $orderUuid = (string) $order->uuid;
         $keepInventoryConsumed = $voidReason !== null && $voidReason->affects_inventory;
 
-        return DB::transaction(function () use ($order, $orderUuid, $device, $voidedAt, $reason, $voidReason, $keepInventoryConsumed, $voidedByStaffId, $voidApprovedByStaffId): array {
+        return DB::transaction(function () use ($order, $orderUuid, $device, $voidedAt, $reason, $voidReason, $keepInventoryConsumed, $voidedByStaffId, $voidApprovedByStaffId, $kitchenPreparationReviewed): array {
             // Re-read + lock the order INSIDE the txn before reversing stock. The
             // "already void" guard above is unlocked and is the SOLE idempotency
             // mechanism, so two concurrent order.void events with DIFFERENT
@@ -111,6 +113,19 @@ final class VoidOrderCoreAction
             // orders), and each reversal below is a no-op against empty rows.
             $wasPaid = in_array($order->status, [Order::STATUS_PAID, Order::STATUS_PENDING_VERIFICATION], true);
 
+            $kitchen = PreparationEvidence::forOrder($order);
+            if (! $kitchenPreparationReviewed && ($kitchen['done'] !== [] || $kitchen['review'] !== [])) {
+                if ($voidReason === null || (! $keepInventoryConsumed && $kitchen['done'] !== [])) {
+                    throw new RuntimeException('kitchen_preparation_review_required: choose a preparation-aware void reason');
+                }
+                if (! $wasPaid && $keepInventoryConsumed) {
+                    $order->load('items');
+                    app(QuickOrderCancellationWasteAction::class)->handle($device, $order,
+                        $order->items->where('status', '!=', 'void')->pluck('id')->map(fn ($id) => (int) $id)->all(),
+                        $voidedByStaffId, 'kitchen-void:'.$orderUuid);
+                    $kitchenPreparationReviewed = true;
+                }
+            }
             $order->update([
                 'status' => Order::STATUS_VOID,
                 'closed_at' => $voidedAt,
@@ -139,8 +154,9 @@ final class VoidOrderCoreAction
             // with a reason saying the food was made: its sent lines are
             // booked as waste (the cancel-with-wastage rule; it never fails
             // the void). Not sent yet = an ordinary unpaid void.
-            $tabletWaste = ! $wasPaid && $keepInventoryConsumed ? $this->tabletWaste($order, $device, $voidedByStaffId) : null;
+            $tabletWaste = ! $kitchenPreparationReviewed && ! $wasPaid && $keepInventoryConsumed ? $this->tabletWaste($order, $device, $voidedByStaffId) : null;
 
+            DomainCancellation::reconcile($order, 'void:'.$orderUuid, whole: true);
             OrderItem::query()->where('order_id', $order->id)->update(['status' => OrderItem::STATUS_VOID]);
 
             // Only a PAID sale has settled side effects to unwind. An open

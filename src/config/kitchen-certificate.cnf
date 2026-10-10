@@ -1,0 +1,7 @@
+[req]
+distinguished_name = subject
+[subject]
+[v3_kitchen]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth,clientAuth

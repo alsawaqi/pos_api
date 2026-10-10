@@ -38,6 +38,66 @@ final class KitchenTicketClaimTest extends TestCase
         $this->withoutMiddleware(ThrottleRequests::class);
     }
 
+    public function test_local_retirement_preserves_evidence_and_blocks_any_future_claim_or_result(): void
+    {
+        $flow = $this->flow();
+        $this->claim($flow);
+        $before = KitchenTicket::query()->sole()->getRawOriginal();
+        $order = $flow['order']->fresh()->getRawOriginal();
+        $round = $flow['round']->fresh()->getRawOriginal();
+        $this->travel(2)->days();
+        $this->app->instance('env', 'local');
+        try {
+            $args = ['ticket' => $before['id'], '--company' => $before['company_id'],
+                '--branch' => $before['branch_id'], '--reason' => 'Owner retired old local test; physical outcome unknown.', '--confirm-local-test' => true];
+            $this->artisan('kitchen:retire-local-test', $args)->assertExitCode(0);
+            $this->artisan('kitchen:retire-local-test', $args)->assertExitCode(0);
+        } finally {
+            $this->app->instance('env', 'testing');
+        }
+        $this->assertSame(KitchenTicket::RESULT_RETIRED_LOCAL_UNKNOWN, KitchenTicket::query()->sole()->print_result);
+        $this->assertNull(KitchenTicket::query()->sole()->printed_at);
+        $this->assertSame($order, $flow['order']->fresh()->getRawOriginal());
+        $this->assertSame($round, $flow['round']->fresh()->getRawOriginal());
+        $audit = DB::table('pos_kv2_audit')->where('action', 'retire_local_test_unknown')->sole();
+        $this->assertSame($before, json_decode($audit->detail, true)['before']);
+        $this->assertRefused('kitchen_local_test_retired', fn () => $this->claim($flow));
+        $this->assertRefused('kitchen_local_test_retired', fn () => $this->record($flow, 'failed'));
+        $this->assertRefused('kitchen_local_test_retired', fn () => $this->record($flow, 'printed', now()->toIso8601String()));
+    }
+
+    public function test_retirement_requires_local_environment_and_explicit_confirmation(): void
+    {
+        $flow = $this->flow();
+        $this->claim($flow);
+        $before = KitchenTicket::query()->sole()->getRawOriginal();
+        $args = ['ticket' => $before['id'], '--company' => $before['company_id'],
+            '--branch' => $before['branch_id'], '--reason' => 'Owner requests local test retirement.', '--confirm-local-test' => true];
+        $this->app->instance('env', 'production');
+        try {
+            $this->artisan('kitchen:retire-local-test', $args)->assertExitCode(1);
+            $this->app->instance('env', 'local');
+            unset($args['--confirm-local-test']);
+            $this->artisan('kitchen:retire-local-test', $args)->assertExitCode(1);
+        } finally {
+            $this->app->instance('env', 'testing');
+        }
+        $this->assertSame($before, KitchenTicket::query()->sole()->getRawOriginal());
+        $this->assertSame(0, DB::table('pos_kv2_audit')->where('action', 'retire_local_test_unknown')->count());
+    }
+
+    public function test_kitchen_setup_can_be_available_without_activating_legacy_routing(): void
+    {
+        $flow = $this->flow();
+        config(['kitchen.enabled' => true]);
+        $settings = \App\Kitchen\Compatibility::settings((int) $flow['device']->company_id, (int) $flow['device']->branch_id);
+        $this->assertTrue($settings['setup_enabled']);
+        $this->assertSame('legacy', $settings['mode']);
+        $this->assertFalse(\App\Kitchen\Compatibility::ownsBranch((int) $flow['device']->company_id, (int) $flow['device']->branch_id));
+        config(['kitchen.enabled' => false]);
+        $this->assertFalse(\App\Kitchen\Compatibility::settings((int) $flow['device']->company_id, (int) $flow['device']->branch_id)['setup_enabled']);
+    }
+
     public function test_first_claim_is_201_same_holder_replays_and_competitor_is_409_without_time_lease(): void
     {
         $flow = $this->flow();

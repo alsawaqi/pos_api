@@ -6,6 +6,8 @@ namespace App\Actions\Qr;
 
 use App\Actions\Device\VerifyManagerPinAction;
 use App\Actions\Orders\VoidOrderCoreAction;
+use App\Kitchen\PreparationEvidence;
+use App\Kitchen\Wire;
 use App\Models\Device;
 use App\Models\Order;
 use App\Models\QrSession;
@@ -85,10 +87,11 @@ final class CancelExpiredQuickOrdersAction
             $this->admissible($order, $session);
             $items = $order->items->filter(fn ($item): bool => $item->status !== 'void' && (float) $item->qty > 0);
             $prepared = $this->waste->preparedIds($order);
+            $kitchenReview = PreparationEvidence::forOrder($order)['review'];
             $rows[] = ['uuid' => $order->uuid, 'reference' => $order->receipt_number ?? $order->temp_reference ?? $order->uuid,
-                'total_baisas' => Money::toBaisas($order->grand_total), 'prepared' => $prepared !== [],
+                'total_baisas' => Money::toBaisas($order->grand_total), 'prepared' => $prepared !== [] || $kitchenReview !== [], 'preparation_review_required' => $kitchenReview !== [],
                 'items' => $items->map(fn ($item): array => ['name' => $item->product_name_snapshot, 'qty' => (float) $item->qty])->values()->all()];
-            $proof[] = ['uuid' => $order->uuid, 'revision' => QuickQrWorkspaceAction::revision($order), 'prepared_ids' => $prepared];
+            $proof[] = ['uuid' => $order->uuid, 'revision' => QuickQrWorkspaceAction::revision($order), 'prepared_ids' => $prepared, 'kitchen_evidence' => Wire::hash(PreparationEvidence::forOrder($order))];
         }
         $token = Crypt::encryptString(json_encode(['device_id' => (int) $device->id,
             'company_id' => (int) $device->company_id, 'branch_id' => (int) $device->branch_id,
@@ -143,7 +146,8 @@ final class CancelExpiredQuickOrdersAction
             foreach ($orders as $order) {
                 $this->admissible($order, $this->session($device, $order, true));
                 if (! hash_equals($expected[$order->uuid]['revision'], QuickQrWorkspaceAction::revision($order))
-                    || $expected[$order->uuid]['prepared_ids'] !== $this->waste->preparedIds($order)) {
+                    || $expected[$order->uuid]['prepared_ids'] !== $this->waste->preparedIds($order)
+                    || ($expected[$order->uuid]['kitchen_evidence'] ?? null) !== Wire::hash(PreparationEvidence::forOrder($order))) {
                     throw new QrChargeException('void_preview_changed', 409, 'An order changed. Review the list before cancelling.');
                 }
             }
@@ -155,7 +159,7 @@ final class CancelExpiredQuickOrdersAction
                 $waste = $this->waste->handle($device, $order, $preparedIds, (int) $approver->id, $input['client_request_id']);
                 // LAUNCH-P5 — the PIN-verified manager approved this void.
                 $this->void->handle($order, $device, now(), $input['reason'], null,
-                    isset($input['staff_id']) ? (int) $input['staff_id'] : null, (int) $approver->id);
+                    isset($input['staff_id']) ? (int) $input['staff_id'] : null, (int) $approver->id, kitchenPreparationReviewed: true);
                 $results[] = ['order_uuid' => $order->uuid, 'status' => 'void', 'waste' => $waste];
             }
             $result = ['company_id' => (int) $device->company_id, 'branch_id' => (int) $device->branch_id, 'orders' => $results, 'count' => count($results), 'replayed' => false,

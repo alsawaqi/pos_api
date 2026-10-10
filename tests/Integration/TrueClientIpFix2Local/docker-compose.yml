@@ -1,0 +1,166 @@
+services:
+  test_redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    networks:
+      - app_net
+
+  pos_api:
+    build:
+      context: ../../..
+      dockerfile: docker/prod/php/php.dockerfile
+    environment:
+      APP_NAME: POS-API-True-Client-IP-Test
+      APP_ENV: production
+      # Deterministic 32-byte test-only key; this stack has no published port.
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      APP_DEBUG: "false"
+      APP_URL: https://pos-api.test
+      LOG_CHANNEL: stderr
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ":memory:"
+      CACHE_STORE: redis
+      CACHE_PREFIX: pos-api-true-client-ip-test
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: test_redis
+      REDIS_PORT: "6379"
+      REDIS_CACHE_DB: "1"
+      SESSION_DRIVER: file
+      SESSION_SECURE_COOKIE: "true"
+      SESSION_COOKIE: pos_api_true_client_ip_session
+      QUEUE_CONNECTION: sync
+      BROADCAST_CONNECTION: log
+      MAIL_MAILER: array
+      POS_API_CLIENT_IP_SECRET: ${TRUE_CLIENT_IP_BFF_SECRET:?TRUE_CLIENT_IP_BFF_SECRET is required}
+    command:
+      - sh
+      - -lc
+      - >-
+        chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+        && exec php-fpm
+    volumes:
+      - ../../../src:/var/www/html:ro
+      - ./fixtures/routes/web.php:/var/www/html/routes/web.php:ro
+      - app_storage:/var/www/html/storage
+      - app_cache:/var/www/html/bootstrap/cache
+    depends_on:
+      test_redis:
+        condition: service_healthy
+    networks:
+      - app_net
+
+  pos_nginx:
+    image: nginx:1.25-alpine
+    volumes:
+      # This is the production file under test, not a copied fixture.
+      - ../../../docker/prod/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../../docker/prod/nginx/cloudflare-ips.conf:/etc/nginx/cloudflare-ips.conf:ro
+      - ../../../src/public:/var/www/html/public:ro
+    depends_on:
+      - pos_api
+    networks:
+      - app_net
+      - npm_to_app
+
+  fake_npm:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./fixtures/npm/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - pos_nginx
+    networks:
+      - npm_to_app
+      - cloudflare_to_npm_v4
+      - cloudflare_to_npm_v6
+      - direct_to_npm
+
+  fake_cloudflare_v4:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./fixtures/cloudflare/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - fake_npm
+    networks:
+      - client_to_cloudflare_v4
+      - cloudflare_to_npm_v4
+
+  fake_cloudflare_v6:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./fixtures/cloudflare/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - fake_npm
+    networks:
+      - client_to_cloudflare_v6
+      - cloudflare_to_npm_v6
+
+  client_v4:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c"]
+    command: ["trap : TERM INT; sleep infinity & wait"]
+    networks:
+      - client_to_cloudflare_v4
+
+  client_v6_a:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c"]
+    command: ["trap : TERM INT; sleep infinity & wait"]
+    networks:
+      - client_to_cloudflare_v6
+
+  client_v6_b:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c"]
+    command: ["trap : TERM INT; sleep infinity & wait"]
+    networks:
+      - client_to_cloudflare_v6
+
+  direct_client:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c"]
+    command: ["trap : TERM INT; sleep infinity & wait"]
+    networks:
+      - direct_to_npm
+
+  bff_client:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sh", "-c"]
+    command: ["trap : TERM INT; sleep infinity & wait"]
+    environment:
+      TRUE_CLIENT_IP_BFF_SECRET: ${TRUE_CLIENT_IP_BFF_SECRET:?TRUE_CLIENT_IP_BFF_SECRET is required}
+    depends_on:
+      - pos_nginx
+    networks:
+      - npm_to_app
+
+networks:
+  app_net:
+    name: ${TRUE_CLIENT_IP_APP_NETWORK:?TRUE_CLIENT_IP_APP_NETWORK is required}
+    external: true
+  npm_to_app:
+    name: ${TRUE_CLIENT_IP_NPM_APP_NETWORK:?TRUE_CLIENT_IP_NPM_APP_NETWORK is required}
+    external: true
+  client_to_cloudflare_v4:
+    name: ${TRUE_CLIENT_IP_CLIENT_V4_NETWORK:?TRUE_CLIENT_IP_CLIENT_V4_NETWORK is required}
+    external: true
+  client_to_cloudflare_v6:
+    name: ${TRUE_CLIENT_IP_CLIENT_V6_NETWORK:?TRUE_CLIENT_IP_CLIENT_V6_NETWORK is required}
+    external: true
+  cloudflare_to_npm_v4:
+    name: ${TRUE_CLIENT_IP_CF_V4_NETWORK:?TRUE_CLIENT_IP_CF_V4_NETWORK is required}
+    external: true
+  cloudflare_to_npm_v6:
+    name: ${TRUE_CLIENT_IP_CF_V6_NETWORK:?TRUE_CLIENT_IP_CF_V6_NETWORK is required}
+    external: true
+  direct_to_npm:
+    name: ${TRUE_CLIENT_IP_DIRECT_NETWORK:?TRUE_CLIENT_IP_DIRECT_NETWORK is required}
+    external: true
+
+volumes:
+  app_storage:
+  app_cache:

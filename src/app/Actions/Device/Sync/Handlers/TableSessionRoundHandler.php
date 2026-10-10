@@ -8,6 +8,7 @@ use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Qr\QrDineInException;
 use App\Actions\Tables\AppendStaffRoundAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
+use App\Kitchen\DomainLinkage;
 use App\Models\Device;
 use App\Models\SyncEvent;
 
@@ -19,7 +20,10 @@ final class TableSessionRoundHandler implements SyncEventHandler
     public function handle(SyncEvent $event, Device $device): array
     {
         try {
-            return $this->action->handle($device, $event->payload_json, $event->client_timestamp, $event->server_received_at);
+            $result = $this->action->handle($device, $event->payload_json, $event->client_timestamp, $event->server_received_at);
+            DomainLinkage::forEvent($event, $device, $result);
+
+            return $result;
         } catch (QrDineInException $exception) {
             // The action transaction rolled back, including any alias writes.
             return EnsureLegacyTableBillBaselineAction::syncRefusal($exception, $event->payload_json);

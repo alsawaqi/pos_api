@@ -7,6 +7,7 @@ namespace App\Actions\Device\Sync\Handlers;
 use App\Actions\Device\GeofenceGuard;
 use App\Actions\Device\Sync\SyncEventHandler;
 use App\Actions\Device\Sync\TenantReferenceGuard;
+use App\Kitchen\DomainLinkage;
 use App\Models\AddOn;
 use App\Models\Branch;
 use App\Models\CompReason;
@@ -360,6 +361,8 @@ class CreateOrderHandler implements SyncEventHandler
             $discountCount = $this->writeDiscounts($order, $model, $device, $itemIds);
             $compCount = $this->writeComps($order, $model, $device, $itemIds, $authorizations['comp_approvers']);
             $joinedCount = $this->writeJoinedTables($order, $model);
+
+            DomainLinkage::forEvent($event, $device, ['order_id' => (int) $model->id]);
 
             return [
                 'order_id' => (int) $model->id,

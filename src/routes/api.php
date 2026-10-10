@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceCustomersController;
 use App\Http\Controllers\Api\V1\Device\DeviceDispositionController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenController;
 use App\Http\Controllers\Api\V1\Device\DeviceKitchenPrintController;
+use App\Http\Controllers\Api\V1\Device\DeviceKitchenV2Controller;
 use App\Http\Controllers\Api\V1\Device\DeviceMessagesController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderAttentionController;
 use App\Http\Controllers\Api\V1\Device\DeviceOrderNumberController;
@@ -61,6 +62,7 @@ use App\Http\Controllers\Api\V1\Device\DeviceTabletController;
 use App\Http\Controllers\Api\V1\Device\DeviceTabletOrdersController;
 use App\Http\Controllers\Api\V1\Device\DeviceTransfersController;
 use App\Http\Controllers\Api\V1\Device\HeartbeatController;
+use App\Http\Controllers\Api\V1\Device\KitchenDisplayController;
 use App\Http\Controllers\Api\V1\Device\PaymentReversalsController;
 use App\Http\Controllers\Api\V1\Device\SyncPushController;
 use App\Http\Controllers\Api\V1\PublicQr\QrBindController;
@@ -81,6 +83,7 @@ use App\Http\Middleware\RefuseTrainingMode;
 use App\Http\Middleware\RequireStaffToken;
 use App\Http\Middleware\RequireTabletStaff;
 use App\Http\Middleware\RestrictCustomerTablet;
+use App\Http\Middleware\RestrictKitchenDisplay;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
@@ -154,7 +157,30 @@ Route::prefix('v1')->group(function (): void {
     // LAUNCH-P5 (A8) — any device call carrying training: true is refused.
     // LAUNCH-P6 (tester call 1) — a customer tablet's token reaches only the
     // device/tablet/* routes and the heartbeat / identity (RestrictCustomerTablet).
-    Route::middleware(['auth:pos_device', RestrictCustomerTablet::class, 'throttle:device-api', RefuseTrainingMode::class, MarkP5Device::class])->group(function (): void {
+    Route::middleware(['auth:pos_device', RestrictKitchenDisplay::class, RestrictCustomerTablet::class, 'throttle:device-api', RefuseTrainingMode::class, MarkP5Device::class])->group(function (): void {
+
+        Route::prefix('device/kitchen-v2')->name('kitchen-v2.')->group(function (): void {
+            $c = DeviceKitchenV2Controller::class;
+            Route::get('display/connection', [KitchenDisplayController::class, 'connection'])->name('display.connection');
+            Route::post('display/session', [KitchenDisplayController::class, 'session'])->middleware('throttle:10,1')->name('display.session');
+            Route::get('configuration', [$c, 'configuration'])->name('configuration');
+            Route::get('runtime', [$c, 'runtime'])->name('runtime');
+            Route::get('connection', [$c, 'connection'])->name('connection');
+            Route::get('intake', [$c, 'intake'])->name('intake');
+            Route::post('certificate', [$c, 'certificate'])->name('certificate');
+            Route::post('recovery/archive', [$c, 'recoveryArchive'])->name('recovery.archive');
+            Route::get('recovery/archive/{requestId}', [$c, 'recoveryRead'])->name('recovery.read');
+            Route::post('configuration/ack', [$c, 'acknowledge'])->name('configuration.ack');
+            Route::post('submissions', [$c, 'submit'])->name('submissions');
+            Route::post('events', [$c, 'event'])->name('events.write');
+            Route::get('events', [$c, 'feed'])->name('events.read');
+            Route::get('snapshot', [$c, 'snapshot'])->name('snapshot');
+            Route::get('deliveries', [$c, 'deliveries'])->name('deliveries');
+            Route::post('delivery-results', [$c, 'deliveryEvent'])->name('delivery-results');
+            Route::post('grants', [$c, 'grants'])->name('grants');
+            Route::post('sync', [$c, 'sync'])->name('sync');
+        });
+
         // LAUNCH-P6 — the customer tablet's own routes (its token only).
         Route::middleware(EnsureCustomerTablet::class)->group(function (): void {
             Route::get('device/tablet/bootstrap', [DeviceTabletController::class, 'bootstrap'])->name('device.tablet.bootstrap');

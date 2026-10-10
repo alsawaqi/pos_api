@@ -7,6 +7,7 @@ namespace App\Actions\Qr;
 use App\Actions\Tables\AppendTableSessionEventAction;
 use App\Actions\Tables\EnsureLegacyTableBillBaselineAction;
 use App\Actions\Tables\TableLoyaltyDiscount;
+use App\Kitchen\CloudIntake;
 use App\Models\Customer;
 use App\Models\Device;
 use App\Models\Order;
@@ -410,6 +411,8 @@ final class SubmitDineInQrRoundAction
                     'geofence' => $session->scan_geofence_verdict,
                 ] : $identityPayload, null, $now);
             $this->journal->handle($seating, 'customer_order_arrived', $eventPayload, null, $now);
+
+            app(CloudIntake::class)->capture($order, 'qr_web', $round->priced_lines, $round);
 
             return [
                 'round' => $round->fresh(),

@@ -1,0 +1,37 @@
+{
+  "protocol_version": 1,
+  "event_id": "00000000-0000-4000-8000-000000000001",
+  "epoch": 1,
+  "occurred_at": "2026-10-08T18:00:00+00:00",
+  "action": "submit",
+  "submission_uuid": "00000000-0000-4000-8000-000000000002",
+  "order_uuid": "00000000-0000-4000-8000-000000000003",
+  "round_uuid": "00000000-0000-4000-8000-000000000004",
+  "revision": 1,
+  "policy_version": 1,
+  "source": "main_pos",
+  "domain_event_uuid": "00000000-0000-4000-8000-000000000005",
+  "domain_state": "submitted",
+  "context": {
+    "reference": "K1-TEST",
+    "table": "A2"
+  },
+  "lines": [
+    {
+      "line_uuid": "00000000-0000-4000-8000-000000000010",
+      "product_id": 1,
+      "category_id": null,
+      "quantity": "2.000000",
+      "name": "Fish",
+      "name_ar": "سمك",
+      "notes": "No salt",
+      "modifiers": [
+        "Extra lemon"
+      ],
+      "removals": [],
+      "allergens": [
+        "fish"
+      ]
+    }
+  ]
+}

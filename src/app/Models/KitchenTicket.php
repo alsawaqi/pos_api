@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Model;
 /** One durable branch-local print claim; failure is explicitly reclaimable. */
 final class KitchenTicket extends Model
 {
+    public const RESULT_RETIRED_LOCAL_UNKNOWN = 'retired_unknown';
+
     protected $table = 'pos_kitchen_tickets';
 
     protected $guarded = [];
